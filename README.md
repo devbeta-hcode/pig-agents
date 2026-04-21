@@ -36,9 +36,9 @@ npm run dev
 This starts:
 
 - Backend on `http://localhost:8787`
-- Frontend on `http://localhost:5173` (proxies `/api/*` and `/terminal/ws` to the backend)
+- Frontend on `http://localhost:5174` (proxies `/api/*` — same prefix as production — plus `/terminal/ws`, `/fs/watch`)
 
-Open <http://localhost:5173>.
+Open <http://localhost:5174>.
 
 ### Configure the LLM
 
@@ -58,12 +58,28 @@ MAX_ITERATIONS=5
 PORT=8787
 WORKSPACE_ROOT=               # optional: pin starting workspace
 ALLOWED_WORKSPACE_ROOT=       # optional: restrict "Open Folder" boundary
+
+# Optional: max size for merged project rules (see below)
+PROJECT_RULES_MAX_CHARS=16000
 ```
 
 ### Pick your workspace
 
 In the title bar, type an absolute path and press Enter (or click **Open Folder**).
 The agent and all file/terminal operations are scoped to that directory.
+
+### Project rules (per workspace)
+
+The agent **appends Markdown rules** from the **opened folder** into the system prompt under **PROJECT RULES** — same idea as Cursor’s project rules.
+
+| Location | Purpose |
+| -------- | ------- |
+| **`<workspace>/.pig/rules/**/*.md`** (and `.mdc`) | **Primary**: put your team’s conventions here (nested folders OK). |
+| **`<workspace>/.cursor/rules/**`** | **Optional**: reuse existing Cursor rule files without moving them. |
+
+Rules are loaded in order (`.pig/rules` first, then `.cursor/rules`); duplicate paths are skipped. Only **`.md`** and **`.mdc`** files are included. Total merged text is capped by **`PROJECT_RULES_MAX_CHARS`** (default **16000**); if logs say rules were truncated, raise that variable in `app/.env`.
+
+If neither tree exists, the agent still runs — there are simply no extra project rules.
 
 ## API surface
 
