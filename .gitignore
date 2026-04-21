@@ -1,0 +1,9 @@
+node_modules
+.build-agents
+dist
+.env
+*.log
+.DS_Store
+*.tsbuildinfo
+app/backend/public
+app/llm-profiles.json

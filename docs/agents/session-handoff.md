@@ -1,0 +1,542 @@
+# Session handoff
+
+> **For the next agent.** This file is a memory dump from a previous chat
+> session. Read it once at the start of a new session, then rely on
+> [`../../AGENTS.md`](../../AGENTS.md) and the rest of `docs/agents/` going
+> forward. Update this file when you finish a meaningful chunk of work so
+> the next handoff stays fresh.
+
+Last updated: 2026-04-20 (agent SSE / UI responsiveness)
+
+---
+
+## TL;DR for the new session
+
+The user is building **Pig Agents — Cursor-lite** (see
+[`../../README.md`](../../README.md)). They speak Vietnamese; mirror that in
+chat replies, but keep code/comments/docs in English.
+
+Recent work (see **Last session (2026-04-20)** below): UI chevron glyphs,
+composer `MentionInput` scrollbar behavior, and an agent-runner guardrail when
+the model says “task done” without calling tools. Older milestones (Git panel,
+VSCode icons, welcome screen, per-hunk diff, …) are summarized in **Last
+session (2026-04-19)**.
+
+---
+
+## What's already implemented (don't re-do)
+
+- Folder picker that defaults to **no folder opened** on first run; the
+  flag `build-agents.ws.confirmed.v1` in `localStorage` tracks user
+  confirmation. (`App.tsx`)
+- Explorer with FileTree, **Cut / Copy / Paste**, **Copy Path** (absolute)
+  and **Copy Relative Path**, plus rename / delete / new file / new folder.
+  Backend has `copyEntry` with VSCode-style collision suffixes.
+- Monaco editor with tabs, dirty state, `Ctrl/Cmd+S`, **inline pending-diff
+  highlights**, **PENDING banner with Keep / Undo**, selection → floating
+  **"Add to Chat"** action.
+- Chat panel with **Ask** and **Agent** modes, slash commands, model
+  dropdown, **file mention chips with individual ✕**, **drag files into
+  chat**, code-block **Apply** button, streaming agent thinking, regenerate /
+  copy / stop, scroll-to-bottom button.
+- Cursor-style chat composer (header w/ file chips, main textarea, footer
+  w/ mode + model + actions).
+- DiffViewer in the chat panel: header with **Undo All / Keep All / Review**;
+  click a row → side-by-side `DiffEditorView` opens as a tab.
+- Backend chat history at `~/.build-agents/chats/<wsHash>/` with
+  `index.json` + `<sessionId>.json`, atomic writes, debounced 350 ms saves,
+  `navigator.sendBeacon` on unload, full-text search with snippets,
+  export/import, one-time migration from `localStorage`.
+- ReAct agent loop with tools: `read_file`, `list_files`, `search_code`,
+  `run_command`, `write_patch`. Patch engine returns unified diffs;
+  `/diff/revert` reverses them.
+- Terminals panel (VSCode-style header + sidebar) with multiple PTY shells
+  and an **AGENT RUNS** section. Each agent `run_command` is recorded to a
+  100-entry ring buffer, surfaced via SSE (`hello`, `run`, `delete`,
+  `clear`). Per-run dismiss (✕) is **persistent across F5** via
+  `DELETE /agent/commands/:id`.
+- Settings modal with masked API key (POST without the field keeps the
+  existing value).
+
+---
+
+## Non-negotiables (user-stated preferences)
+
+These are repeated in [`../../AGENTS.md`](../../AGENTS.md) §4. Don't
+regress them:
+
+1. Workspace defaults to **no folder opened** until the user picks one.
+2. Chat history lives **on the backend**, not in `localStorage`.
+3. Every agent shell command goes through the **AGENT RUNS** log.
+4. **Two chat modes** (Ask / Agent), both must keep working.
+5. Diffs are **reviewable**, not silent (DiffViewer + inline highlights +
+   Keep / Undo).
+6. Tool calls cite **real files only** — `safeJoin` enforces the
+   workspace sandbox.
+7. Comments explain **why**, not what.
+8. Don't commit secrets; preserve API key masking in the Settings UI.
+
+---
+
+## Things deliberately not done yet (fair game if user asks)
+
+- Automated test suite (Jest / Vitest / Playwright). There are no tests
+  today; verification is manual.
+- Multi-workspace concurrent sessions in one browser tab.
+- Embedding-based / semantic relevance — current ranker in
+  `relevance/search.ts` is keyword + filename + import-graph.
+- AST-aware patches (e.g. `ts-morph`) — current patch engine is
+  SEARCH/REPLACE strings.
+
+---
+
+## Useful commands when you boot up
+
+```bash
+# What's already running?
+ls /home/hcode/.cursor/projects/home-hcode-build-agents/terminals/
+
+# Restart everything from clean
+pkill -f 'tsx watch' ; pkill -f 'vite'
+npm run dev
+
+# Smoke test the backend
+curl -s http://localhost:8787/health
+curl -s http://localhost:8787/agent/commands | jq
+
+# Reset user state (chats + workspace confirmation)
+rm -rf ~/.build-agents
+# in browser DevTools:
+#   Object.keys(localStorage).filter(k=>k.startsWith('build-agents')||k.startsWith('react-resizable-panels')).forEach(k=>localStorage.removeItem(k))
+```
+
+The dev server URLs:
+
+- Backend → <http://localhost:8787>
+- Frontend (Vite) → <http://localhost:5174> (proxies `/api/*` and
+  `/terminal/ws`)
+
+---
+
+## How to continue
+
+1. Read [`../../AGENTS.md`](../../AGENTS.md) (the brief) and skim
+   [`README.md`](README.md) (the docs index).
+2. If the user asks for something specific, follow the matching recipe in
+   [`workflows.md`](workflows.md).
+3. When you finish a non-trivial chunk of work, **append a short bullet
+   here** under a new "Last session" section so the next handoff is honest.
+
+### Last session (2026-04-20)
+
+- **Agent stream: avoid freezing UI + backend.** Backend: defer session SSE
+  delivery with `setImmediate`, chunked replay subscribe; frontend: batched
+  token updates via `requestAnimationFrame`, `startTransition` for append-to-turn
+  updates, yield in `/agent/sessions/.../stream` fetch every N SSE frames. Files:
+  `sessionManager.ts`, `Chat.tsx`, `api.ts`.
+
+- **Checkpoint metadata JSON-only.** `.build-agents/checkpoints.json` again (no
+  SQLite / WASM / sql.js). File: `app/backend/src/utils/checkpointDb.ts`.
+
+- **Per-project agent rules.** Load `<workspace>/.pig/rules/**/*.md|.mdc` and
+  `.cursor/rules/**` into the system prompt (`PROJECT RULES`; cap
+  `PROJECT_RULES_MAX_CHARS`). Background sessions run inside
+  `runWithWorkspace(session.workspace)` so tools/relevance/checkpoints resolve
+  to the correct folder. Files: `app/backend/src/utils/projectRules.ts`,
+  `app/backend/src/agent/runner.ts`, `app/backend/src/agent/sessionManager.ts`;
+  docs: `docs/agents/conventions.md`, `docs/agents/architecture.md`.
+
+- **Chat: loading while stopping or connecting.** When the user clicks Stop,
+  `awaitingStop` shows banners (`Stopping…`), status bar, placeholder, spinner
+  title, and a disabled header button until `runTask`/`streamSession` finishes;
+  added `Connecting…` for the gap before `startSession` returns (`sessionConnecting`).
+  Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **UI motion.** `styles.css`: shared easing tokens (`--ease-out-expo`,
+  `--transition-ui`), keyframes for dropdown/modal/pop-in, message bubble
+  entrances, empty-state title gradient shimmer, floating scroll-to-bottom
+  button; hover lift on composer pills / activity bar / circular icon buttons /
+  send with glow; pop-in on mode/model menus, `@`/`/` dropdowns, context menu,
+  selection popup; backdrop + modal entrance. Honors `prefers-reduced-motion`
+  (animations off, transitions shortened).
+
+- **Assistant reply layout (markdown overflow).** `styles.css`: `chat-turn` and
+  `.msg-assistant .msg-text` use `min-width: 0` + bounded width + `overflow-x:
+  auto` so tables, code, and long tokens don’t stretch the chat panel;
+  scoped `.msg-assistant .md` rules for word-wrap and images; streaming thought
+  box gets horizontal scroll when needed.
+
+- **Responsive polish for the welcome screen and chat composer.** Updated
+  `app/frontend/src/styles.css` so the editor welcome view now collapses its
+  quick actions to a single column earlier, lets the workspace badge/path use
+  the full available width, and reduces brand/action spacing on smaller
+  screens instead of waiting for a phone-sized breakpoint. Also adjusted the
+  chat composer footer/header breakpoints so mode/model controls wrap cleanly
+  in narrow chat panes, with the model picker stretching to available width
+  instead of colliding with the send controls.
+
+- **Product rename: Build Agents → Pig Agents.** Updated visible branding in
+  the frontend shell (`App.tsx` titlebar + status bar), welcome screen
+  (`EditorWelcome.tsx`), browser title (`app/frontend/index.html`), and
+  top-level docs (`README.md`, `AGENTS.md`, this handoff) so the product is
+  now consistently presented as **Pig Agents — Cursor-lite**. Kept internal
+  package names, repo folder names, and storage keys such as `build-agents.*`
+  unchanged to avoid unnecessary breakage.
+
+- **Frontend visual refresh + operation feedback polish.** Updated
+  `app/frontend/src/styles.css` with a broad UI refresh across app shell,
+  activity/sidebar, file tree, editor tabs, welcome screen, chat/composer,
+  diff viewer, terminal panel, git panel, search/chats, and status bar using
+  a consistent token set (colors, radii, shadows, transitions). Also polished
+  loading feedback wiring in file operations and git actions (`FileTree.tsx`,
+  `GitPanel.tsx`), and fixed a nested-composer visual regression by removing
+  the inner framed look from `.composer-lower` so the composer renders as a
+  single unified card.
+- **Composer model dropdown overflow fix.** Adjusted `.model-menu` in
+  `app/frontend/src/styles.css` to anchor from the right edge of the trigger
+  pill (`right: 0; left: auto`) and constrained width on normal + smaller
+  viewports so the model chooser no longer spills past the chat panel border;
+  then tuned anchor/width to open from the model pill's left edge for a less
+  "sunk inward" visual position inside narrow chat panes. Final pass anchors
+  the model menu to the responsive width of the composer footer-left group
+  (not a fixed pixel width), preventing both horizontal spill and awkward
+  inward offset in tight chat columns. Added model-name readability polish:
+  each model row now exposes full id on hover (`title`) and temporarily lifts
+  ellipsis truncation on hover/focus so long model names can be read. Latest
+  tweak moves the positioning context to the full composer footer so the menu
+  width auto-follows the chat/composer box instead of the trigger cluster.
+- **DiffViewer Review opens all changed files.** Updated
+  `app/frontend/src/components/DiffViewer.tsx` so the header `Review` action
+  iterates over every active diff and opens all changed files as diff tabs,
+  rather than only opening the first/next changed file.
+
+- **Smart command execution for long-running processes.** Created
+  `app/backend/src/tools/smartCommand.ts` with intelligent detection and
+  handling of dev servers (`npm run dev`, `yarn start`, `vite`, `uvicorn`,
+  etc.). The system:
+  - Auto-detects long-running commands via regex patterns
+  - Monitors output for "ready" signals (e.g., "listening on port", "compiled
+    successfully", "ready in Xms")
+  - Returns immediately when server is ready (or after ~15s timeout for
+    background mode)
+  - Detects early failures (EADDRINUSE, syntax errors, module not found)
+  - Runs processes in detached mode so they continue after agent completes
+  - Files: `smartCommand.ts` (new), `executor.ts` (updated import + handler),
+    `llm/prompt.ts` (updated tool description)
+- **ANSI escape code stripping.** Added `stripAnsi()` helper to both
+  `command.ts` and `smartCommand.ts` to remove terminal color codes from
+  output. Also set `NO_COLOR=1` and `FORCE_COLOR=0` env vars when spawning
+  commands. This prevents garbled Unicode in AGENT RUNS log and chat traces.
+- **Modern ToolOutput UI (Copilot/Cursor style).** Created new
+  `ToolOutput.tsx` component that renders agent tool calls in a clean,
+  visually appealing format instead of raw JSON/text:
+  - Each tool type has custom rendering: icons, colored badges, collapsible
+    details
+  - `read_file`: file icon + path + collapsible content preview
+  - `write_patch`: edit icon + file chips + status + expandable results
+  - `run_command`: terminal icon + command + exit status badge + output
+  - `search_code`: search icon + query + hit count + collapsible results
+  - `list_files`: folder icon + path + item count + expandable file list
+  - `codebase_map`: map icon + depth + collapsible tree
+  - Action + observation events are now combined into single trace items
+  - Added ~200 lines of CSS for the new components
+  - Files: `ToolOutput.tsx` (new), `Chat.tsx` (updated TraceStep + imports),
+    `styles.css` (ToolOutput styles)
+- **`ChevronExpand.tsx` + `PlayTriangle`.** Replaced tiny Unicode ▸/▾ (and ▶
+  for shells) with consistent SVG icons: `ChevronExpand` (disclosure: down vs
+  right, optional `flipOpen` for dropdown-open state) and `PlayTriangle` for
+  terminal sidebar shell rows. Wired in `DiffViewer.tsx`, `Chat.tsx` (trace
+  toggle + trace steps + composer pills; Mode menu uses `flipOpen={open}`),
+  `FileTree.tsx`, `GitPanel.tsx`, `Terminals.tsx`. Shared CSS in `styles.css`:
+  `.chevron-expand`, `.play-triangle`, plus context rules (e.g.
+  `.tree-row .chev`, `.trace-toggle-icon`, `.git-section-caret`,
+  `.diff-viewer-head .changes-toggle .chev`).
+- **`MentionInput` composer textarea.** Empty input showed a bogus inner
+  scrollbar (UA `overflow: auto` + auto-grow height rounding). Fix: default
+  `overflow-y: hidden` in `.composer-body textarea`, `rows={1}` with
+  `min-height` from CSS, and in the auto-grow `useEffect` set
+  `overflowY = "auto"` only when height hits the max cap (~220px).
+- **Agent “Task completed” with no `ACTION`.** In `runner.ts`, if the model
+  emits `FINAL` that looks like a no-op platitude while **no** tool has run yet,
+  but `THOUGHT` clearly promised concrete file work (`thoughtPromisesConcreteWork`
+  + `looksLikeNoOpFinal`), the runner **re-prompts once** (separate flag from
+  the existing “lazy FINAL with fenced code but no `write_patch`” nudge). Also
+  added a line in `llm/prompt.ts` forbidding FINAL-only “done” without an
+  `ACTION` in the same turn.
+- **Composer layout (CSS + DOM).** Structure in `Chat.tsx`: `composer-body` →
+  optional `chat-diffs` (DiffViewer) + `composer-lower` (`composer-input` /
+  `composer-footer`). The user iterated on **fused** vs **stacked card** styling;
+  avoid large unsolicited rewrites of this block — confirm intent before
+  replacing margins, `:has(.chat-diffs) .composer`, or border fusion rules.
+- **Agent prompt + premature-FINAL cues.** `llm/prompt.ts`: added a compact
+  "Reasoning & tool discipline" block (evidence-based THOUGHT, list_files /
+  search_code before guessing paths, handle failed OBSERVATION, stay scoped,
+  mirror user language in FINAL). `ASK_SYSTEM_PROMPT`: slightly stronger
+  structured reasoning for Ask mode. `runner.ts`: extended
+  `thoughtPromisesConcreteWork` edit-verb regex with common Vietnamese upgrade
+  / optimize / improve phrases so premature-FINAL nudge catches more real
+  "promised work, no tools" cases. `docs/agents/agent-loop.md` documents this.
+- **Background agent sessions (runs independently of browser).** New feature
+  allowing the agent to run in the background even when the user closes the
+  browser or refreshes (F5). Files:
+  - `app/backend/src/agent/sessionManager.ts` (NEW): In-memory session store
+    with event buffering (max 500 events), subscriber management, 5-min TTL
+    after completion. Key exports: `startSession`, `getSession`, `listSessions`,
+    `getRunningSessions`, `subscribeToSession`, `abortSession`, `deleteSession`.
+  - `app/backend/src/api/routes.ts`: Added 7 routes at `/agent/sessions/*`:
+    POST (start), GET (list/get), GET `/running`, GET `/:id/stream` (SSE),
+    POST `/:id/abort`, DELETE `/:id`.
+  - `app/frontend/src/lib/api.ts`: Added `AgentSessionInfo` interface and
+    session API methods (`startSession`, `listSessions`, `getSession`,
+    `streamSession`, `abortSession`, `deleteSession`).
+  - `app/frontend/src/components/Chat.tsx`: Added reconnect logic using
+    `sessionStorage` key `build-agents.active-session` to track running
+    sessions; on mount, checks for running sessions and reconnects.
+  - **Note**: Routes are at `/agent/sessions` (no `/api` prefix in backend);
+    the Vite proxy rewrites `/api/*` → `/*` when forwarding to backend.
+
+### Last session (2026-04-19)
+
+- Created agent documentation set: root `AGENTS.md` plus
+  `docs/agents/{README, architecture, backend, frontend, agent-loop, api,
+  chat-history, conventions, workflows, troubleshooting, session-handoff}.md`.
+- Added end-of-session ritual to `AGENTS.md` §6 rule #7 so future agents
+  must update this handoff before declaring work done.
+- Added always-on Cursor rule `.cursor/rules/session-handoff.mdc` that
+  enforces "read AGENTS.md + handoff at session start, update handoff
+  before finishing." Files: `AGENTS.md`, `.cursor/rules/session-handoff.mdc`,
+  `docs/agents/session-handoff.md`.
+- **Per-hunk Keep / Undo.** Backend now emits real multi-hunk unified
+  diffs with `@@ -X,Y +A,B @@` line-numbered headers and 3 lines of
+  context (was a single `@@\n` whole-file blob). Files:
+  `app/backend/src/tools/patch.ts` (`makeUnifiedDiff` rewrite),
+  `app/backend/src/api/diff.ts` (multi-hunk-aware `/diff/revert`, new
+  `POST /diff/revert-hunk { diff, hunkIndex }`),
+  `app/frontend/src/lib/api.ts` (`api.revertHunk`),
+  `app/frontend/src/components/Editor.tsx` (`parsePendingDiff` returns
+  per-hunk records using the line-numbered headers; renders a Monaco
+  content widget with `✓ Keep` / `↶ Undo` anchored above each hunk;
+  emits `ba:hunk-action`),
+  `app/frontend/src/App.tsx` (listens to `ba:hunk-action`, calls
+  `revertHunk` on undo, splices the targeted hunk out of the in-memory
+  diff and shifts subsequent `+start` line numbers when the on-disk file
+  shrank/grew — see `removeHunkFromDiff`),
+  `app/frontend/src/styles.css` (`.ba-hunk-actions` widget styles).
+- **Real VSCode file icons.** Initial pass shipped a hand-rolled inline-SVG
+  `<FileIcon>` (extension-label band on a file shape) but it looked
+  homemade. Replaced with the actual **vscode-icons** SVGs (the same set
+  the popular VSCode "vscode-icons" extension ships) via Iconify:
+  - Deps: `@iconify/react` + `@iconify-json/vscode-icons` (the full
+    collection JSON is `addCollection`-loaded once at module init so icons
+    render offline; bundle hit ≈ +150 KB gzipped, fine for a Monaco-heavy
+    app — total prod bundle is 1.27 MB gz).
+  - `app/frontend/src/components/FileIcon.tsx` exports a single
+    `<FileIcon name isDir? expanded? size? className? />` that renders
+    `<Icon icon="vscode-icons:..." />`. Three lookup tables resolve the
+    icon id:
+      - `NAME_MAP` (highest priority) — full lowercased filename → id.
+        Covers `package.json`/`-lock.json` → `file-type-npm`,
+        `tsconfig.json` → `file-type-tsconfig`, `vite.config.ts` →
+        `file-type-vite`, `Dockerfile`/`docker-compose.yml` →
+        `file-type-docker`/`docker2`, `.env*` → `file-type-dotenv`,
+        `.gitignore`/`.gitattributes` → `file-type-git`,
+        `.eslintrc*` → `file-type-eslint`, `Cargo.toml`/`go.mod`/
+        `pyproject.toml`/`Gemfile` → their language icon, `AGENTS.md` →
+        `file-type-agents`, `LICENSE`/`CHANGELOG.md`/`Makefile`,
+        lockfiles for npm/yarn/pnpm/bun, etc.
+      - `EXT_MAP` — extension → id. ~80 entries: `.ts/.tsx/.d.ts`,
+        `.js/.jsx/.mjs/.cjs`, `.json/.jsonc`, `.yml/.toml/.ini`,
+        `.html/.css/.scss/.sass/.less/.vue/.svelte/.astro`, `.py/.rs/
+        .go/.rb/.java/.kt/.swift/.c/.cpp/.h/.cs/.php/.lua/.r/.scala/
+        .ex/.erl/.hs/.zig/.dart/.ada`, shells (`.sh`/`.ps1`/`.bat`),
+        `.sql/.graphql/.proto`, images/video/audio/fonts/archives, etc.
+      - Fallback heuristics: `.d.ts` → `typescriptdef`,
+        `.tsbuildinfo` → `tsconfig`, `tsconfig.*.json`/`jest.config.*`/
+        `babel.config.*`/`.babelrc`/`vitest.config.*` → matching tool icon.
+        Anything else → `default-file`.
+  - Folders: `FOLDER_MAP` resolves to the matching `folder-type-*` (each
+    has a `-opened` variant) — `src`, `app/apps`, `components`, `lib/libs`,
+    `utils/helpers`, `hooks`, `views/pages`, `routes`, `models`,
+    `controllers`, `services`, `interfaces`, `types`, `plugins`, `themes`,
+    `public/static`, `assets/images`, `fonts`, `css/styles`, `test/tests/
+    __tests__/spec/specs/e2e`, `docs`, `config`, `api`,
+    `server/backend`, `client/frontend/ui/web`, `dist/build/out`,
+    `node_modules`, `.git`, `.github`, `.gitlab`, `.vscode`, `.cursor`,
+    `.claude`, `locale/locales/i18n`, `middleware`, `redux`, `graphql`,
+    `db/database`, `log/logs`, `temp/tmp`. Unknown folders fall back to
+    `default-folder` / `default-folder-opened`.
+  - Wired into the same call-sites as the v1 component: `FileTree.tsx`
+    (tree rows + new-file row), `DiffViewer.tsx` (diff list),
+    `App.tsx` (editor tabs), `Chat.tsx` (mention chips + expanded list),
+    `MentionInput.tsx` (`@`-mention dropdown), `FolderPicker.tsx`
+    (folder/file rows). CSS sizing in `styles.css` (`.file-icon-svg`,
+    `.tree-row .icon`, `.diff-row .file-icon`, `.tab-icon`,
+    `.msg-chip .chip-icon`) was already in place from v1.
+  - Adding mappings: edit `EXT_MAP` / `NAME_MAP` / `FOLDER_MAP` and use a
+    valid `vscode-icons:` id. To check what id exists, run
+    `node -e "console.log(Object.keys(require('@iconify-json/vscode-icons/icons.json').icons).filter(x => x.includes('SEARCH')))"`
+    from `app/frontend/`.
+- **Editor welcome screen.** The empty editor used to render a one-line
+  "Open a file from the Explorer or Search to edit it." placeholder which
+  the user (rightly) called "phèn". Replaced with a proper VSCode/Cursor-
+  style welcome page:
+  - `app/frontend/src/components/EditorWelcome.tsx` (new) — renders the
+    brand mark (inline SVG gradient "B" + pulse line, no asset file),
+    "Pig Agents" + tagline, a workspace pill (folder icon + name + full
+    path with ellipsis), a 2x2 grid of quick-action cards (`Open/Change
+    folder`, `Search files` w/ `⌘P` kbd, `Ask the agent`, `Toggle
+    terminal` w/ <code>⌘`</code> kbd), a "Recent files" section with
+    per-row remove (`✕`) + relative dir display, and a footer strip of
+    keyboard hints. Auto-detects mac vs other for `⌘` vs `Ctrl`. The
+    `<Kbd>` helper is just a styled `<kbd>` element — see `.ew-kbd` in
+    `styles.css` for the look (real keycap with bottom-border lift).
+  - `app/frontend/src/lib/recents.ts` (new) — tiny
+    `pushRecent(workspace, path)` / `listRecents(workspace)` /
+    `removeRecent(workspace, path)` keyed by
+    `build-agents.recent-files.v1.<workspace>` in localStorage, capped at
+    12 entries, sorted by most-recent first. Recents are per-workspace so
+    switching folders gives a clean slate.
+  - `app/frontend/src/App.tsx` — `openFile()` now calls `pushRecent` and
+    bumps a `recentsVersion` counter that the welcome reads as a hint to
+    refresh from storage. Wired callbacks: `onOpenFolder` →
+    `setPickerOpen(true)`, `onShowSearch` → `setView("search")`,
+    `onShowChats` → `setView("chats")`, `onToggleTerminal` →
+    `toggleBottom()` (existing helper that
+    `expand()`/`collapse()`s the bottom panel).
+  - `app/frontend/src/styles.css` — new `.editor-welcome` block (subtle
+    radial-gradient blue/purple wash on `var(--bg)`, capped 720px column,
+    semantic sub-classes `.ew-*` for header/brand/section/actions/recents/
+    kbd/footer). Responsive collapse to single column under 560px.
+  - To extend: add more `actions` entries in `EditorWelcome.tsx` (each is
+    `{ id, icon, title, desc, shortcut?, onClick }`); to surface a new
+    keyboard hint, append a `<span className="ew-tip">` in the footer.
+    To wipe recents during dev, run
+    `Object.keys(localStorage).filter(k => k.startsWith('build-agents.recent-files.')).forEach(k => localStorage.removeItem(k))`
+    in the browser console.
+- **Source Control (Git) panel.** Fourth activity-bar entry between Search
+  and Chats, opened by a `git-branch` SVG icon with a small change-count
+  badge. UI mirrors the VSCode "Source Control" view (see screenshot the
+  user shared). Built end-to-end:
+  - **Backend** — `app/backend/src/api/git.ts` (new), mounted in
+    `server.ts` as `gitRouter`. All commands shell out to `git` with
+    `cwd: getWorkspace()`, `LC_ALL=C`, and `GIT_TERMINAL_PROMPT=0`. 1 MiB
+    stdout/stderr cap. Endpoints:
+    - `GET /git/status` — `git status --porcelain=v1 -z --branch
+      --untracked-files=all`. Parses the `-z` NUL-separated stream
+      including the leading `## branch...upstream [ahead N, behind M]`
+      header and rename/copy second-token paths. Returns
+      `{ ok, workspace, branch, upstream, ahead, behind, detached, files:
+      GitFileEntry[] }`. Reports `{ ok: false, reason: "not_a_repo" }`
+      when the workspace has no `.git` so the UI can offer init.
+    - `GET /git/diff?path=&staged=0|1&untracked=0|1` — `git diff
+      [--cached] -- <path>`, or `git diff --no-index -- /dev/null <path>`
+      for untracked. Returns the unified diff as `diff:` plus echoed
+      flags.
+    - `POST /git/stage` / `POST /git/unstage` / `POST /git/discard` —
+      take `{ paths: string[] }`. Unstage prefers `git restore --staged`
+      and falls back to `git reset HEAD --` (covers the initial-commit
+      case). Discard runs `git checkout -- <paths>` and is the only
+      destructive call (UI confirms first).
+    - `POST /git/commit` — `{ message, stageAll?, signoff? }`. When
+      `stageAll`, runs `git add -A` first.
+    - `GET /git/log?limit=N` — `git log --pretty=format:` with NUL
+      record separator and `\x1f` field separator (`%H %h %P %an %ae
+      %aI %at %s`). `format:` emits an extra `\n` between records, so
+      we strip leading whitespace per record before splitting fields.
+      Returns `{ ok, entries: GitLogEntry[] }`.
+    - `POST /git/init` — `git init` (only when not already a repo).
+    - `GET /git/version` — `git --version`, used as a tiny health probe.
+  - **Frontend client** — `app/frontend/src/lib/api.ts` gains
+    `api.gitStatus / gitDiff / gitStage / gitUnstage / gitDiscard /
+    gitCommit / gitLog / gitInit` plus `GitFileEntry`, `GitStatus`, and
+    `GitLogEntry` types.
+  - **GitPanel component** — `app/frontend/src/components/GitPanel.tsx`
+    (new). Polls `gitStatus + gitLog` on mount and every 8 s while
+    visible. Renders:
+    - Header `SOURCE CONTROL` with total-change badge and `＋` (stage
+      all unstaged + untracked) / `↻` (refresh) buttons.
+    - Multiline commit textarea (placeholder `Message (Ctrl+Enter to
+      commit on "<branch>")`) + a big `✓ Commit` button. When nothing
+      is staged but there are unstaged changes, the button auto-flips
+      to `✓ Commit All` and runs `git add -A` before commit.
+      `⌘/Ctrl+Enter` submits.
+    - Branch row: `git-branch` SVG glyph + branch name + upstream name
+      + `↓N ↑N` ahead/behind counters.
+    - Three collapsible file sections — `Staged Changes`, `Changes`,
+      `Untracked`. Each row shows `FileIcon` + filename + dir +
+      one-letter status badge in VSCode colors (`M` orange, `A`/`U`
+      green, `D` red, `R`/`C` green-blue). Hover swaps the badge for
+      per-row action icons (`↶` discard / `＋` stage for unstaged;
+      `−` unstage for staged; `＋` only for untracked). Section
+      headers expose bulk versions of the same actions on hover.
+    - `GRAPH` (commit history): vertical line + colored dot per commit
+      (HEAD dot is filled with a halo), subject + abbreviated hash +
+      author + relative time. Caps at 8 with a "Show N more" toggle.
+    - Empty workspace → `"No folder opened"`. Not-a-repo → big
+      `Initialize Repository` button calling `api.gitInit()`.
+  - **App.tsx wiring** — `ActivityView` now includes `"source"`. New
+    `gitChangeCount` state polled every 10 s independently of the panel
+    so the activity-bar badge stays roughly in sync. New helper
+    `openGitDiff({ path, staged, untracked, diff })` that synthesises a
+    `DiffItem` (id `git:idx:<path>` / `git:wt:<path>`) and reuses the
+    existing `openDiff()` plumbing — so git diffs open as `DIFF`
+    tabs in the same Monaco-backed `DiffEditorView` as agent diffs.
+    Untracked files just open the file directly (no original to diff
+    against and `--- /dev/null` headers don't parse). Empty diffs
+    (binary/mode-only) likewise fall back to plain `openFile`.
+  - **Activity-bar button** — `<button class="activity-source">` with
+    inline `git-branch` SVG and absolute-positioned `.activity-badge`
+    (bumps to `99+` over 99). Styled in `styles.css` next to the rest
+    of the activity bar.
+  - **Styles** — large `git-*` block at the bottom of `styles.css`
+    (commit textarea, branch row, sections, file rows w/ hover-swapped
+    badge↔actions, log graph dots/lines, primary commit button gradient,
+    error toast). Uses existing CSS vars (`--bg-2`, `--bg-3`, `--border`,
+    `--fg-dim`).
+  - **Caveats / future work**:
+    - Working-tree diff vs staged diff for the *same* file with both
+      staged and unstaged hunks: `DiffEditorView` reads the current file
+      and back-applies the diff, so it shows the staged version against
+      HEAD perfectly when the file has no further unstaged edits, but
+      may misalign if you have both. For MVP we accept this; a proper
+      fix would either pipe `git show :<path>` for the index blob or
+      teach `DiffEditorView` to render an explicit "old/new" pair
+      instead of computing one from the other.
+    - No branch switcher / fetch / pull / push UI yet — the panel is
+      read+commit only. Adding a branch dropdown next to the branch
+      row, plus `gh`-style action buttons, would slot cleanly into the
+      existing layout.
+    - No conflict resolution UI for merge conflicts (status will show
+      `UU`/`AA`/etc. but we don't help resolve them).
+- No open bugs reported by the user.
+- **Image paste (Ctrl+V) and attachment in chat composer.** Users can now
+  paste images directly into the chat composer or use a file picker to
+  attach images. Images are included in the LLM request as base64 data URLs.
+  Files changed:
+  - `app/frontend/src/components/Chat.tsx`: Added `attachedImages` state,
+    `imageInputRef` for hidden file input, `addImageFromFile` (reads via
+    FileReader with 10MB limit), `handlePaste` (checks clipboard for
+    images), `handleImageInput` (handles file picker), `removeImage`.
+    Images are captured before send, included in the turn for display,
+    and cleared after sending. Added image preview section in composer
+    with thumbnails and remove buttons. Added image picker button in
+    footer with SVG icon.
+  - `app/frontend/src/lib/sessions.ts`: Added `ChatImage` interface and
+    `images?: ChatImage[]` field to `ChatTurn` type.
+  - `app/frontend/src/lib/api.ts`: Updated `startSession` to accept
+    optional `images` parameter.
+  - `app/backend/src/api/routes.ts`: Updated `POST /agent/sessions` to
+    extract and validate images array from request body.
+  - `app/backend/src/agent/sessionManager.ts`: Added `images` field to
+    `AgentSession` interface and updated `startSession` signature.
+  - `app/backend/src/agent/runner.ts`: Added `images` to `AgentRunOptions`,
+    imported `ContentPart` type, created `buildUserContent` helper that
+    converts text + images into multimodal content array. Images are only
+    included in the first iteration of agent mode.
+  - `app/backend/src/llm/client.ts`: Added `TextContentPart`,
+    `ImageContentPart`, `ContentPart` types. Updated `ChatMessage.content`
+    to accept `string | ContentPart[]` for multimodal messages.
+  - `app/frontend/src/styles.css`: Added `.composer-images`,
+    `.composer-image-preview`, `.composer-image-remove`,
+    `.composer-icon-btn.image-picker` styles for the composer, and
+    `.msg-images` styles for displaying images in sent messages.

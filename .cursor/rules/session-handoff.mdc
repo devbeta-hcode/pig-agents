@@ -1,0 +1,40 @@
+---
+description: Read AGENTS.md + session-handoff at session start, and update the handoff before declaring work done.
+alwaysApply: true
+---
+
+# Session protocol
+
+## At session start
+
+1. Read [`AGENTS.md`](mdc:AGENTS.md) — the project brief and 8 non-negotiables.
+2. Read [`docs/agents/session-handoff.md`](mdc:docs/agents/session-handoff.md) — what's already implemented and where the previous agent left off.
+
+Skim the rest of `docs/agents/` only when a task touches that subsystem.
+
+## Before declaring work done
+
+If your change touched code, added/changed an endpoint, shifted user-facing
+behavior, or altered a documented contract — you **must** do both:
+
+1. Append one bullet to the **"Last session"** list at the bottom of
+   [`docs/agents/session-handoff.md`](mdc:docs/agents/session-handoff.md).
+   Bullet template:
+   ```
+   ### Last session (YYYY-MM-DD)
+   - <verb in past tense> <what>: <one-line why / impact>. Files: `a/b.ts`, `c/d.tsx`.
+   ```
+   If the latest "Last session" header is from today, just add a bullet
+   under it; otherwise create a new dated header above the previous one.
+2. Bump the `Last updated:` line at the top of the same file to today's date.
+
+Pure-chat answers, doc typos, and trivial reads do **not** require a handoff
+update.
+
+## Other reminders
+
+- User chats in Vietnamese — mirror that. Code/comments/docs stay in English.
+- Comments explain **why**, not what.
+- All file/command access is sandboxed via `safeJoin` to the active workspace.
+- Workspace defaults to **no folder opened**; never auto-confirm a workspace
+  on the user's behalf.

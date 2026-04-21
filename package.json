@@ -1,0 +1,19 @@
+{
+  "name": "build-agents",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "app/backend",
+    "app/frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c blue,magenta \"npm --workspace app/backend run dev\" \"npm --workspace app/frontend run dev\"",
+    "dev:backend": "npm --workspace app/backend run dev",
+    "dev:frontend": "npm --workspace app/frontend run dev",
+    "build": "npm --workspace app/frontend run build && npm --workspace app/backend run build",
+    "start": "npm --workspace app/backend run start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
