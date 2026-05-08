@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-08 (streaming action execution + parallel multi-tool)
+Last updated: 2026-05-10 (Select Element to Chat + toolbar/keyboard/browser improvements)
 
 ---
 
@@ -126,6 +126,60 @@ The dev server URLs:
    [`workflows.md`](workflows.md).
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
+
+### Last session (2026-05-10)
+
+- **"Select Element to Chat" inspect mode in BrowserPanel.**
+  - `app/backend/src/browser/session.ts`: Added `inspectElement(x,y)` method — calls `getElementAt` then takes a cropped `page.screenshot({ clip: boundingRect })`, returns `{ element: ElementInfo, screenshot: base64png }`.
+  - `app/backend/src/api/browser.ts`: Added `POST /browser/inspect { x, y }` route.
+  - `app/frontend/src/components/BrowserPanel.tsx`: Added `onAddElementToChat?: (html, imageDataUrl) => void` prop; `inspecting` boolean state; replaced camera/screenshot download button with crosshair toggle "Select element to chat" button (active = accent color); when `inspecting` + click → calls `/inspect` → fires `onAddElementToChat`; Esc cancels inspect; crosshair cursor on viewport; blue accent banner overlay "Click on an element…" while active.
+  - `app/frontend/src/components/Chat.tsx`: Added `pendingInjectImage?: string` + `onInjectImageConsumed?` props; useEffect adds injected data URL to `attachedImages` (shows as thumbnail in composer, not raw base64).
+  - `app/frontend/src/App.tsx`: Added `pendingChatImage` state; `BrowserPanel.onAddElementToChat` sets both `pendingChatInject` (HTML text) and `pendingChatImage` (data URL); passes `pendingInjectImage` + `onInjectImageConsumed` to `Chat`.
+  - `app/frontend/src/styles.css`: Added `.browser-inspect-banner` (accent pill at top of viewport).
+
+- **Earlier in this session** (carried over from compacted context):
+  - Settings token cap: `Math.min(8192,…)` → `Math.min(131072,…)` in `settings.ts`
+  - Browser button moved from activity bar → titlebar next to Terminal button
+  - System deps auto-detect on Chromium launch failure (libatk regex) → "Install System Dependencies" button
+  - Keyboard forwarding: `typeText()`/`keyPress()` backend + `/type`,`/key` routes + SPECIAL_KEYS map in frontend
+  - Batched scroll (16ms) via `/scroll` route
+  - Hover element label tooltip
+  - Animated loading progress bar
+  - Full Cursor-style toolbar: Back/Forward/Reload↔Stop, URL bar (lock/globe icon), Add to Chat, Zoom+/−/Reset, Close
+
+### Last session (2026-05-09)
+
+- **Built-in Browser panel (Playwright + CDP screencast).** New activity-bar
+  globe icon opens a full-panel browser view. Implementation:
+  - `app/backend/src/browser/session.ts`: `BrowserSession` singleton — wraps
+    Playwright Chromium, `Page.startScreencast` (JPEG via CDP), exposes
+    `navigate`, `goBack/Forward/reload`, `clickAt(x,y)`, `getElementAt(x,y)`,
+    `evalScript`, `installPlaywright()`, `isPlaywrightReady()`, `start/stop`.
+  - `app/backend/src/api/browser.ts`: REST router mounted at `/api/browser/*`
+    — `GET /status`, `POST /install`, `POST /start/stop/navigate/back/forward/
+    reload/click/element/eval`.
+  - `app/backend/src/server.ts`: Added `browserWss` (`noServer:true`), wired
+    `/browser/ws` in upgrade router, fans out `BrowserSession "event"` to all
+    connected WS clients. Also imports `browserRouter`.
+  - `app/frontend/vite.config.ts`: `/browser/ws` proxy added (WS, port 8787).
+  - `app/frontend/src/components/BrowserPanel.tsx`: Auto-detects playwright
+    install state (shows "Install" button with live SSE log), "Launch Browser"
+    button, URL bar with back/forward/reload, JPEG screencast rendered in `<img>`,
+    click → sends coords → backend, element inspector panel with "Add to Chat".
+  - `app/frontend/src/App.tsx`: `ActivityView` type gains `"browser"`, globe
+    icon button in activity bar, `<BrowserPanel>` replaces editor area when
+    `view === "browser"`, `pendingChatInject` state → passes to `<Chat>`.
+  - `app/frontend/src/components/Chat.tsx`: Added `pendingInject` + `onInjectConsumed`
+    props; `useEffect` appends injected text to composer when set.
+  - `app/frontend/src/styles.css`: Full browser panel CSS added (setup card,
+    toolbar, viewport, screencast, inspector).
+  - `playwright` npm package installed in `app/backend`.
+
+- **UI fixes from earlier in this session** (carried over from compacted context):
+  - EditorWelcome subtitle: "Cursor-style" → "Your AI coding workspace"
+  - Terminals sidebar: drag-to-resize handle (mousedown/move/up on `right:-3px` strip, `overflow-x:hidden`)
+  - Composer footer CSS cleaned up (4 conflicting layers → 6 minimal rules, no `!important`)
+  - Model dropdown: `right:0; width:auto` so it doesn't overflow the chat panel
 
 ### Last session (2026-05-08)
 

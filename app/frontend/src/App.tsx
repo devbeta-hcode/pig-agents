@@ -13,6 +13,7 @@ import { FileIcon } from "./components/FileIcon";
 import { EditorWelcome } from "./components/EditorWelcome";
 import { GitPanel } from "./components/GitPanel";
 import { WorkspaceManager } from "./components/WorkspaceManager";
+import BrowserPanel from "./components/BrowserPanel";
 import { useDialogs } from "./components/DialogProvider";
 import {
   IconX, IconCheck, IconRotateCcw, IconRefreshCw, IconSettings,
@@ -26,6 +27,7 @@ import { revertTargetFileMissing } from "./lib/diffErrors";
 import { diffPathFromUnified, mergeUnifiedDiffs, normalizeDiffPath } from "./lib/diffMerge";
 
 type ActivityView = "explorer" | "search" | "source";
+const BROWSER_TAB_PATH = "__browser__";
 type BottomTab = "terminal";
 
 /**
@@ -88,7 +90,7 @@ interface OpenTab {
   // For diff tabs we keep the patch payload + an id, and prefix the path
   // with "diff:<id>:" so it gets its own tab even when the file tab is also
   // open. The display path stays clean via `displayPath`.
-  kind?: "file" | "diff";
+  kind?: "file" | "diff" | "browser";
   diff?: string;
   diffId?: string;
   displayPath?: string;
@@ -124,6 +126,8 @@ export default function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
+  const [pendingChatInject, setPendingChatInject] = useState<string>("");
+  const [pendingChatImage, setPendingChatImage] = useState<string>("");
   // Bumped whenever a file is opened so the welcome screen re-reads the
   // recents list from localStorage without us needing to lift it into state.
   const [recentsVersion, setRecentsVersion] = useState(0);
@@ -797,6 +801,20 @@ export default function App() {
         >
           <IconTerminal size={14} style={{ marginRight: 5 }} />Terminal
         </button>
+        <button
+          className={active === BROWSER_TAB_PATH ? "active" : ""}
+          title="Browser"
+          onClick={() => {
+            const exists = tabs.find((t) => t.path === BROWSER_TAB_PATH);
+            if (!exists) setTabs((prev) => [...prev, { path: BROWSER_TAB_PATH, kind: "browser" as const, dirty: false }]);
+            setActive(BROWSER_TAB_PATH);
+          }}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ marginRight: 5, verticalAlign: "middle" }}>
+            <circle cx="12" cy="12" r="10" />
+            <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>Browser
+        </button>
         <WorkspaceManager 
           currentWorkspace={workspace}
           onSwitchWorkspace={(ws) => {
@@ -860,6 +878,7 @@ export default function App() {
                         onOpenGitDiff={openGitDiff}
                       />
                     )}
+
                   </>
                 )}
               </div>
@@ -870,37 +889,45 @@ export default function App() {
               <div className="center">
                 <PanelGroup direction="vertical" autoSaveId="ba-center-v3">
                   <Panel minSize={20} defaultSize={65}>
-                    <div className="editor-area">
+                    <div className="editor-area" style={activeTab?.kind === "browser" ? { overflow: "hidden" } : undefined}>
                       <div className="editor-tabs">
                         <div className="editor-tabs-list">
                           {tabs.map((t) => {
                             const isDiff = t.kind === "diff";
+                            const isBrowser = t.kind === "browser";
                             const display = isDiff
                               ? (t.displayPath?.split("/").pop() || "diff")
+                              : isBrowser ? "Browser"
                               : t.path.split("/").pop();
                             return (
                               <div
                                 key={t.path}
                                 className={`editor-tab ${active === t.path ? "active" : ""} ${isDiff ? "is-diff" : ""}`}
                                 onClick={() => setActive(t.path)}
-                                draggable={!isDiff}
+                                draggable={!isDiff && !isBrowser}
                                 onDragStart={(e) => {
-                                  if (isDiff) return;
+                                  if (isDiff || isBrowser) return;
                                   e.dataTransfer.setData("application/x-ba-file", t.path);
                                   e.dataTransfer.setData("text/plain", `@${t.path}`);
                                   e.dataTransfer.effectAllowed = "copy";
                                 }}
                               >
                                 {isDiff && <span className="tab-tag">DIFF</span>}
-                                <span className="tab-icon"><FileIcon name={display || ""} size={14} /></span>
-                                {t.dirty && <span className="dirty"><IconDot size={6} /></span>}
+                                {isBrowser ? (
+                                  <span className="tab-icon" style={{ display: "flex", alignItems: "center" }}>
+                                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                                  </span>
+                                ) : (
+                                  <span className="tab-icon"><FileIcon name={display || ""} size={14} /></span>
+                                )}
+                                {t.dirty && !isBrowser && <span className="dirty"><IconDot size={6} /></span>}
                                 <span>{display}</span>
                                 <span className="close" onClick={(e) => closeTab(t.path, e)}><IconX size={12} /></span>
                               </div>
                             );
                           })}
                         </div>
-                        {activeTab && activeTab.kind !== "diff" && (
+                        {activeTab && activeTab.kind !== "diff" && activeTab.kind !== "browser" && (
                           <div className="editor-tabs-actions">
                             <button
                               className="editor-save-btn"
@@ -913,7 +940,12 @@ export default function App() {
                           </div>
                         )}
                       </div>
-                      {activeTab && activeTab.kind === "diff" ? (
+                      {activeTab && activeTab.kind === "browser" ? (
+                        <BrowserPanel
+                          onAddToChat={(text) => { setPendingChatInject(text); }}
+                          onAddElementToChat={(html, dataUrl) => { setPendingChatInject(html); if (dataUrl) setPendingChatImage(dataUrl); }}
+                        />
+                      ) : activeTab && activeTab.kind === "diff" ? (
                         <div className="editor-pane">
                           {(() => {
                             const diffId = activeTab.diffId || "";
@@ -1116,6 +1148,10 @@ export default function App() {
                   onRenameChat={renameChat}
                   onExportChats={exportChats}
                   onImportChats={importChatsFromFile}
+                  pendingInject={pendingChatInject || undefined}
+                  onInjectConsumed={() => setPendingChatInject("")}
+                  pendingInjectImage={pendingChatImage || undefined}
+                  onInjectImageConsumed={() => setPendingChatImage("")}
                 />
               ) : (
                 <div className="chat"><div className="chat-empty">Loading…</div></div>

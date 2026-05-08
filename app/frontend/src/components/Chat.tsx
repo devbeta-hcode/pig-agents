@@ -78,6 +78,12 @@ interface Props {
   onExportChats?: () => void;
   onImportChats?: () => void;
   workspace?: string;
+  /** When set, append this text to the composer input and focus it. Clear after injecting. */
+  pendingInject?: string;
+  onInjectConsumed?: () => void;
+  /** When set, add this base64 data URL as an attached image thumbnail. */
+  pendingInjectImage?: string;
+  onInjectImageConsumed?: () => void;
 }
 
 // ---------- helpers ----------
@@ -564,9 +570,24 @@ export function Chat({
   diffs, onUpdateDiff, onClearDiffs, onRemoveDiff, onOpenFile, onOpenDiff,
   activeFile, modelLabel, llmSettings, onModelChange, onOpenSettings, onNewChat,
   chatList, onSelectChat, onDeleteChat, onRenameChat, onExportChats, onImportChats, workspace,
+  pendingInject, onInjectConsumed, pendingInjectImage, onInjectImageConsumed,
 }: Props) {
   const dlg = useDialogs();
   const [task, setTask] = useState("");
+  // When a context snippet is injected from an external panel (e.g. BrowserPanel "Add to Chat"),
+  // append it to whatever the user has already typed and switch to that panel.
+  useEffect(() => {
+    if (!pendingInject) return;
+    setTask((t) => (t ? `${t}\n\n${pendingInject}` : pendingInject));
+    onInjectConsumed?.();
+  }, [pendingInject]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!pendingInjectImage) return;
+    const id = `inject-${Date.now()}`;
+    setAttachedImages((prev) => [...prev, { id, dataUrl: pendingInjectImage!, name: "element.png" }]);
+    onInjectImageConsumed?.();
+  }, [pendingInjectImage]); // eslint-disable-line react-hooks/exhaustive-deps
   const [running, setRunning] = useState(false);
   /** True after Stop/Esc until the run finishes cleanup (SSE close + abort acknowledged). */
   const [awaitingStop, setAwaitingStop] = useState(false);

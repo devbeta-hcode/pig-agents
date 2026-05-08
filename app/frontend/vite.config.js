@@ -22,6 +22,10 @@ export default defineConfig({
                 target: "ws://localhost:8787",
                 ws: true,
             },
+            "/browser/ws": {
+                target: "ws://localhost:8787",
+                ws: true,
+            },
         },
     },
 });

@@ -12,6 +12,8 @@ import { settingsRouter } from "./api/settings.js";
 import { diffRouter } from "./api/diff.js";
 import { chatsRouter } from "./api/chats.js";
 import { gitRouter } from "./api/git.js";
+import { browserRouter } from "./api/browser.js";
+import { browserSession } from "./browser/session.js";
 import { createPty } from "./tools/terminal.js";
 import { logger } from "./utils/logger.js";
 import { workspaceWatcher, type WorkspaceChangesPayload } from "./utils/watcher.js";
@@ -44,6 +46,7 @@ app.use(API_PREFIX, settingsRouter);
 app.use(API_PREFIX, diffRouter);
 app.use(API_PREFIX, chatsRouter);
 app.use(API_PREFIX, gitRouter);
+app.use(API_PREFIX, browserRouter);
 app.use(API_PREFIX, router);
 
 /** Load-balancer friendly without the `/api` prefix (mirrors `GET /api/health`). */
@@ -79,6 +82,7 @@ onWorkspaceChange(() => workspaceWatcher.start());
 // `noServer: true` + a single, explicit upgrade router below.
 const fsWss = new WebSocketServer({ noServer: true });
 const wss = new WebSocketServer({ noServer: true });
+const browserWss = new WebSocketServer({ noServer: true });
 
 server.on("upgrade", (req, socket, head) => {
   const pathname = new URL(req.url || "/", "http://x").pathname;
@@ -86,9 +90,27 @@ server.on("upgrade", (req, socket, head) => {
     fsWss.handleUpgrade(req, socket, head, (ws) => fsWss.emit("connection", ws, req));
   } else if (pathname === "/terminal/ws") {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  } else if (pathname === "/browser/ws") {
+    browserWss.handleUpgrade(req, socket, head, (ws) => browserWss.emit("connection", ws, req));
   } else {
     socket.destroy();
   }
+});
+
+// Browser screencast: fan out BrowserSession events to all connected WS clients.
+browserWss.on("connection", (ws) => {
+  const onEvent = (ev: unknown) => {
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(JSON.stringify(ev)); } catch { /* noop */ }
+    }
+  };
+  browserSession.on("event", onEvent);
+  // Immediately send current status so the client can initialise its UI
+  browserSession.isPlaywrightReady().then((installed) => {
+    onEvent({ type: "status", status: "idle", installed, running: browserSession.isStarted() });
+  }).catch(() => { /* noop */ });
+  ws.on("close", () => browserSession.off("event", onEvent));
+  ws.on("error", () => browserSession.off("event", onEvent));
 });
 
 fsWss.on("connection", (ws, req) => {

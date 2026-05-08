@@ -224,3 +224,113 @@ export function IconPlus(p: IconProps) {
     </Ic>
   );
 }
+
+/** ← arrow left / back */
+export function IconArrowLeft(p: IconProps) {
+  return <Ic {...p}><path d="m15 18-6-6 6-6" /></Ic>;
+}
+
+/** → arrow right / forward */
+export function IconArrowRight(p: IconProps) {
+  return <Ic {...p}><path d="m9 18 6-6-6-6" /></Ic>;
+}
+
+/** ↻ rotate clockwise / reload page */
+export function IconRotateCw(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+      <path d="M8 16H3v5" />
+    </Ic>
+  );
+}
+
+/** 🔒 lock / https */
+export function IconLock(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </Ic>
+  );
+}
+
+/** 🌐 globe / http / browser */
+export function IconGlobe(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </Ic>
+  );
+}
+
+/** 🔍+ zoom in / magnify */
+export function IconZoomIn(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+      <path d="M11 8v6M8 11h6" />
+    </Ic>
+  );
+}
+
+/** 🔍- zoom out */
+export function IconZoomOut(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+      <path d="M8 11h6" />
+    </Ic>
+  );
+}
+
+/** [1:1] reset zoom / actual size */
+export function IconMaximize2(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <polyline points="15 3 21 3 21 9" />
+      <polyline points="9 21 3 21 3 15" />
+      <line x1="21" x2="14" y1="3" y2="10" />
+      <line x1="3" x2="10" y1="21" y2="14" />
+    </Ic>
+  );
+}
+
+/** 💬+ add page/element to chat */
+export function IconMessagePlus(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M12 7v6M9 10h6" />
+    </Ic>
+  );
+}
+
+/** ◎ element inspector / pick element / crosshair cursor */
+export function IconCrosshair(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="22" x2="18" y1="12" y2="12" />
+      <line x1="6" x2="2" y1="12" y2="12" />
+      <line x1="12" x2="12" y1="6" y2="2" />
+      <line x1="12" x2="12" y1="22" y2="18" />
+    </Ic>
+  );
+}
+
+/** ↖ mouse pointer / element picker — DevTools inspect cursor */
+export function IconMousePointer(p: IconProps) {
+  return (
+    <Ic {...p}>
+      <path d="m4 4 7.07 17 2.51-7.39L21 11.07z" />
+    </Ic>
+  );
+}
+

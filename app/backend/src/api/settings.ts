@@ -90,7 +90,7 @@ settingsRouter.get("/settings", (_req, res) => {
       const raw = process.env.LLM_MAX_TOKENS;
       if (raw === undefined || raw === "") return 0;
       const n = Number(raw);
-      return Number.isFinite(n) && n >= 64 ? Math.min(8192, Math.floor(n)) : 0;
+      return Number.isFinite(n) && n >= 64 ? Math.min(131072, Math.floor(n)) : 0;
     })(),
     OPENAI_API_KEY_SET: profileApiKeySet(pid, data),
     ENV_FILE: envFilePath(),
@@ -165,7 +165,7 @@ settingsRouter.post("/settings", async (req, res) => {
           delete process.env.LLM_MAX_TOKENS;
           persisted.LLM_MAX_TOKENS = undefined;
         } else {
-          const capped = Math.min(8192, Math.max(64, Math.floor(n)));
+          const capped = Math.min(131072, Math.max(64, Math.floor(n)));
           const str = String(capped);
           process.env.LLM_MAX_TOKENS = str;
           persisted.LLM_MAX_TOKENS = str;
