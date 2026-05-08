@@ -256,6 +256,39 @@ export async function buildCodebaseMapSummary(opts: {
 }
 
 /**
+ * Lightweight directory tree for embedding in agent context messages.
+ * No manifest excerpts — just the indented path tree. Much cheaper than
+ * buildCodebaseMapSummary; lets the agent skip codebase_map for orientation.
+ */
+export async function buildCompactTree(maxDepth = 3, maxLines = 200): Promise<string> {
+  const lines: string[] = [];
+  let count = 0;
+
+  async function walk(rel: string, depth: number, prefix: string): Promise<void> {
+    if (count >= maxLines) return;
+    let items: FileEntry[];
+    try {
+      items = await listFiles(rel);
+    } catch {
+      return;
+    }
+    for (const it of items) {
+      if (count >= maxLines) return;
+      if (CODEBASE_MAP_SKIP.has(it.name)) continue;
+      lines.push(`${prefix}${it.isDir ? it.name + "/" : it.name}`);
+      count++;
+      if (it.isDir && depth < maxDepth) {
+        await walk(it.path, depth + 1, prefix + "  ");
+      }
+    }
+  }
+
+  await walk(".", 0, "");
+  if (lines.length === 0) return "(empty)";
+  return lines.join("\n") + (count >= maxLines ? "\n…(tree truncated)" : "");
+}
+
+/**
  * Glob-style file search. Supports `*` (any segment chars) and `**` (any path depth).
  * Returns workspace-relative paths. Skips node_modules/.git/dist/build.
  */

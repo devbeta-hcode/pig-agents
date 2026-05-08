@@ -17,6 +17,7 @@ import {
   maxOutputTokensForMode,
 } from "../llm/prompt-mode.js";
 import { rankRelevant } from "../relevance/search.js";
+import { buildCompactTree } from "../tools/file.js";
 import { extractAllActions, parseAgentResponse, type AgentStep } from "./parser.js";
 import { sanitizeFinalOrKeep } from "./sanitizeFinal.js";
 import { executeTool, type ToolContext, type ToolOutcome } from "./executor.js";
@@ -324,6 +325,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
   const relevant = await rankRelevant(opts.task, maxFiles);
+  // Build once; embedded in every context message so agent doesn't need codebase_map for orientation.
+  const compactTree = await buildCompactTree(3, 180).catch(() => "");
 
   // History uses simple string content (images only go in the initial user message, not history)
   const history: { role: "system" | "user" | "assistant"; content: string }[] = [];
@@ -463,7 +466,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     if (promptMode === "verbose") {
       systemPrompt = SYSTEM_PROMPT + projectRulesBlock;
-      userMsg = buildContextMessage(opts.task, relevant, history);
+      userMsg = buildContextMessage(opts.task, relevant, history, compactTree);
     } else {
       let version: "minimal" | "compact";
       if (promptMode === "minimal" || promptMode === "economical") {
@@ -475,7 +478,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
       systemPrompt =
         (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) + projectRulesBlock;
-      userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier);
+      userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree);
     }
 
     const umBefore = userMsg.length;

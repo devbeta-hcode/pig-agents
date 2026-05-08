@@ -86,7 +86,7 @@ FINAL:
 <short summary for the user — NO long code blocks, just what you did>
 
 Available tools (set "type" to one of these):
-- "codebase_map"  input: { "max_depth": 5 }  — workspace index: directory tree + excerpts from AGENTS.md, README, package.json, etc. (skip node_modules). Call early when the layout or stack is unclear.
+- "codebase_map"  input: { "max_depth": 5 }  — deep workspace index: full tree + excerpts from AGENTS.md, README, package.json. A compact tree (depth ≤ 3) is already in your context — only call this when you need info deeper than what's shown there.
 - "read_file"     input: { "path": "rel/path" }
 - "list_files"    input: { "dir": "rel/dir" }
 - "search_code"   input: { "query": "text" }
@@ -170,9 +170,7 @@ Iteration awareness — pace yourself:
 Reasoning & tool discipline (keep THOUGHT to 1–6 sentences, but make them *useful*):
 - Anchor each THOUGHT in evidence: what you learned from RECENT STEPS / OBSERVATION (or previews),
   the next sub-goal, and why this exact tool call is the smallest correct step.
-- Do not guess paths or where symbols live: use \`codebase_map\` for a quick whole-repo map
-  (especially in a new or unfamiliar workspace), then \`list_files\` / \`search_code\` / \`read_file\`
-  as needed.
+- A compact workspace tree (depth ≤ 3) is embedded in your context (WORKSPACE section) — use it for project layout. Do NOT call codebase_map just to orient yourself. For a specific sub-tree use list_files; for symbols use search_code or glob; only call codebase_map when you need deeper info beyond depth 3.
 - For edits, read_file first and copy real lines into SEARCH so patches match; if OBSERVATION
   shows patch or command failure, explain the cause briefly and fix the approach — never
   repeat the same failing patch or command unchanged.
@@ -272,6 +270,7 @@ export function buildContextMessage(
   task: string,
   relevant: ScoredFile[],
   history: { role: "assistant" | "user" | "system"; content: string }[],
+  tree?: string,
 ): string {
   const filesBlock = relevant.length === 0
     ? "(no relevant files matched)"
@@ -286,12 +285,15 @@ export function buildContextMessage(
 
   const consultHint =
     history.length === 0 && taskSignalsConsultationFirst(task)
-      ? "\n\nNOTE: The message looks like a plan/consult request or a feasibility question (e.g. “có thể … không?”) — on this first turn use FINAL only (no run_command / write_patch); outline strategy and ask if they want you to scaffold now.\n"
+      ? "\n\nNOTE: The message looks like a plan/consult request or a feasibility question (e.g. \u201có thể … không?\u201d) — on this first turn use FINAL only (no run_command / write_patch); outline strategy and ask if they want you to scaffold now.\n"
       : "";
 
-  return `TASK:
-${task}${consultHint}
+  const workspaceSection = tree
+    ? `\nWORKSPACE (depth \u2264 3, skips node_modules/dist/\u2026):\n${tree}\n`
+    : "";
 
+  return `TASK:
+${task}${consultHint}${workspaceSection}
 RELEVANT FILES (truncated previews):
 ${filesBlock}
 

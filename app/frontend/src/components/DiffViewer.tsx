@@ -127,7 +127,7 @@ function DiffRow({
 
 export function DiffViewer({ diffs, onClear, onUpdate, onOpen, onOpenDiff, onRemove, hideHeader }: Props) {
   /** With no header there is no toggle — keep the file list expanded (not collapsed). */
-  const [collapsed, setCollapsed] = useState(!hideHeader);
+  const [collapsed, setCollapsed] = useState(false);
   const [busyAll, setBusyAll] = useState<null | "undo" | "keep">(null);
 
   if (diffs.length === 0) {

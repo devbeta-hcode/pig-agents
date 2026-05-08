@@ -255,39 +255,11 @@ function CreateFileOutput({
   const fullContent = String(input.content ?? "");
   const targetContent = pickCreateFileStreamBody(observation, fullContent, streamingArgPreview);
   const lang = guessLanguage(fileName);
-  const [displayed, setDisplayed] = useState("");
-  const rafRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamPreRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
-    if (rafRef.current) {
-      clearTimeout(rafRef.current);
-      rafRef.current = null;
-    }
-    if (observation) {
-      setDisplayed(fullContent);
-      return;
-    }
-    const streamTarget = pickCreateFileStreamBody(undefined, fullContent, streamingArgPreview);
-    if (!streamTarget.trim()) {
-      setDisplayed("");
-      return;
-    }
-    let pos = 0;
-    setDisplayed("");
-    function tick() {
-      pos = Math.min(pos + 4, streamTarget.length);
-      setDisplayed(streamTarget.slice(0, pos));
-      if (streamPreRef.current) streamPreRef.current.scrollTop = streamPreRef.current.scrollHeight;
-      if (pos < streamTarget.length) rafRef.current = setTimeout(tick, 16);
-    }
-    rafRef.current = setTimeout(tick, 16);
-    return () => { if (rafRef.current) clearTimeout(rafRef.current); };
-  }, [observation, fullContent, streamingArgPreview]);
-
-  useEffect(() => {
     if (streamPreRef.current) streamPreRef.current.scrollTop = streamPreRef.current.scrollHeight;
-  }, [displayed]);
+  }, [targetContent]);
 
   const showStreamShell = !observation;
 
@@ -316,15 +288,9 @@ function CreateFileOutput({
           <pre ref={streamPreRef} className="tool-command-stream tool-create-content tool-stream-pre-inner">
             <code>
               {targetContent.trim() ? (
-                <>
-                  {displayed}
-                  <span className="tool-cursor">▋</span>
-                </>
+                targetContent
               ) : (
-                <>
-                  <span className="tool-stream-placeholder">Receiving file content…</span>
-                  <span className="tool-cursor">▋</span>
-                </>
+                <span className="tool-stream-placeholder">Receiving file content…</span>
               )}
             </code>
           </pre>
@@ -417,7 +383,6 @@ function WritePatchOutput({
           <pre ref={patchPreRef} className="tool-command-stream tool-patch-stream tool-stream-pre-inner language-diff">
             <code>
               <PatchStreamHighlighted text={targetPatches} />
-              <span className="tool-cursor">▋</span>
             </code>
           </pre>
         </div>

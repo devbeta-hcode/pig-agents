@@ -88,7 +88,7 @@ THOUGHT: <summary>
 FINAL: <answer to user>
 
 TOOLS:
-- codebase_map: {"type":"codebase_map","input":{"max_depth":3}}
+- codebase_map: {"type":"codebase_map","input":{"max_depth":3}} — full tree + manifest excerpts. SKIP if WORKSPACE already in context (it is by default); only call for deeper exploration.
 - read_file: {"type":"read_file","input":{"path":"src/file.ts"}}
 - list_files: {"type":"list_files","input":{"dir":"src"}}
 - search_code: {"type":"search_code","input":{"query":"function name"}}
@@ -132,7 +132,7 @@ ACTION: {"type":"tool","input":{...}}
 OR
 FINAL: <answer>
 
-Tools: codebase_map, read_file, list_files, search_code, glob, run_command, write_patch, create_file
+Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file
 
 Example:
 User: "Read main.ts"
@@ -159,6 +159,7 @@ export function buildContextMessageCompact(
   relevant: ScoredFile[],
   history: { role: "assistant" | "user" | "system"; content: string }[],
   tier: ContextTier = 3,
+  tree?: string,
 ): string {
   const tight = isTightContextBudget();
   const tm = tierMultiplier(tier);
@@ -203,7 +204,9 @@ export function buildContextMessageCompact(
     }
   }
 
-  return `TASK: ${task}${hint}
+  const workspaceSection = tree ? `\nWORKSPACE:\n${tree}\n` : "";
+
+  return `TASK: ${task}${hint}${workspaceSection}
 
 FILES:
 ${filesBlock}

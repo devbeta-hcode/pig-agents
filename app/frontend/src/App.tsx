@@ -398,8 +398,9 @@ export default function App() {
           setActiveSessionId(s.id);
           setActiveSession(s);
         } else {
-          setChatList(r.sessions);
-          setActiveSessionId(r.sessions[0].id);
+          const sorted = r.sessions.slice().sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
+          setChatList(sorted);
+          setActiveSessionId(sorted[0].id);
         }
       } catch (err) {
         console.warn("listChats failed:", err);
@@ -502,14 +503,16 @@ export default function App() {
       if (idx === -1) return [meta, ...cur];
       const next = cur.slice();
       next[idx] = meta;
-      // Keep most-recently-updated on top.
-      next.sort((a, b) => b.updatedAt - a.updatedAt);
+      // Keep most-recently-updated on top, createdAt as stable tiebreaker.
+      next.sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
       return next;
     });
     // Save more aggressively (~120ms) after a turn finishes; debounce more
-    // (~600ms) while a turn is still streaming events.
+    // (~600ms) while a turn is still streaming events. Force-save immediately
+    // (0ms) when turn is fully done so index is fresh before any F5.
     const lastTurn = merged.turns[merged.turns.length - 1];
-    const delay = lastTurn && lastTurn.status === "running" ? 600 : 120;
+    const isRunning = lastTurn && lastTurn.status === "running";
+    const delay = isRunning ? 600 : 0;
     scheduleSave(merged, delay);
   }
 

@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-08 (timeline accordion body inset aligns with disclosure chevron)
+Last updated: 2026-05-10
 
 ---
 
@@ -127,7 +127,26 @@ The dev server URLs:
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
 
+### Last session (2026-05-08) — chat log CSS + runtime bugs
+
+- **Chat log UI redesigned to Copilot-style** (`styles.css` + `Chat.tsx`).
+  - User bubbles: removed heavy gradient, now subtle accent-tinted border + background, right-aligned; action buttons revealed on hover (icon-only, no borders).
+  - Assistant messages: replaced inline avatar with a proper header row (small gradient avatar square + "Pig Agents" label); content area padding normalised to full-width with `padding: 4px 16px`.
+  - Mode badge (Ask/Agent): accent-tinted pill with border instead of opaque background.
+  - Tool accordion rows: lighter background (`bg-2/bg-3` blend), 2px left border (was 3px), tighter gaps (3px between steps instead of 10px), no left-margin timeline gutter.
+  - Thought sections: brain icon tinted with `accent-2`, cleaner border/background matching accordion style.
+  - Log groups: rounded pill border instead of flat bottom border.
+  - `msg-actions-bottom`: opacity 0 → 1 on hover, icon-only with no border; "Restore" label shortened.
+  - `trace-reasoning-summary`: removed legacy CSS triangle pseudo-element (ChevronExpand already handles this).
+
 ### Last session (2026-05-10)
+
+- **Agent token waste fix: compact workspace tree pre-embedded in context.**
+  - `app/backend/src/tools/file.ts`: Added `buildCompactTree(maxDepth, maxLines)` — lightweight indented dir tree (no manifest excerpts), depth ≤ 3, max 200 lines, skips node_modules/dist/.git etc.
+  - `app/backend/src/agent/runner.ts`: Calls `buildCompactTree(3, 180)` once per run before the ReAct loop; result passed to both context builders.
+  - `app/backend/src/llm/prompt.ts`: `buildContextMessage` now accepts optional `tree?: string`, adds `WORKSPACE:` section above `RELEVANT FILES`. Updated `codebase_map` tool description + "tool discipline" rule to say tree is already in context.
+  - `app/backend/src/llm/prompt-compact.ts`: Same for `buildContextMessageCompact`; both compact/minimal prompts updated to say codebase_map is rarely needed.
+  - Net effect: agent skips the `codebase_map` first iteration (saves 1 full round-trip ≈ 300-800 tokens per run).
 
 - **"Select Element to Chat" inspect mode in BrowserPanel.**
   - `app/backend/src/browser/session.ts`: Added `inspectElement(x,y)` method — calls `getElementAt` then takes a cropped `page.screenshot({ clip: boundingRect })`, returns `{ element: ElementInfo, screenshot: base64png }`.

@@ -60,6 +60,8 @@ interface UIEvent extends AgentEvent {
   decision?: string;
   matched?: string;
   reason?: string;
+  /** Wall-clock ms when this event was appended client-side — used to sort after reload. */
+  ts?: number;
 }
 
 interface Props {
@@ -385,7 +387,8 @@ function thoughtCollapsedPreview(raw: string, maxChars = 100): string {
     .replace(/\r\n/g, "\n")
     .trim()
     .replace(/\n+/g, " ")
-    .replace(/\*{1,2}/g, "");
+    .replace(/\*{1,2}/g, "")
+    .replace(/`/g, "");
   if (flat.length <= maxChars) return flat;
   return `${flat.slice(0, maxChars - 1)}…`;
 }
@@ -464,6 +467,10 @@ function ActionAccordionFold({
   useEffect(() => {
     if (supersede) setFoldOpen(false);
   }, [supersede]);
+  const diskDone = diskSettledForAction(ev, allEvents);
+  useEffect(() => {
+    if (diskDone === true) setFoldOpen(false);
+  }, [diskDone]);
   const streamOrd = streamingActionOrdinal ?? 0;
   const defaultArgPreview = actionStreamingArgPreview(
     ev,
@@ -575,6 +582,35 @@ function LiveThoughtStreamFold({
   );
 }
 
+function ThoughtStepArchive({ e }: { e: UIEvent }) {
+  const [open, setOpen] = useState(false);
+  const it = Number(e.iteration) || 1;
+  const peek = thoughtCollapsedPreview(e.thought!);
+  return (
+    <details
+      className="thought-step-archive trace-reasoning assistant-thought-box thought-section"
+      open={open}
+      onToggle={(ev) => setOpen((ev.target as HTMLDetailsElement).open)}
+    >
+      <summary className="trace-reasoning-summary thought-step-archive-summary">
+        <div className="thought-step-archive-sum-inner">
+          <span className="assistant-action-fold-chev" aria-hidden>
+            <ChevronExpand expanded={open} size={15} />
+          </span>
+          <span className="thought-step-archive-sum-left">
+            <IconBrain size={14} strokeWidth={1.75} className="thought-step-archive-icon" aria-hidden />
+            <span className="thought-step-archive-title">Step {it}</span>
+          </span>
+          <span className="thought-step-archive-preview">{peek}</span>
+        </div>
+      </summary>
+      <div className="trace-md trace-thought-body trace-reasoning-body assistant-thought-content">
+        <Markdown>{e.thought || ""}</Markdown>
+      </div>
+    </details>
+  );
+}
+
 function TraceStep({
   e,
   observation,
@@ -606,22 +642,7 @@ function TraceStep({
 }) {
   if (e.type === "thought") {
     if (!e.thought?.trim()) return null;
-    const it = Number(e.iteration) || 1;
-    const peek = thoughtCollapsedPreview(e.thought!);
-    return (
-      <details className="thought-step-archive trace-reasoning assistant-thought-box thought-section">
-        <summary className="trace-reasoning-summary thought-step-archive-summary">
-          <span className="thought-step-archive-sum-left">
-            <IconBrain size={14} strokeWidth={1.75} className="thought-step-archive-icon" aria-hidden />
-            <span className="thought-step-archive-title">Step {it}</span>
-          </span>
-          <span className="thought-step-archive-preview">{peek}</span>
-        </summary>
-        <div className="trace-md trace-thought-body trace-reasoning-body assistant-thought-content">
-          <Markdown>{e.thought}</Markdown>
-        </div>
-      </details>
-    );
+    return <ThoughtStepArchive e={e} />;
   }
 
   if (e.type === "action") {
@@ -719,17 +740,25 @@ function AssistantMessage({
   const checkpointEv = events.find((e) => e.type === "checkpoint" && e.checkpoint);
   const checkpoint = checkpointEv?.checkpoint as Checkpoint | undefined;
   const policyDeniedCount = events.filter((e) => e.type === "policy_decision" && e.decision === "deny").length;
-  const traceSteps = events.filter(
-    (e) =>
-      e.type === "thought" ||
-      e.type === "action" ||
-      e.type === "observation" ||
-      e.type === "command_chunk" ||
-      (e.type === "log" &&
-        !String(e.message || "").startsWith("Parse error:") &&
+  const traceSteps = events
+    .filter(
+      (e) =>
+        e.type === "thought" ||
+        e.type === "action" ||
+        e.type === "observation" ||
+        e.type === "command_chunk" ||
+        (e.type === "log" &&
+          !String(e.message || "").startsWith("Parse error:") &&
         !isRedundantUiLog(e as UIEvent)) ||
       (e.type === "policy_decision" && (e.decision === "deny" || e.decision === "allow_always")),
-  );
+  )
+  .sort((a, b) => {
+    const ta = (a as UIEvent).ts ?? 0;
+    const tb = (b as UIEvent).ts ?? 0;
+    // Only sort when both have timestamps; otherwise preserve insertion order.
+    if (!ta || !tb) return 0;
+    return ta - tb;
+  });
   const currentIter =
     streamingIteration ??
     Math.max(1, ...traceSteps.map((e) => Number((e as UIEvent).iteration) || 0));
@@ -1100,6 +1129,10 @@ function AssistantMessage({
 
   return (
     <div className="msg msg-assistant">
+      <div className="msg-avatar-row">
+        <div className="msg-avatar" aria-hidden>A</div>
+        <span className="msg-avatar-label">Pig Agents</span>
+      </div>
       <div className="msg-content">
         {phaseBanners}
         {assistantStepListJsx}
@@ -1120,16 +1153,16 @@ function AssistantMessage({
         )}
 
         {turn.status === "stopped" && !finalText && (
-          <div className="msg-stopped"><IconSquareFill size={10} style={{ marginRight: 6 }} />Stopped by user</div>
+          <div className="msg-stopped"><IconSquareFill size={10} />Stopped by user</div>
         )}
 
         {!isStreaming && (finalText || errorText || turn.status === "stopped") && (
           <div className="msg-actions msg-actions-bottom">
             {finalText && (
-              <button onClick={onCopy} title="Copy answer"><IconCopy size={13} style={{ marginRight: 4 }} />Copy</button>
+              <button onClick={onCopy} title="Copy answer"><IconCopy size={12} />Copy</button>
             )}
             {canRegenerate && (
-              <button onClick={onRegenerate} title="Regenerate"><IconRefreshCw size={13} style={{ marginRight: 4 }} />Regenerate</button>
+              <button onClick={onRegenerate} title="Regenerate"><IconRefreshCw size={12} />Regenerate</button>
             )}
             {checkpoint && (
               <button
@@ -1137,7 +1170,7 @@ function AssistantMessage({
                 onClick={() => onRestore(checkpoint)}
                 title={`Restore the workspace to its state before this run (snapshot taken at ${new Date(checkpoint.createdAt).toLocaleTimeString()}).\nA fresh "undo my undo" checkpoint is created first, so this is reversible.`}
               >
-                <IconRotateCcw size={13} style={{ marginRight: 4 }} />Restore checkpoint
+                <IconRotateCcw size={12} />Restore
               </button>
             )}
             {policyDeniedCount > 0 && (
@@ -1298,12 +1331,13 @@ export function Chat({
     }
     if (ev.type === "done" || ev.type === "run_started") return;
 
+    const stamped: UIEvent = ev.ts ? ev : { ...ev, ts: Date.now() };
     startTransition(() => {
       patchSession((s) => {
         const turns = s.turns.slice();
         const idx = turns.findIndex((x) => x.id === turnId);
         if (idx === -1) return s;
-        turns[idx] = { ...turns[idx], events: [...turns[idx].events, ev] };
+        turns[idx] = { ...turns[idx], events: [...turns[idx].events, stamped] };
         return { ...s, turns, updatedAt: Date.now() };
       });
       if (ev.type === "observation" && ev.diffs && ev.diffs.length) onDiffs(ev.diffs);
@@ -1572,6 +1606,20 @@ export function Chat({
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [session.turns, session.turns.map((t) => t.events.length).join(","), thinking?.partial]);
+
+  // ResizeObserver fallback: when accordion content expands (e.g. create_file stream growing),
+  // scrollHeight increases without a React state change — keep following if still in tail mode.
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    // Also observe direct children so inner height changes are caught
+    for (const child of Array.from(el.children)) ro.observe(child);
+    return () => ro.disconnect();
+  }, []);
 
   const onWheelLog = useCallback((e: WheelEvent<HTMLDivElement>) => {
     /** Decisively exit tail-follow mode on deliberate scroll-up (effects may run before scroll position updates). */
