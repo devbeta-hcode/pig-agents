@@ -164,7 +164,7 @@ export function SettingsModal({ onClose }: Props) {
   const [compat, setCompat] = useState<OllamaProbe>({ state: "idle", models: [] });
   const compatSeqRef = useRef(0);
   // Command-policy "YOLO" toggle — kept *separate* from the LLM settings
-  // payload because policy lives in <workspace>/.build-agents/policy.json
+  // payload because policy lives in <workspace>/.pig-agents/policy.json
   // (per-workspace) rather than in the global app/.env file. We persist on
   // every flick rather than waiting for the Save button so behaviour matches
   // what the user clicked.
@@ -574,13 +574,13 @@ export function SettingsModal({ onClose }: Props) {
           <input
             type="number"
             min="1"
-            max="100"
+            max="200"
             value={s.MAX_CONTEXT_FILES}
             onChange={(e) => field("MAX_CONTEXT_FILES", Number(e.target.value))}
           />
           <div className="hint">
             Top-N files (ranked by relevance to the prompt) auto-attached to the model's context before
-            each run. Higher = more code visible to the agent, but more tokens per turn. Defaults to <code>5</code>.
+            each run. Higher = more code visible to the agent, but more tokens per turn. Recommended: <code>10–20</code>.
           </div>
         </div>
 
@@ -589,13 +589,13 @@ export function SettingsModal({ onClose }: Props) {
           <input
             type="number"
             min="1"
-            max="100"
+            max="1000"
             value={s.MAX_ITERATIONS}
             onChange={(e) => field("MAX_ITERATIONS", Number(e.target.value))}
           />
           <div className="hint">
-            Hard cap on the ReAct loop (THOUGHT → ACTION steps). The agent stops here even if it
-            hasn't finished — bump to <code>30-50</code> for big multi-file projects. Defaults to <code>20</code>.
+            Hard cap on the ReAct loop (THOUGHT → ACTION steps). Use <code>30–100</code> for complex multi-file projects,
+            <code>200+</code> for large refactors. Defaults to <code>50</code>.
           </div>
         </div>
 
@@ -604,7 +604,7 @@ export function SettingsModal({ onClose }: Props) {
           <input
             type="number"
             min={64}
-            max={8192}
+            max={131072}
             placeholder="Auto"
             value={s.LLM_MAX_TOKENS && s.LLM_MAX_TOKENS > 0 ? s.LLM_MAX_TOKENS : ""}
             onChange={(e) => {
@@ -613,8 +613,7 @@ export function SettingsModal({ onClose }: Props) {
             }}
           />
           <div className="hint">
-            Optional hard cap on <code>max_tokens</code> per LLM call (helps low TPM limits e.g. Groq). Leave empty for
-            defaults derived from Prompt mode (ultra-frugal uses fewer). Typical override: <code>512</code>.
+            Per-call output budget (<code>max_tokens</code>). Leave empty for auto (mode-derived). Recommended: <code>4096</code>–<code>16384</code> for complex coding tasks. Lower for slow TPM providers like Groq (<code>512</code>).
           </div>
         </div>
 
@@ -660,7 +659,7 @@ export function SettingsModal({ onClose }: Props) {
           When <strong>ON</strong>, the agent runs every command without asking — except those on the
           built-in deny-list (<code>rm -rf /</code>, <code>sudo</code>, <code>git push --force</code>,
           <code>npm publish</code>, fork bombs, etc.) which are <em>always</em> blocked. Persisted in
-          <code>.build-agents/policy.json</code> per workspace.
+          <code>.pig-agents/policy.json</code> per workspace.
         </div>
       </div>
     </Modal>

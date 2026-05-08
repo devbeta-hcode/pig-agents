@@ -134,7 +134,7 @@ export function EditorWelcome({
             <div className="ew-brand-text">
               <div className="ew-title">Pig Agents</div>
               <div className="ew-subtitle">
-                A Cursor-style coding workspace, powered by your own agents.
+                Your AI coding workspace, powered by your own agents.
               </div>
             </div>
           </div>

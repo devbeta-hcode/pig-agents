@@ -1,8 +1,8 @@
-import { listFiles, readFile, searchCode, buildCodebaseMapSummary } from "../tools/file.js";
+import { listFiles, readFile, writeFile, searchCode, buildCodebaseMapSummary, globFiles } from "../tools/file.js";
 import { runSmartCommand } from "../tools/smartCommand.js";
 import { applyPatches, type PatchResult } from "../tools/patch.js";
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
-import { recordAgentCommand } from "./commandLog.js";
+import { startAgentCommand } from "./commandLog.js";
 import { getWorkspace } from "../utils/workspace.js";
 import { decide as policyDecide, trust as policyTrust } from "../utils/policy.js";
 import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approvals.js";
@@ -89,7 +89,7 @@ export async function executeTool(
               `run_command BLOCKED by policy.\n` +
               `Command: ${requestedCmd}\n` +
               `Matched deny pattern: \`${decision.matched}\`\n\n` +
-              `If you genuinely need this, edit .build-agents/policy.json or ask the user to ` +
+              `If you genuinely need this, edit .pig-agents/policy.json or ask the user to ` +
               `whitelist a safer pattern. Do NOT try to bypass with quoting tricks.`,
           };
         }
@@ -143,6 +143,9 @@ export async function executeTool(
 
         const startedAt = Date.now();
         const iter = ctx.iteration ?? 0;
+        // Open a live terminal slot before the command starts so the UI can
+        // display streaming output in the Terminals panel in real time.
+        const cmdHandle = startAgentCommand(cmd, getWorkspace());
         let qOut = "";
         let qErr = "";
         let streamFlush: ReturnType<typeof setTimeout> | undefined;
@@ -150,10 +153,12 @@ export async function executeTool(
           streamFlush = undefined;
           if (qOut) {
             ctx.emit?.({ type: "command_chunk", iteration: iter, stream: "stdout", text: qOut });
+            cmdHandle.appendChunk("stdout", qOut);
             qOut = "";
           }
           if (qErr) {
             ctx.emit?.({ type: "command_chunk", iteration: iter, stream: "stderr", text: qErr });
+            cmdHandle.appendChunk("stderr", qErr);
             qErr = "";
           }
         };
@@ -178,8 +183,8 @@ export async function executeTool(
         }
         const finishedAt = Date.now();
         
-        // Record the command run for AGENT RUNS sidebar
-        recordAgentCommand({
+        // Complete the live terminal slot and push to the finished ring.
+        cmdHandle.complete({
           cmd: r.cmd,
           cwd: getWorkspace(),
           startedAt,
@@ -262,6 +267,23 @@ export async function executeTool(
           summary: `write_patch results:\n${lines.join("\n")}${valSummary}`,
           data: results,
           diffs: results.filter((r) => r.applied).map((r) => r.diff),
+        };
+      }
+      case "create_file": {
+        const p = String(input.path || "");
+        const content = String(input.content ?? "");
+        if (!p) return { ok: false, summary: "create_file: missing 'path'" };
+        await writeFile(p, content);
+        return { ok: true, summary: `Created ${p} (${content.length} chars)` };
+      }
+      case "glob": {
+        const pattern = String(input.pattern || "");
+        if (!pattern) return { ok: false, summary: "glob: missing 'pattern'" };
+        const matches = await globFiles(pattern);
+        return {
+          ok: true,
+          summary: `glob "${pattern}" → ${matches.length} matches:\n${matches.slice(0, 200).join("\n")}`,
+          data: matches,
         };
       }
       default:

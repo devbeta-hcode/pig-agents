@@ -2,7 +2,7 @@
 // Used by the editor welcome screen to offer one-click reopen of the
 // last few files the user touched in the current workspace.
 
-const KEY_PREFIX = "build-agents.recent-files.v1.";
+const KEY_PREFIX = "pig-agents.recent-files.v1.";
 const MAX_ENTRIES = 12;
 
 export interface RecentFile {

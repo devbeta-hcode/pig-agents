@@ -1,6 +1,6 @@
 # 🚀 BUILD_AGENT.md
 
-## Practical Advanced AI Coding Agent + Web UI (Cursor-lite)
+## Practical Advanced AI Coding Agent + Web UI
 
 ---
 

@@ -9,7 +9,7 @@ All chats live under the user's home directory, partitioned by workspace
 hash so different projects keep their histories separate:
 
 ```text
-~/.build-agents/chats/
+~/.pig-agents/chats/
 └── <workspaceHash>/             ← sha256(workspace abs path) truncated
     ├── index.json               ← array of SessionMeta (cheap to read)
     └── <sessionId>.json         ← full ChatSession (turns + events)

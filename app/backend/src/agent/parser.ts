@@ -1,5 +1,6 @@
 export type AgentStep =
   | { kind: "action"; thought: string; type: string; input: Record<string, unknown> }
+  | { kind: "multi_action"; thought: string; actions: Array<{ type: string; input: Record<string, unknown> }> }
   | { kind: "final"; thought: string; result: string }
   | { kind: "error"; raw: string; error: string };
 
@@ -193,6 +194,50 @@ function looksLikeCompleteAnswer(text: string): boolean {
   return false;
 }
 
+/**
+ * Extracts ALL complete `ACTION: {...}` blocks from a text using brace-depth
+ * tracking. Used both by `parseAgentResponse` (post-stream) and by the runner
+ * for streaming early-action detection.
+ */
+export function extractAllActions(
+  text: string,
+): Array<{ type: string; input: Record<string, unknown> }> {
+  const actions: Array<{ type: string; input: Record<string, unknown> }> = [];
+  const markerRe = /(?:^|\n)ACTION:\s*/gi;
+  let m: RegExpExecArray | null;
+  while ((m = markerRe.exec(text)) !== null) {
+    const afterMarker = text.slice(m.index + m[0].length).trimStart();
+    // Strip optional markdown fence
+    const stripped = /^```(?:json)?\s*\n?/.test(afterMarker)
+      ? afterMarker.replace(/^```(?:json)?\s*\n?/, "")
+      : afterMarker;
+    const jsonStart = stripped.indexOf("{");
+    if (jsonStart === -1) continue;
+    const frag = stripped.slice(jsonStart);
+    let depth = 0, inStr = false, esc = false;
+    for (let i = 0; i < frag.length; i++) {
+      const c = frag[i];
+      if (esc) { esc = false; continue; }
+      if (c === "\\" && inStr) { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === "{") depth++;
+      if (c === "}") {
+        depth--;
+        if (depth === 0) {
+          const json = tryParseJson(frag.slice(0, i + 1));
+          if (json && typeof json.type === "string") {
+            const step = parsedJsonToAction(json, "", "");
+            if (step.kind === "action") actions.push({ type: step.type, input: step.input });
+          }
+          break;
+        }
+      }
+    }
+  }
+  return actions;
+}
+
 export function parseAgentResponse(raw: string): AgentStep {
   const text = raw.replace(/\r\n/g, "\n").trim();
   const thought = extractBlock(text, "THOUGHT") ?? "";
@@ -203,16 +248,16 @@ export function parseAgentResponse(raw: string): AgentStep {
     return { kind: "final", thought, result: final };
   }
 
-  // 2. Try strict ACTION tag
-  const action = extractBlock(text, "ACTION");
-  if (action) {
-    const json = tryParseJson(stripOptionalMarkdownFence(action));
-    if (json && typeof json.type === "string") {
-      return parsedJsonToAction(json, thought, text);
-    }
+  // 2. Extract all ACTION blocks — supports parallel multi-action in one response.
+  const allActions = extractAllActions(text);
+  if (allActions.length > 1) {
+    return { kind: "multi_action", thought, actions: allActions };
+  }
+  if (allActions.length === 1) {
+    return { kind: "action", thought, type: allActions[0].type, input: allActions[0].input };
   }
 
-  // 3. JSON in ```json``` blocks or anywhere in the response
+  // 3. JSON in ```json``` blocks or anywhere in the response (fallback for non-ReAct format)
   for (const seg of fencedJsonSegments(text)) {
     const json = tryParseJson(seg);
     if (json && typeof json.type === "string") {

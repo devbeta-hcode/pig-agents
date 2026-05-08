@@ -299,15 +299,26 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
     return content;
   }
 
-  // Streaming. Two wire formats:
-  //   - OpenAI SSE:  `data: {…}\n` per chunk, terminated by `data: [DONE]`
-  //   - Ollama NDJSON: one JSON object per line, with `done: true` on the last
+  // Streaming path — delegate to shared SSE/NDJSON decoder.
+  let full = "";
+  for await (const delta of _sseStream(res, ollama)) {
+    full += delta;
+    try { opts.onToken?.(delta); } catch { /* noop */ }
+  }
+  const content = full.trim();
+  if (!content) throw new Error("LLM returned empty content");
+  return content;
+}
+
+/**
+ * Decodes an HTTP streaming response (OpenAI SSE or Ollama NDJSON) into
+ * individual token-delta strings. Shared by `executeChat` and `chatStream`.
+ */
+async function* _sseStream(res: Response, ollama: boolean): AsyncGenerator<string, void, void> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error("LLM stream returned no body");
   const decoder = new TextDecoder();
   let buf = "";
-  let full = "";
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -317,7 +328,6 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
       const line = buf.slice(0, idx).trim();
       buf = buf.slice(idx + 1);
       if (!line) continue;
-
       let payload: string;
       if (ollama) {
         payload = line;
@@ -326,26 +336,98 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
         payload = line.slice(5).trim();
         if (payload === "[DONE]") { buf = ""; break; }
       }
-
       try {
         const obj = JSON.parse(payload) as {
-          // OpenAI shape
           choices?: { delta?: { content?: string }; message?: { content?: string } }[];
-          // Ollama shape
           message?: { content?: string };
           done?: boolean;
         };
         const delta = ollama
           ? (obj.message?.content ?? "")
           : (obj.choices?.[0]?.delta?.content ?? obj.choices?.[0]?.message?.content ?? "");
-        if (delta) {
-          full += delta;
-          try { opts.onToken?.(delta); } catch { /* noop */ }
-        }
+        if (delta) yield delta;
       } catch { /* skip malformed chunk */ }
     }
   }
-  const content = full.trim();
-  if (!content) throw new Error("LLM returned empty content");
-  return content;
+}
+
+/**
+ * Like `chat()` but yields each token delta as an async generator so the
+ * caller can process tokens incrementally — e.g. to fire a tool as soon as
+ * its ACTION JSON is complete without waiting for the full response.
+ *
+ * 429 retries: attempted only when no tokens have been yielded yet (clean
+ * slate). Mid-stream 429s are re-thrown because the partial response cannot
+ * be cleanly replayed.
+ */
+export async function* chatStream(
+  messages: ChatMessage[],
+  opts: LLMOptions = {},
+): AsyncGenerator<string, void, void> {
+  let attempt = 0;
+  let anyYielded = false;
+  for (;;) {
+    try {
+      const url = endpoint();
+      const modelName = model();
+      const ollama = isOllamaNative();
+      logConfigOnce(url, modelName);
+      const skipTemp = !ollama && anthropicOpenAiOmitsTemperature();
+      const body = ollama
+        ? { model: modelName, messages, stream: true,
+            options: { temperature: opts.temperature ?? 0.2, num_predict: opts.maxTokens ?? 1500 } }
+        : skipTemp
+          ? { model: modelName, messages, max_tokens: opts.maxTokens ?? 1500, stream: true }
+          : { model: modelName, messages, temperature: opts.temperature ?? 0.2,
+              max_tokens: opts.maxTokens ?? 1500, stream: true };
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...authHeader() },
+          body: JSON.stringify(body),
+          signal: opts.signal,
+        });
+      } catch (err) {
+        if (opts.signal?.aborted) throw err;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let code = "", detail = ""; let cur: any = err;
+        for (let i = 0; cur && i < 5; i++) {
+          if (typeof cur.code === "string" && /^E[A-Z]+$/.test(cur.code)) { code = cur.code; break; }
+          if (!detail && typeof cur.message === "string") detail = cur.message;
+          cur = cur.cause;
+        }
+        const hint = code === "ECONNREFUSED"
+          ? `Cannot connect to LLM at ${url}. Is your local model server running? Open ⚙ Settings → Base URL.`
+          : code === "ENOTFOUND" || code === "EAI_AGAIN"
+          ? `Cannot resolve LLM host for ${url}. Check Settings → Base URL.`
+          : `Network error talking to LLM at ${url}: ${detail || (err as Error).message}`;
+        throw new Error(hint);
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        let suffix = "";
+        if (res.status === 429) {
+          const ra = res.headers.get("retry-after")?.trim();
+          if (ra && /^\d+$/.test(ra)) suffix += ` [Retry-After: ${ra}]`;
+        }
+        throw new Error(`LLM ${url} returned ${res.status}: ${text.slice(0, 1200)}${suffix}`);
+      }
+      for await (const delta of _sseStream(res, ollama)) {
+        anyYielded = true;
+        yield delta;
+      }
+      return;
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      if (is429ChatError(e) && !anyYielded && attempt < MAX_429_ATTEMPTS - 1) {
+        attempt++;
+        const waitMs = backoffMsFrom429Error(e);
+        logger.warn(`LLM rate limited (429); waiting ~${Math.ceil(waitMs / 1000)}s before chatStream retry (${attempt + 1}/${MAX_429_ATTEMPTS})`);
+        await sleepWithSignal(waitMs, opts.signal);
+        continue;
+      }
+      throw e;
+    }
+  }
 }

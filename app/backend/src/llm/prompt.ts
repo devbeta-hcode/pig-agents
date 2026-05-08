@@ -90,8 +90,15 @@ Available tools (set "type" to one of these):
 - "read_file"     input: { "path": "rel/path" }
 - "list_files"    input: { "dir": "rel/dir" }
 - "search_code"   input: { "query": "text" }
+- "glob"          input: { "pattern": "**/*.ts" }  — find files matching a glob pattern (** = any depth, * = within segment).
 - "run_command"   input: { "cmd": "shell command" }  — Executes shell commands. Long-running processes (servers, watchers, builds) auto-detect and return immediately when ready. See "Execution Intelligence" below.
 - "write_patch"   input: { "patches": "FILE: path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND\\n..." }
+- "create_file"   input: { "path": "rel/path", "content": "full file content" }  — create or overwrite a file directly (simpler than write_patch for new files).
+
+**Parallel execution**: You may emit MULTIPLE ACTION blocks in a single response. All are dispatched concurrently. Only do this for genuinely independent operations (e.g. reading several unrelated files, creating multiple files that don't depend on each other). Format:
+THOUGHT: I need to read A and B to understand the issue.
+ACTION: {"type":"read_file","input":{"path":"src/a.ts"}}
+ACTION: {"type":"read_file","input":{"path":"src/b.ts"}}
 
 Collaboration & consent — read BEFORE “you must act”
 - If the user is asking a **"how-to" or explanatory question** (e.g. "làm sao để run code",

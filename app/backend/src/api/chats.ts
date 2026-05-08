@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 export const chatsRouter = Router();
 
 // Storage layout
-//   ~/.build-agents/chats/<wsHash>/
+//   ~/.pig-agents/chats/<wsHash>/
 //     index.json         lightweight metadata (id/title/turnCount/...)
 //     <sessionId>.json   full session payload (turns + events)
 //
@@ -48,7 +48,7 @@ interface SessionMeta {
 }
 
 function rootDir(): string {
-  return path.join(os.homedir(), ".build-agents", "chats");
+  return path.join(os.homedir(), ".pig-agents", "chats");
 }
 
 function workspaceHash(ws: string): string {
@@ -223,14 +223,14 @@ chatsRouter.get("/chats/export", async (req, res) => {
     } catch { /* skip broken */ }
   }
   const bundle = {
-    kind: "build-agents.chats.v1",
+    kind: "pig-agents.chats.v1",
     workspace: ws,
     exportedAt: Date.now(),
     sessions,
   };
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="build-agents-chats-${workspaceHash(ws)}.json"`,
+    `attachment; filename="pig-agents-chats-${workspaceHash(ws)}.json"`,
   );
   res.json(bundle);
 });

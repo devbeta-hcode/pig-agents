@@ -12,7 +12,7 @@
 //
 // "Allow always" decisions get appended to the workspace's allow-list so the
 // user only sees each command once. The whole policy lives at
-//   <workspace>/.build-agents/policy.json
+//   <workspace>/.pig-agents/policy.json
 // (same directory as checkpoint metadata, also covered by .git/info/exclude).
 //
 // Pattern syntax is intentionally tiny: `*` is a greedy wildcard, everything
@@ -26,7 +26,7 @@ import path from "node:path";
 import { getWorkspace } from "./workspace.js";
 import { logger } from "./logger.js";
 
-const POLICY_DIR = ".build-agents";
+const POLICY_DIR = ".pig-agents";
 const POLICY_FILE = "policy.json";
 
 export type Decision = "allow" | "deny" | "ask";

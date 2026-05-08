@@ -92,8 +92,12 @@ TOOLS:
 - read_file: {"type":"read_file","input":{"path":"src/file.ts"}}
 - list_files: {"type":"list_files","input":{"dir":"src"}}
 - search_code: {"type":"search_code","input":{"query":"function name"}}
+- glob: {"type":"glob","input":{"pattern":"**/*.ts"}}
 - run_command: {"type":"run_command","input":{"cmd":"npm test"}}
 - write_patch: {"type":"write_patch","input":{"patches":"FILE:path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND"}}
+- create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}}
+
+Parallel: emit multiple ACTION lines for independent ops (e.g. reading several files at once).
 
 EXAMPLES:
 
@@ -128,7 +132,7 @@ ACTION: {"type":"tool","input":{...}}
 OR
 FINAL: <answer>
 
-Tools: codebase_map, read_file, list_files, search_code, run_command, write_patch
+Tools: codebase_map, read_file, list_files, search_code, glob, run_command, write_patch, create_file
 
 Example:
 User: "Read main.ts"

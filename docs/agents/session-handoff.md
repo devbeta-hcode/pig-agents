@@ -6,13 +6,13 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-04-20 (agent SSE / UI responsiveness)
+Last updated: 2026-05-08 (streaming action execution + parallel multi-tool)
 
 ---
 
 ## TL;DR for the new session
 
-The user is building **Pig Agents — Cursor-lite** (see
+The user is building **Pig Agents** (see
 [`../../README.md`](../../README.md)). They speak Vietnamese; mirror that in
 chat replies, but keep code/comments/docs in English.
 
@@ -39,7 +39,7 @@ session (2026-04-19)**.
   dropdown, **file mention chips with individual ✕**, **drag files into
   chat**, code-block **Apply** button, streaming agent thinking, regenerate /
   copy / stop, scroll-to-bottom button.
-- Cursor-style chat composer (header w/ file chips, main textarea, footer
+- Chat composer (header w/ file chips, main textarea, footer
   w/ mode + model + actions).
 - DiffViewer in the chat panel: header with **Undo All / Keep All / Review**;
   click a row → side-by-side `DiffEditorView` opens as a tab.
@@ -127,6 +127,68 @@ The dev server URLs:
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
 
+### Last session (2026-05-08)
+
+- **Stream-execute: fire tools mid-stream.** The agent loop no longer buffers
+  the full LLM response before acting. A new `chatStream` async generator in
+  `llm/client.ts` yields token deltas; `runner.ts` accumulates them and calls
+  `scanFirstCompleteAction(buf)` after each token. As soon as the ACTION JSON's
+  brace depth closes, `executeTool()` is called immediately in a background
+  Promise while the LLM finishes generating the rest of the response. For write-
+  type tools (`write_patch`, `create_file`) the result is awaited synchronously
+  right after streaming ends so `didWrite`/`writeCount` are correct when the
+  guardrails run. Other tools' results are awaited just before the observation
+  step. Files: `llm/client.ts` (`_sseStream` extracted, `chatStream` added),
+  `agent/runner.ts` (iteration loop rewritten).
+
+- **Parallel multi-tool execution.** A single LLM response can now contain
+  multiple `ACTION:` blocks; all are dispatched concurrently via `Promise.all`.
+  `parser.ts` returns `{ kind: "multi_action", actions: [...] }` when 2+ valid
+  action blocks are found. The runner builds the combined OBSERVATION as
+  `[tool1]: result\n\n[tool2]: result`. Prompts updated to document the syntax.
+  Early-fired promises are reused (not re-executed) in the parallel map.
+  Files: `agent/parser.ts` (`extractAllActions`, `multi_action` AgentStep
+  variant), `agent/runner.ts`, `llm/prompt.ts`, `llm/prompt-compact.ts`.
+
+### Last session (2026-04-21)
+
+- **Live agent terminal streaming.** Every `run_command` agent tool call now
+  streams output in real-time to the Terminals panel:
+  - `commandLog.ts`: Added `startAgentCommand()` returning a `PendingCommandHandle`
+    with `appendChunk(stream, text)` and `complete(result)`; emits `run_start`
+    and `run_chunk` EventEmitter events.
+  - `executor.ts`: Uses `startAgentCommand()` + `appendChunk()` for live streaming
+    during `run_command`; also dispatches existing `command_chunk` SSE in parallel.
+  - `routes.ts`: `/api/agent/commands/stream` SSE now forwards `run_start` and
+    `run_chunk` events. `/api/agent/run` SSE gets a 20-second keepalive comment
+    to prevent gateway/proxy timeouts.
+  - `api.ts`: `streamAgentCommands()` accepts new `onRunStart` and `onRunChunk`
+    callbacks for live event subscription.
+  - `Terminals.tsx`: New `LiveAgentTab` union member in `TerminalTab`; `liveRuns`
+    state tracks in-flight commands; sidebar shows `⚡` live row above finished
+    runs with combined count; pane renders new `LiveTerminalView` component (auto-
+    scrolling `<pre>` with "running…" indicator) while command is in progress.
+    On completion, run migrates from `liveRuns` to `agents`.
+
+- **New agent tools: `create_file` + `glob`.**
+  - `tools/file.ts`: Added `globFiles(pattern, maxResults?)` — converts glob
+    to regex, walks workspace tree, returns workspace-relative paths.
+  - `executor.ts`: Added `create_file` (`{ path, content }`) and `glob`
+    (`{ pattern }`) tool dispatch cases.
+  - `llm/prompt.ts` + `llm/prompt-compact.ts`: Both now document the new tools
+    in the TOOLS section so the agent knows to use them.
+
+- **Increased token limits and iteration defaults.**
+  - `llm/prompt-mode.ts`: Raised per-mode token budgets (minimal: 2048,
+    economical: 4096, balanced: 8192, detailed/verbose: 16384). Env cap raised
+    from 8192 to 131072.
+  - `runner.ts`: Default `MAX_ITERATIONS` fallback raised from 20 → 50.
+  - `api/settings.ts`: Same default bumped 20 → 50.
+  - `runner.ts`: LLM call timeout raised from 3 min → 10 min (600 000 ms).
+  - `SettingsModal.tsx`: Fixed `max` attributes on inputs (iterations: 1000,
+    tokens: 131072) that were silently capping values at the old browser-enforced
+    100 / 8192 limits.
+
 ### Last session (2026-04-20)
 
 - **Agent stream: avoid freezing UI + backend.** Backend: defer session SSE
@@ -179,7 +241,7 @@ The dev server URLs:
   the frontend shell (`App.tsx` titlebar + status bar), welcome screen
   (`EditorWelcome.tsx`), browser title (`app/frontend/index.html`), and
   top-level docs (`README.md`, `AGENTS.md`, this handoff) so the product is
-  now consistently presented as **Pig Agents — Cursor-lite**. Kept internal
+  now consistently presented as **Pig Agents**. Kept internal
   package names, repo folder names, and storage keys such as `build-agents.*`
   unchanged to avoid unnecessary breakage.
 
@@ -227,7 +289,7 @@ The dev server URLs:
   `command.ts` and `smartCommand.ts` to remove terminal color codes from
   output. Also set `NO_COLOR=1` and `FORCE_COLOR=0` env vars when spawning
   commands. This prevents garbled Unicode in AGENT RUNS log and chat traces.
-- **Modern ToolOutput UI (Copilot/Cursor style).** Created new
+- **Modern ToolOutput UI.** Created new
   `ToolOutput.tsx` component that renders agent tool calls in a clean,
   visually appealing format instead of raw JSON/text:
   - Each tool type has custom rendering: icons, colored badges, collapsible
@@ -378,8 +440,7 @@ The dev server URLs:
     from `app/frontend/`.
 - **Editor welcome screen.** The empty editor used to render a one-line
   "Open a file from the Explorer or Search to edit it." placeholder which
-  the user (rightly) called "phèn". Replaced with a proper VSCode/Cursor-
-  style welcome page:
+  the user (rightly) called "phèn". Replaced with a proper IDE-style welcome page:
   - `app/frontend/src/components/EditorWelcome.tsx` (new) — renders the
     brand mark (inline SVG gradient "B" + pulse line, no asset file),
     "Pig Agents" + tagline, a workspace pill (folder icon + name + full

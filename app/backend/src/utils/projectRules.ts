@@ -1,6 +1,7 @@
 /**
- * Per-workspace instructions for Pig Agents — similar idea to Cursor's
- * `.cursor/rules/**`, stored under `.pig/rules/**` with optional Cursor fallback.
+ * Per-workspace instructions for Pig Agents.
+ * Rules are stored under `.pig/rules/**` with optional `.cursor/rules` fallback
+ * (so existing Cursor rule files can be reused without copying).
  */
 
 import fs from "node:fs";

@@ -84,7 +84,7 @@ settingsRouter.get("/settings", (_req, res) => {
     MODEL: slot.model,
     PROFILES: merged,
     MAX_CONTEXT_FILES: Number(process.env.MAX_CONTEXT_FILES || 5),
-    MAX_ITERATIONS: Number(process.env.MAX_ITERATIONS || 20),
+    MAX_ITERATIONS: Number(process.env.MAX_ITERATIONS || 50),
     PROMPT_MODE: normalizePromptMode(process.env.PROMPT_MODE || "balanced"),
     LLM_MAX_TOKENS: (() => {
       const raw = process.env.LLM_MAX_TOKENS;

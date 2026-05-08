@@ -8,7 +8,7 @@
 
 ## 1. What this project is
 
-**Pig Agents — Cursor-lite.** A real, runnable IDE-like web app that pairs:
+**Pig Agents.** A real, runnable IDE-like web app that pairs:
 
 - a **thin React UI** (file tree, Monaco editor, xterm terminal, chat panel,
   diff viewer); and
@@ -99,7 +99,7 @@ These are user-stated preferences. Do **not** regress them.
    `localStorage` under `build-agents.ws.confirmed.v1`. Do not auto-load any
    workspace before the user confirms one. See `App.tsx`.
 2. **Chat history lives on the backend**, not in `localStorage`. Storage:
-   `~/.build-agents/chats/<workspaceHash>/{index.json, <sessionId>.json}`.
+   `~/.pig-agents/chats/<workspaceHash>/{index.json, <sessionId>.json}`.
    Use atomic writes. Debounce client-side saves.
    See [`docs/agents/chat-history.md`](docs/agents/chat-history.md).
 3. **Agent shell runs are first-class.** Every `run_command` invocation is

@@ -93,7 +93,7 @@ non-obvious intent, trade-offs, gotchas, or platform constraints.
   **`.cursor/rules/`** (any depth) are also loaded if present (reuse Cursor rules without
   copying). The backend prepends these to the system message as “PROJECT
   RULES”. Total size is capped by **`PROJECT_RULES_MAX_CHARS`** (default
-  `16000`). Bookkeeping under **`.build-agents/`** (policy, checkpoints) is
+  `16000`). Bookkeeping under **`.pig-agents/`** (policy, checkpoints) is
   separate from rules.
 
 - **Workspace-relative inside the app boundary.** Convert with `toRel()`
@@ -102,7 +102,7 @@ non-obvious intent, trade-offs, gotchas, or platform constraints.
 - **Posix separators** in workspace-relative paths (`a/b/c.ts`), even on
   Windows. The frontend assumes `/`.
 - **Never** read or write outside the workspace from a tool. If a feature
-  needs that (e.g. chat storage in `~/.build-agents/`), it's a backend
+  needs that (e.g. chat storage in `~/.pig-agents/`), it's a backend
   concern that bypasses `safeJoin` deliberately and is documented.
 
 ## Logging

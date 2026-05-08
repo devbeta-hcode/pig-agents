@@ -1,6 +1,6 @@
 /**
- * Checkpoint **metadata** in `<workspace>/.build-agents/checkpoints.json` only.
- * Git refs and `~/.build-agents/backups` for real snapshots are unchanged in
+ * Checkpoint **metadata** in `<workspace>/.pig-agents/checkpoints.json` only.
+ * Git refs and `~/.pig-agents/backups` for real snapshots are unchanged in
  * `checkpoints.ts`. (Any old `checkpoints.db` from earlier versions is ignored.)
  */
 
@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Checkpoint } from "./checkpoints.js";
 
-export const META_DIR = ".build-agents";
+export const META_DIR = ".pig-agents";
 export const LEGACY_META_FILE = "checkpoints.json";
 
 function metaPath(ws: string): string {
@@ -76,7 +76,7 @@ export function trimRing(ws: string, maxKeep: number): Checkpoint[] {
 
 /**
  * Append recovered checkpoint rows without overwriting existing ids (used when
- * rebuilding `.build-agents/checkpoints.json` from git refs or file backups).
+ * rebuilding `.pig-agents/checkpoints.json` from git refs or file backups).
  */
 export function mergeRecoveredCheckpoints(ws: string, recovered: Checkpoint[]): number {
   if (recovered.length === 0) return 0;

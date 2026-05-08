@@ -70,7 +70,7 @@ toggling the Terminals panel.
 
 1. Confirm the backend wrote files:
    ```bash
-   ls -la ~/.build-agents/chats/
+   ls -la ~/.pig-agents/chats/
    ```
 2. Check browser DevTools → Network → `/api/chats?workspace=...` returns
    200 with a populated `sessions` array.
@@ -154,7 +154,7 @@ Some tiers cap **tokens per minute (TPM)** per request.
 3. Reduce **`MAX_CONTEXT_FILES`**, start a **new chat** for very long threads,
    or upgrade the provider tier.
 
-## Match Cursor-like agent quality (defaults vs tuning)
+## Tuning agent quality (defaults vs options)
 
 With **no** `LLM_CONTEXT_BUDGET=tight` and **no** `LLM_MAX_*` caps: the runner uses
 full compact context (deep file previews, **up to 8** recent turns per request,
@@ -174,10 +174,10 @@ full system prompt except one-line replies like “continue”).
 Rules live in **`<opened-folder>/.pig/rules/**/*.md`** (optional **`.cursor/rules`**
 reuse). They are appended to the system prompt as **PROJECT RULES**. If logs say
 rules were truncated, raise **`PROJECT_RULES_MAX_CHARS`** in `app/.env`
-(default `16000`). `.build-agents/` only stores policy/checkpoints — not rule text.
+(default `16000`). `.pig-agents/` only stores policy/checkpoints — not rule text.
 
 ## Checkpoints metadata
 
 Checkpoint **metadata** (labels, ids, linkage to git refs / file backups) lives in
-**`<workspace>/.build-agents/checkpoints.json`**. Older versions may have left a
+**`<workspace>/.pig-agents/checkpoints.json`**. Older versions may have left a
 **`checkpoints.db`** file there — it is **unused** now; safe to delete if you see it.

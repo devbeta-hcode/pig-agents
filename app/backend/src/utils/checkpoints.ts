@@ -7,7 +7,7 @@
 // 1. GIT-BASED (when workspace is a git repo): Uses git internals for
 //    efficient snapshots without touching the user's index.
 // 2. FILE-BASED (when workspace has no git): Copies files directly to
-//    ~/.build-agents/backups/<workspace-hash>/<checkpoint-id>/
+//    ~/.pig-agents/backups/<workspace-hash>/<checkpoint-id>/
 //
 // File-based backup respects common ignore patterns (node_modules, .git, etc.)
 
@@ -28,17 +28,17 @@ import {
   trimRing,
 } from "./checkpointDb.js";
 
-const REF_PREFIX = "refs/build-agents/checkpoints/";
+const REF_PREFIX = "refs/pig-agents/checkpoints/";
 const MAX_KEEP = 50; // ring buffer — older checkpoints get GC'd
 
 // Global backup directory for file-based checkpoints
-const BACKUP_ROOT = path.join(os.homedir(), ".build-agents", "backups");
+const BACKUP_ROOT = path.join(os.homedir(), ".pig-agents", "backups");
 
 // Patterns to ignore when doing file-based backup (similar to common .gitignore)
 const IGNORE_PATTERNS = [
   "node_modules",
   ".git",
-  ".build-agents",
+  ".pig-agents",
   "dist",
   "build",
   ".next",
@@ -63,7 +63,7 @@ export interface Checkpoint {
   label: string;
   /** When this snapshot was created (epoch ms). */
   createdAt: number;
-  /** SHA of the snapshot commit pinned in `refs/build-agents/checkpoints/<id>`. (git mode only) */
+  /** SHA of the snapshot commit pinned in `refs/pig-agents/checkpoints/<id>`. (git mode only) */
   gitSha: string;
   /** SHA of HEAD at snapshot time. (git mode only) */
   parentSha: string;

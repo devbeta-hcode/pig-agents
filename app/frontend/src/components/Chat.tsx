@@ -23,7 +23,7 @@ import {
 function getActiveSessionKey(workspace: string): string {
   // Use a hash of workspace path to avoid special characters in storage key
   const hash = workspace.split('').reduce((a, b) => ((a << 5) - a + b.charCodeAt(0)) | 0, 0).toString(36);
-  return `build-agents.active-session.${hash}`;
+  return `pig-agents.active-session.${hash}`;
 }
 
 interface UIEvent extends AgentEvent {

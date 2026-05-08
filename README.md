@@ -1,4 +1,6 @@
-# Pig Agents — Cursor-lite
+# Pig Agents
+
+> © 2026 DEV BETA., JSC. All rights reserved.
 
 A **real** AI coding system: thin React UI + autonomous agent backend. Built per `BUILD_AGENT.md`.
 

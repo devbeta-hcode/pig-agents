@@ -1,4 +1,4 @@
-import { chat, type ChatMessage, type ContentPart } from "../llm/client.js";
+import { chat, chatStream, type ChatMessage, type ContentPart } from "../llm/client.js";
 import { SYSTEM_PROMPT, ASK_SYSTEM_PROMPT, buildContextMessage, buildAskMessage, taskSignalsConsultationFirst } from "../llm/prompt.js";
 import {
   SYSTEM_PROMPT_COMPACT,
@@ -18,7 +18,7 @@ import {
 } from "../llm/prompt-mode.js";
 import { rankRelevant } from "../relevance/search.js";
 import { parseAgentResponse } from "./parser.js";
-import { executeTool, type ToolContext } from "./executor.js";
+import { executeTool, type ToolContext, type ToolOutcome } from "./executor.js";
 import { createCheckpoint, type Checkpoint } from "../utils/checkpoints.js";
 import { cancelAllForRun } from "../utils/approvals.js";
 import { getWorkspace } from "../utils/workspace.js";
@@ -27,9 +27,9 @@ import { loadProjectRules } from "../utils/projectRules.js";
 /** Per-iteration LLM call ceiling — without this, a stalled model/stream leaves the agent run open forever. */
 function readLlmTimeoutMs(): number {
   const raw = process.env.LLM_TIMEOUT_MS;
-  if (raw === undefined || raw === "") return 180_000;
+  if (raw === undefined || raw === "") return 600_000; // 10 minutes default
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 15_000 ? n : 180_000;
+  return Number.isFinite(n) && n >= 15_000 ? n : 600_000;
 }
 
 function chatAbortSignal(user: AbortSignal | undefined): AbortSignal {
@@ -212,6 +212,62 @@ function guessFilenameFor(task: string, finalText: string): string | null {
   return `${inScriptsDir ? "scripts/" : ""}${stem}.${e}`;
 }
 
+/** Tools that mutate the workspace — we resolve these early to update didWrite before guardrails. */
+function isWriteTool(type: string): boolean {
+  return type === "write_patch" || type === "create_file";
+}
+
+/**
+ * Scans a partial LLM response buffer for the first complete ACTION JSON object.
+ * Returns the parsed action as soon as the JSON brace depth closes, enabling the
+ * runner to fire the tool mid-stream rather than waiting for the full response.
+ */
+function scanFirstCompleteAction(
+  buf: string,
+): { type: string; input: Record<string, unknown> } | null {
+  const markerMatch = /(?:^|\n)ACTION:\s*/i.exec(buf);
+  if (!markerMatch) return null;
+  const afterMarker = buf.slice(markerMatch.index + markerMatch[0].length).trimStart();
+  const stripped = /^```(?:json)?\s*\n?/.test(afterMarker)
+    ? afterMarker.replace(/^```(?:json)?\s*\n?/, "")
+    : afterMarker;
+  const jsonStart = stripped.indexOf("{");
+  if (jsonStart === -1) return null;
+  const frag = stripped.slice(jsonStart);
+  let depth = 0, inStr = false, esc = false;
+  for (let i = 0; i < frag.length; i++) {
+    const c = frag[i];
+    if (esc) { esc = false; continue; }
+    if (c === "\\" && inStr) { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{") depth++;
+    if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          const json = JSON.parse(frag.slice(0, i + 1)) as Record<string, unknown>;
+          if (typeof json.type !== "string") return null;
+          let input: Record<string, unknown>;
+          if (json.input && typeof json.input === "object") {
+            input = json.input as Record<string, unknown>;
+          } else if (json.type === "write_patch" && typeof json.input === "string") {
+            input = { patches: json.input };
+          } else if (json.type === "read_file" && typeof json.input === "string") {
+            input = { path: json.input };
+          } else if (json.type === "run_command" && typeof json.input === "string") {
+            input = { cmd: json.input };
+          } else {
+            input = json.input ? { value: json.input } : {};
+          }
+          return { type: json.type, input };
+        } catch { return null; }
+      }
+    }
+  }
+  return null; // JSON still incomplete — more tokens needed
+}
+
 export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const events: AgentEvent[] = [];
   const emit = (e: AgentEvent) => {
@@ -241,11 +297,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   }
 
   const mode: AgentMode = opts.mode === "ask" ? "ask" : "agent";
-  // 20 is enough for a small multi-file scaffold (web app w/ ~8 files + a
-  // validation step + final wrap-up). User can bump in Settings for bigger
-  // refactors. Default of 12 was leaving the model out of breath halfway
-  // through "build me a website" prompts.
-  const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 20));
+  // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
+  const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
 
   emit({ type: "log", level: "info", message: `${mode === "ask" ? "Ask" : "Agent"} mode starting: "${opts.task}"` });
@@ -423,14 +476,35 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     emit({ type: "iter_start", iteration: i });
 
-    let raw: string;
+    // These are declared per-iteration so each loop pass starts clean.
+    let raw = "";
+    // First complete ACTION JSON detected in the stream — tool is fired immediately.
+    let earlyAction: { type: string; input: Record<string, unknown> } | null = null;
+    let earlyExecPromise: Promise<ToolOutcome> | null = null;
+    // Resolved result for write-type tools (updated before guardrails run).
+    let earlyOutcome: ToolOutcome | null = null;
+
     try {
-      raw = await chat(messages, {
+      for await (const delta of chatStream(messages, {
         signal: chatAbortSignal(opts.signal),
         maxTokens: maxOutputTokensForMode(promptMode),
-        onToken: (delta) => emit({ type: "token", iteration: i, delta }),
-      });
+      })) {
+        raw += delta;
+        emit({ type: "token", iteration: i, delta });
+        // As soon as the ACTION JSON brace depth closes, fire the tool
+        // concurrently rather than waiting for the rest of the response.
+        if (!earlyAction) {
+          const detected = scanFirstCompleteAction(raw);
+          if (detected) {
+            earlyAction = detected;
+            emit({ type: "action", iteration: i, tool: detected.type, input: detected.input });
+            earlyExecPromise = executeTool(detected.type, detected.input, toolCtx);
+          }
+        }
+      }
     } catch (err) {
+      // Clean up any in-flight early execution before surfacing the error.
+      if (earlyExecPromise) await earlyExecPromise.catch(() => {});
       if (opts.signal?.aborted) {
         emit({ type: "aborted", message: "Agent aborted by user" });
         return { result: "aborted", iterations: i, diffs, events };
@@ -446,6 +520,19 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       const wrapped = new Error(msg);
       (wrapped as Error & { __emitted?: boolean }).__emitted = true;
       throw wrapped;
+    }
+
+    // For write-type tools fired early, await and record their result now so
+    // that didWrite / writeCount are accurate when the guardrails check them.
+    if (earlyExecPromise && earlyAction && isWriteTool(earlyAction.type)) {
+      earlyOutcome = await earlyExecPromise.catch((e: Error) => ({
+        ok: false, summary: `Tool error: ${e.message}`, diffs: [] as string[],
+      }));
+      if (earlyOutcome.diffs?.length) {
+        didWrite = true;
+        writeCount += earlyOutcome.diffs.length;
+        diffs.push(...earlyOutcome.diffs);
+      }
     }
 
     const step = parseAgentResponse(raw);
@@ -550,24 +637,49 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         continue;
       }
       finalResult = step.result;
+      // Consume any early-fired tool (ACTION + FINAL in same model response).
+      if (earlyExecPromise && !earlyOutcome) {
+        earlyOutcome = await earlyExecPromise.catch((e: Error) => ({
+          ok: false, summary: `Tool error: ${e.message}`, diffs: [] as string[],
+        }));
+      }
+      if (earlyOutcome) {
+        if (earlyOutcome.diffs?.length) {
+          didWrite = true;
+          writeCount += earlyOutcome.diffs.length;
+          diffs.push(...earlyOutcome.diffs);
+        }
+        emit({ type: "observation", iteration: i, ok: earlyOutcome.ok, summary: earlyOutcome.summary, diffs: earlyOutcome.diffs });
+        history.push({ role: "assistant", content: raw });
+        history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${earlyOutcome.ok}):\n${earlyOutcome.summary}` });
+        earlyOutcome = null;
+      }
       emit({ type: "final", result: finalResult });
       return { result: finalResult, iterations: i, diffs, events };
     }
 
-    // Stuck detection: check if this is the same action as before
-    const actionSignature = `${step.type}:${JSON.stringify(step.input)}`;
+    // Determine the set of actions to execute (single or parallel multi-action).
+    const stepActions: Array<{ type: string; input: Record<string, unknown> }> =
+      step.kind === "multi_action"
+        ? step.actions
+        : step.kind === "action"
+          ? [{ type: step.type, input: step.input }]
+          : [];
+
+    // Stuck detection — use a combined signature across all actions.
+    const actionSignature = stepActions.map(a => `${a.type}:${JSON.stringify(a.input)}`).join("|");
     if (actionSignature === lastActionSignature) {
       sameActionCount++;
       if (sameActionCount >= MAX_SAME_ACTION_REPEAT) {
         const bailMessage = 
-          `Agent stopped: Same action repeated ${sameActionCount} times in a row.\n\n` +
-          `**Action:** \`${step.type}\`\n` +
-          `**Input:** \`${JSON.stringify(step.input).slice(0, 200)}\`\n\n` +
+          `Agent stopped: Same action(s) repeated ${sameActionCount} times in a row.\n\n` +
+          `**Action:** \`${stepActions[0]?.type ?? "unknown"}\`\n` +
+          `**Input:** \`${JSON.stringify(stepActions[0]?.input ?? {}).slice(0, 200)}\`\n\n` +
           `This usually means the model is stuck in a loop. Try:\n` +
           `• Rephrasing your request more clearly\n` +
           `• Using a different/larger model\n` +
           `• Breaking the task into smaller steps`;
-        emit({ type: "log", level: "error", message: `Stuck loop detected: action ${step.type} repeated ${sameActionCount}x` });
+        emit({ type: "log", level: "error", message: `Stuck loop detected: action ${stepActions[0]?.type} repeated ${sameActionCount}x` });
         emit({ type: "final", result: bailMessage });
         return { result: bailMessage, iterations: i, diffs, events, checkpoint: preRunCheckpoint ?? undefined };
       }
@@ -576,18 +688,49 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       sameActionCount = 1;
     }
 
-    emit({ type: "action", iteration: i, tool: step.type, input: step.input });
+    // Build execution promises — reuse the early-fired promise/outcome for the
+    // matching action so it is never executed twice.
+    let earlyPromiseUsed = false;
+    const outcomePromises: Promise<ToolOutcome>[] = stepActions.map((act) => {
+      const isMatch =
+        !earlyPromiseUsed &&
+        earlyAction !== null &&
+        act.type === earlyAction.type &&
+        JSON.stringify(act.input) === JSON.stringify(earlyAction.input);
+      if (isMatch) {
+        earlyPromiseUsed = true;
+        // Use cached resolved value for write tools, live promise for others.
+        return earlyOutcome ? Promise.resolve(earlyOutcome) : earlyExecPromise!;
+      }
+      // Emit action event for tools NOT already emitted during streaming.
+      emit({ type: "action", iteration: i, tool: act.type, input: act.input });
+      return executeTool(act.type, act.input, toolCtx);
+    });
+
     checkAbort();
-    const outcome = await executeTool(step.type, step.input, toolCtx);
-    if (step.type === "write_patch" && outcome.diffs && outcome.diffs.length) {
-      didWrite = true;
-      writeCount += outcome.diffs.length;
+    const outcomes = await Promise.all(outcomePromises);
+
+    // Aggregate diffs/write tracking — skip outcomes already counted via earlyOutcome.
+    for (const outcome of outcomes) {
+      if (outcome === earlyOutcome) continue; // already tallied post-stream
+      if (outcome.diffs?.length) {
+        didWrite = true;
+        writeCount += outcome.diffs.length;
+        diffs.push(...outcome.diffs);
+      }
     }
-    if (outcome.diffs && outcome.diffs.length) diffs.push(...outcome.diffs);
-    emit({ type: "observation", iteration: i, ok: outcome.ok, summary: outcome.summary, diffs: outcome.diffs });
+
+    const allOk = outcomes.every((o) => o.ok);
+    const combinedSummary =
+      outcomes.length === 1
+        ? outcomes[0].summary
+        : outcomes.map((o, j) => `[${stepActions[j].type}]: ${o.summary}`).join("\n\n");
+    const combinedDiffs = outcomes.flatMap((o) => o.diffs ?? []);
+
+    emit({ type: "observation", iteration: i, ok: allOk, summary: combinedSummary, diffs: combinedDiffs });
 
     history.push({ role: "assistant", content: raw });
-    history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${outcome.ok}):\n${outcome.summary}` });
+    history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}` });
 
     // No-progress nudge: if we've done 6+ iterations without writing anything, remind the agent
     if (!didWrite && i >= 6 && i % 3 === 0) {

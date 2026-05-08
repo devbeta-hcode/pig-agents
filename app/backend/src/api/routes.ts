@@ -17,6 +17,7 @@ import {
   deleteAgentCommand,
   getAgentCommand,
   listAgentCommands,
+  listPendingCommands,
   subscribeAgentCommands,
 } from "../agent/commandLog.js";
 import { getWorkspace, setWorkspace } from "../utils/workspace.js";
@@ -172,6 +173,11 @@ router.post("/agent/run", async (req, res) => {
     res.on("close", () => {
       if (!res.writableEnded) ac.abort();
     });
+    // Keep-alive comments every 20s prevent proxies / browsers from closing idle SSE
+    // connections between LLM calls (e.g. while a tool is running or the model is slow).
+    const ka = setInterval(() => {
+      try { if (!res.writableEnded) res.write(": keepalive\n\n"); } catch { /* noop */ }
+    }, 20_000);
     try {
       const result = await runAgent({
         task,
@@ -187,6 +193,7 @@ router.post("/agent/run", async (req, res) => {
       // Only send if the runner hasn't already emitted an error event.
       if (msg !== "aborted" && !e.__emitted) send("error", { message: msg });
     } finally {
+      clearInterval(ka);
       res.end();
     }
     return;
@@ -332,13 +339,16 @@ router.get("/agent/commands/stream", (_req, res) => {
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
-  send("hello", { runs: listAgentCommands() });
+  send("hello", { runs: listAgentCommands(), live: listPendingCommands() });
   // Keep-alive comments every 25s so proxies / browsers don't close idle conns.
   const ka = setInterval(() => { try { res.write(": keepalive\n\n"); } catch { /* noop */ } }, 25_000);
   const unsub = subscribeAgentCommands(
     (run) => send("run", run),
     () => send("clear", {}),
     (id) => send("delete", { id }),
+    // Live streaming: emit run_start before chunks begin, run_chunk for each piece.
+    (info) => send("run_start", info),
+    (chunk) => send("run_chunk", chunk),
   );
   res.on("close", () => {
     clearInterval(ka);

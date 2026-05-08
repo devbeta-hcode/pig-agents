@@ -172,7 +172,7 @@ export async function fileTree(rel: string = ".", depth = 4): Promise<FileEntry[
 /** Dirs skipped in codebase_map (heavy or internal). */
 const CODEBASE_MAP_SKIP = new Set([
   ...SEARCH_SKIP_DIRS,
-  ".build-agents",
+  ".pig-agents",
 ]);
 
 const MANIFEST_HINTS = [
@@ -253,4 +253,51 @@ export async function buildCodebaseMapSummary(opts: {
     `## Directory tree (depth ≤ ${maxDepth}, build/node_modules/git/… skipped)\n${treeBlock}\n\n` +
     `## Project manifests (root excerpts)\n${hintsBlock}`
   );
+}
+
+/**
+ * Glob-style file search. Supports `*` (any segment chars) and `**` (any path depth).
+ * Returns workspace-relative paths. Skips node_modules/.git/dist/build.
+ */
+export async function globFiles(pattern: string, maxResults = 500): Promise<string[]> {
+  const root = safeJoin(".");
+  const results: string[] = [];
+
+  // Convert glob pattern to a RegExp.
+  function globToRegex(glob: string): RegExp {
+    // Escape regex metacharacters except * and ?
+    const escaped = glob
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*/g, "\u0001") // placeholder for **
+      .replace(/\*/g, "[^/]*")    // * matches within a segment
+      .replace(/\?/g, "[^/]")     // ? matches single non-sep char
+      .replace(/\u0001/g, ".*");  // ** matches any path
+    return new RegExp(`^${escaped}$`, "i");
+  }
+
+  const re = globToRegex(pattern);
+
+  async function walk(dir: string): Promise<void> {
+    if (results.length >= maxResults) return;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of entries) {
+      if (results.length >= maxResults) return;
+      if (SEARCH_SKIP_DIRS.has(d.name)) continue;
+      const fullAbs = path.join(dir, d.name);
+      const rel = toRel(fullAbs);
+      if (d.isDirectory()) {
+        await walk(fullAbs);
+      } else {
+        if (re.test(rel)) results.push(rel);
+      }
+    }
+  }
+
+  await walk(root);
+  return results;
 }

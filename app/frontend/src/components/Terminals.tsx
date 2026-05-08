@@ -5,7 +5,6 @@ import { TerminalView } from "./Terminal";
 import { AgentTerminalView } from "./AgentTerminalView";
 import { api, type AgentCommandSummary } from "../lib/api";
 import { useDialogs } from "./DialogProvider";
-
 interface TerminalsHandle {
   reveal: (cwd: string) => void;
 }
@@ -32,7 +31,18 @@ interface AgentTab {
   run: AgentCommandSummary;
 }
 
-type TerminalTab = ShellTab | AgentTab;
+/** An in-progress command whose output is streaming live. */
+interface LiveAgentTab {
+  kind: "live";
+  id: string;
+  cmd: string;
+  cwd: string;
+  startedAt: number;
+  /** Accumulated output so far (stdout and stderr interleaved in arrival order). */
+  output: string;
+}
+
+type TerminalTab = ShellTab | AgentTab | LiveAgentTab;
 
 let nextShellOrd = 1;
 
@@ -45,15 +55,20 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
   const dlg = useDialogs();
   const [shells, setShells] = useState<ShellTab[]>([makeShell()]);
   const [agents, setAgents] = useState<AgentCommandSummary[]>([]);
+  /** In-progress commands — appear as live-streaming tabs, replaced by AgentTab on completion. */
+  const [liveRuns, setLiveRuns] = useState<LiveAgentTab[]>([]);
   const [activeId, setActiveId] = useState<string>(shells[0].id);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(140);
+  const sidebarResizing = useRef(false);
 
-  // Stable list of all tabs in display order: shells first, then agent runs (newest top).
+  // Stable list of all tabs in display order: shells first, live runs, then finished agent runs.
   const allTabs: TerminalTab[] = useMemo(() => {
     const s: TerminalTab[] = shells.map((x) => ({ ...x }));
+    const l: TerminalTab[] = liveRuns.map((r) => ({ ...r }));
     const a: TerminalTab[] = agents.map((r) => ({ kind: "agent", id: r.id, run: r }));
-    return [...s, ...a];
-  }, [shells, agents]);
+    return [...s, ...l, ...a];
+  }, [shells, liveRuns, agents]);
 
   const activeTab = useMemo(
     () => allTabs.find((t) => t.id === activeId) ?? allTabs[0],
@@ -91,15 +106,46 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
     document.addEventListener("visibilitychange", onBecameVisible);
     window.addEventListener("focus", refresh);
     const sub = api.streamAgentCommands({
-      onHello: (runs) => { if (!cancelled) setAgents(runs); },
+      onHello: (runs, live) => {
+        if (!cancelled) {
+          setAgents(runs);
+          // Restore any in-progress commands that were running when we reconnected.
+          if (live.length > 0) {
+            setLiveRuns(live.map((r) => ({ kind: "live" as const, ...r })));
+          }
+        }
+      },
       onRun: (run) => {
         if (cancelled) return;
+        // Command finished — remove from live list and add to finished list.
+        setLiveRuns((cur) => cur.filter((r) => r.id !== run.id));
         setAgents((cur) => [run, ...cur.filter((r) => r.id !== run.id)]);
       },
-      onClear: () => { if (!cancelled) setAgents([]); },
+      onClear: () => {
+        if (!cancelled) {
+          setAgents([]);
+          setLiveRuns([]);
+        }
+      },
       onDelete: (id) => {
         if (cancelled) return;
         setAgents((cur) => cur.filter((r) => r.id !== id));
+        setLiveRuns((cur) => cur.filter((r) => r.id !== id));
+      },
+      onRunStart: (info) => {
+        if (cancelled) return;
+        const tab: LiveAgentTab = { kind: "live", ...info, output: "" };
+        setLiveRuns((cur) => [tab, ...cur.filter((r) => r.id !== info.id)]);
+        // Auto-reveal the live tab so the user sees the output immediately.
+        setActiveId(info.id);
+      },
+      onRunChunk: (chunk) => {
+        if (cancelled) return;
+        setLiveRuns((cur) =>
+          cur.map((r) =>
+            r.id === chunk.id ? { ...r, output: r.output + chunk.text } : r,
+          ),
+        );
       },
     });
     return () => {
@@ -138,6 +184,7 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
     // entry won't reappear after a reload. SSE `delete` event also fires for
     // any other open browser tabs.
     setAgents((cur) => cur.filter((r) => r.id !== id));
+    setLiveRuns((cur) => cur.filter((r) => r.id !== id));
     if (activeId === id && shells.length > 0) setActiveId(shells[shells.length - 1].id);
     api.deleteAgentCommand(id).catch((err) => {
       console.warn("deleteAgentCommand failed:", err);
@@ -159,6 +206,26 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
     }
   }
 
+  // ---- sidebar resize -------------------------------------------------------
+  function onSidebarResizeStart(e: React.MouseEvent) {
+    e.preventDefault();
+    sidebarResizing.current = true;
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: MouseEvent) => {
+      if (!sidebarResizing.current) return;
+      const next = Math.max(140, Math.min(400, startW + ev.clientX - startX));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      sidebarResizing.current = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   // ---- render ---------------------------------------------------------------
   const activeShellOrdinal =
     activeTab && activeTab.kind === "shell"
@@ -167,7 +234,9 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
   const headerLabel = activeTab
     ? activeTab.kind === "shell"
       ? `bash ${activeTab.ordinal}`
-      : `Agent: ${activeTab.run.cmd.length > 40 ? activeTab.run.cmd.slice(0, 40) + "…" : activeTab.run.cmd}`
+      : activeTab.kind === "live"
+        ? `⚡ Running: ${activeTab.cmd.length > 40 ? activeTab.cmd.slice(0, 40) + "…" : activeTab.cmd}`
+        : `Agent: ${activeTab.run.cmd.length > 40 ? activeTab.run.cmd.slice(0, 40) + "…" : activeTab.run.cmd}`
     : "Terminal";
 
   return (
@@ -204,7 +273,11 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
 
       <div className="terminals-body">
         {sidebarOpen && (
-          <aside className="terminals-sidebar">
+          <aside className="terminals-sidebar" style={{ width: sidebarWidth }}>
+            <div
+              className="terminals-sidebar-resizer"
+              onMouseDown={onSidebarResizeStart}
+            />
             <div className="terminals-section">
               <div className="terminals-section-head">
                 <span>Shells</span>
@@ -231,7 +304,7 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
 
             <div className="terminals-section">
               <div className="terminals-section-head">
-                <span>Agent runs <em>{agents.length > 0 ? `(${agents.length})` : ""}</em></span>
+                <span>Agent runs <em>{(liveRuns.length + agents.length) > 0 ? `(${liveRuns.length + agents.length})` : ""}</em></span>
                 {agents.length > 0 && (
                   <button
                     className="terminals-section-btn"
@@ -242,6 +315,20 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
                   </button>
                 )}
               </div>
+              {liveRuns.map((r) => (
+                <div
+                  key={r.id}
+                  className={`terminals-item agent live ${activeId === r.id ? "active" : ""}`}
+                  onClick={() => setActiveId(r.id)}
+                  title={`$ ${r.cmd}\n⚡ Running…`}
+                >
+                  <span className="terminals-item-icon" style={{ color: "var(--warn)" }}>
+                    <IconZap size={13} />
+                  </span>
+                  <span className="terminals-item-name">{r.cmd.length > 30 ? r.cmd.slice(0, 30) + "…" : r.cmd}</span>
+                  <span className="terminals-item-meta" style={{ color: "var(--warn)" }}>…</span>
+                </div>
+              ))}
               {agents.map((r) => (
                 <AgentItem
                   key={r.id}
@@ -274,6 +361,10 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
           {/* Agent run viewer (read-only) */}
           {activeTab && activeTab.kind === "agent" && (
             <AgentTerminalView runId={activeTab.id} />
+          )}
+          {/* Live streaming agent command */}
+          {activeTab && activeTab.kind === "live" && (
+            <LiveTerminalView run={activeTab} />
           )}
         </div>
       </div>
@@ -311,6 +402,38 @@ function AgentItem({
       >
         <IconX size={12} />
       </button>
+    </div>
+  );
+}
+
+// ---- Live streaming terminal view -----------------------------------------
+
+function LiveTerminalView({ run }: { run: LiveAgentTab }) {
+  const preRef = useRef<HTMLPreElement>(null);
+
+  // Auto-scroll to bottom as chunks arrive.
+  useEffect(() => {
+    const el = preRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [run.output]);
+
+  const startedAt = new Date(run.startedAt).toLocaleTimeString();
+  const elapsed = Math.floor((Date.now() - run.startedAt) / 1000);
+
+  return (
+    <div className="agent-term">
+      <div className="agent-term-header">
+        <span className="agent-term-prompt" style={{ color: "var(--warn)" }}>$</span>
+        <span className="agent-term-cmd" title={run.cmd}>{run.cmd}</span>
+        <span className="agent-term-exit" style={{ color: "var(--warn)", animation: "pulse 1s infinite" }}>
+          running…
+        </span>
+        <span className="agent-term-meta">{elapsed}s · {startedAt}</span>
+      </div>
+      <div className="agent-term-cwd">cwd: {run.cwd}</div>
+      <pre ref={preRef} className="agent-term-output" style={{ overflowY: "auto", maxHeight: "100%" }}>
+        {run.output || <span style={{ opacity: 0.4 }}>Waiting for output…</span>}
+      </pre>
     </div>
   );
 }

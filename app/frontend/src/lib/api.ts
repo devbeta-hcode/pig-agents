@@ -1,9 +1,9 @@
 const BASE = "/api";
 
 /** Sent on every API request so the backend can scope tools to this tab's folder. */
-export const WORKSPACE_HEADER = "X-Build-Agents-Workspace";
+export const WORKSPACE_HEADER = "X-Pig-Agents-Workspace";
 
-const SESSION_WS_KEY = "build-agents.workspace.v1";
+const SESSION_WS_KEY = "pig-agents.workspace.v1";
 
 /** Absolute workspace path for this browser tab only (see `setSessionWorkspace`). */
 export function getSessionWorkspace(): string {
@@ -384,15 +384,22 @@ export const api = {
    * Returns a `close` function the caller should invoke on cleanup.
    */
   streamAgentCommands(handlers: {
-    onHello?: (runs: AgentCommandSummary[]) => void;
+    onHello?: (runs: AgentCommandSummary[], live: Array<{ id: string; cmd: string; cwd: string; startedAt: number; output: string }>) => void;
     onRun?: (run: AgentCommandSummary) => void;
     onClear?: () => void;
     onDelete?: (id: string) => void;
     onError?: (err: Event) => void;
+    /** Called when a new in-progress command starts (before any output). */
+    onRunStart?: (info: { id: string; cmd: string; cwd: string; startedAt: number }) => void;
+    /** Called for each stdout/stderr chunk of an in-progress command. */
+    onRunChunk?: (chunk: { id: string; stream: "stdout" | "stderr"; text: string }) => void;
   }): { close: () => void } {
     const es = new EventSource(`${BASE}/agent/commands/stream`);
     es.addEventListener("hello", (ev) => {
-      try { handlers.onHello?.(JSON.parse((ev as MessageEvent).data).runs); } catch { /* noop */ }
+      try {
+        const d = JSON.parse((ev as MessageEvent).data);
+        handlers.onHello?.(d.runs ?? [], d.live ?? []);
+      } catch { /* noop */ }
     });
     es.addEventListener("run", (ev) => {
       try { handlers.onRun?.(JSON.parse((ev as MessageEvent).data)); } catch { /* noop */ }
@@ -400,6 +407,12 @@ export const api = {
     es.addEventListener("clear", () => handlers.onClear?.());
     es.addEventListener("delete", (ev) => {
       try { handlers.onDelete?.(JSON.parse((ev as MessageEvent).data).id); } catch { /* noop */ }
+    });
+    es.addEventListener("run_start", (ev) => {
+      try { handlers.onRunStart?.(JSON.parse((ev as MessageEvent).data)); } catch { /* noop */ }
+    });
+    es.addEventListener("run_chunk", (ev) => {
+      try { handlers.onRunChunk?.(JSON.parse((ev as MessageEvent).data)); } catch { /* noop */ }
     });
     es.onerror = (e) => handlers.onError?.(e);
     return { close: () => es.close() };

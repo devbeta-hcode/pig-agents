@@ -153,7 +153,7 @@ export default function App() {
   // defaults instead of having to find the "Reset layout" button.
   useEffect(() => {
     try {
-      const flag = "build-agents.layout-migration.v3";
+      const flag = "pig-agents.layout-migration.v3";
       if (localStorage.getItem(flag) === "1") return;
       for (const k of Object.keys(localStorage)) {
         if (k.startsWith("react-resizable-panels:ba-main-v2") ||
@@ -178,7 +178,7 @@ export default function App() {
       return;
     }
     let confirmed = false;
-    try { confirmed = localStorage.getItem("build-agents.ws.confirmed.v1") === "1"; } catch { /* noop */ }
+    try { confirmed = localStorage.getItem("pig-agents.ws.confirmed.v1") === "1"; } catch { /* noop */ }
     if (confirmed) {
       api.getWorkspace().then((r) => {
         setSessionWorkspace(r.workspace);
@@ -204,11 +204,11 @@ export default function App() {
 
   /** One-time: move legacy per-workspace browser diffs into the active chat session file. */
   function migrateLegacyBrowserDiffsOnce(ws: string, session: ChatSession) {
-    const FLAG = `build-agents.diffs.migrated-to-chat.v1::${ws}`;
+    const FLAG = `pig-agents.diffs.migrated-to-chat.v1::${ws}`;
     if (typeof localStorage === "undefined") return;
     if (localStorage.getItem(FLAG)) return;
     try {
-      const legacyKey = `build-agents.diffs.v1::${ws}`;
+      const legacyKey = `pig-agents.diffs.v1::${ws}`;
       const raw = localStorage.getItem(legacyKey);
       localStorage.setItem(FLAG, "1");
       localStorage.removeItem(legacyKey);
@@ -332,8 +332,8 @@ export default function App() {
   // bucket, ship them to the backend exactly once. Idempotent — guarded by
   // a flag key so reload won't re-import.
   async function migrateLegacyChatsOnce(ws: string) {
-    const FLAG = "build-agents.sessions.migrated.v1";
-    const SRC = "build-agents.sessions.v1";
+    const FLAG = "pig-agents.sessions.migrated.v1";
+    const SRC = "pig-agents.sessions.v1";
     if (typeof localStorage === "undefined") return;
     if (localStorage.getItem(FLAG)) return;
     let raw: string | null = null;
@@ -737,7 +737,7 @@ export default function App() {
       setActive(undefined);
       setRefreshKey((k) => k + 1);
       setPickerOpen(false);
-      try { localStorage.setItem("build-agents.ws.confirmed.v1", "1"); } catch { /* noop */ }
+      try { localStorage.setItem("pig-agents.ws.confirmed.v1", "1"); } catch { /* noop */ }
     } catch (err) {
       void dlg.alert((err as Error).message);
     }
@@ -1129,7 +1129,7 @@ export default function App() {
         <span><IconDot size={6} style={{ marginRight: 4 }} />{workspace || "no workspace"}</span>
         <span>{tabs.length} open</span>
         <span>{diffs.filter((d) => !d.reverted).length} diff{diffs.filter((d) => !d.reverted).length === 1 ? "" : "s"}</span>
-        <span className="right">Pig Agents · Cursor-lite</span>
+        <span className="right">© 2026 DEV BETA., JSC · Pig Agents</span>
       </div>
 
       {pickerOpen && (

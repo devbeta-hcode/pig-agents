@@ -36,23 +36,23 @@ export function promptModeToContextTier(mode: PromptModeId): ContextTier {
 
 /**
  * Completion budget per request (TPM-sensitive providers like Groq count input + max_tokens toward TPM).
- * Override globally with {@code LLM_MAX_TOKENS} (64–8192).
+ * Override globally with {@code LLM_MAX_TOKENS} (64–131072).
  */
 export function maxOutputTokensForMode(mode: PromptModeId): number {
   const env = Number(process.env.LLM_MAX_TOKENS);
-  if (Number.isFinite(env) && env >= 64 && env <= 8192) return Math.floor(env);
+  if (Number.isFinite(env) && env >= 64 && env <= 131072) return Math.floor(env);
   switch (mode) {
     case "minimal":
-      return 640;
+      return 2048;
     case "economical":
-      return 900;
+      return 4096;
     case "balanced":
-      return 1200;
+      return 8192;
     case "detailed":
-      return 1500;
+      return 16384;
     case "verbose":
-      return 1800;
+      return 16384;
     default:
-      return 1200;
+      return 8192;
   }
 }
