@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { FileIcon } from "./FileIcon";
 import { ChevronExpand } from "./ChevronExpand";
 
@@ -128,6 +128,108 @@ function ReadFileOutput({ input, observation }: { input: Record<string, unknown>
             <span>{showContent ? "Hide content" : "Show content"}</span>
           </button>
           {showContent && <CodeBlock content={content} language={guessLanguage(fileName)} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Renders create_file tool output — with streaming typewriter for content
+function CreateFileOutput({
+  input,
+  observation,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+}) {
+  const filePath = String(input.path || "");
+  const fileName = filePath.split("/").pop() || filePath;
+  const fullContent = String(input.content ?? "");
+  const lang = guessLanguage(fileName);
+
+  // Typewriter: stream content char-by-char while observation is pending
+  const [displayed, setDisplayed] = useState("");
+  const [done, setDone] = useState(false);
+  const [showContent, setShowContent] = useState(false);
+  const rafRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamRef = useRef<HTMLPreElement>(null);
+  const expandRef = useRef<HTMLPreElement>(null);
+
+  useEffect(() => {
+    if (observation) {
+      setDisplayed(fullContent);
+      setDone(true);
+      return;
+    }
+    let pos = 0;
+    function tick() {
+      pos = Math.min(pos + 4, fullContent.length);
+      setDisplayed(fullContent.slice(0, pos));
+      // Auto-scroll streaming pre to bottom
+      if (streamRef.current) {
+        streamRef.current.scrollTop = streamRef.current.scrollHeight;
+      }
+      if (pos < fullContent.length) {
+        rafRef.current = setTimeout(tick, 16);
+      } else {
+        setDone(true);
+      }
+    }
+    rafRef.current = setTimeout(tick, 16);
+    return () => { if (rafRef.current) clearTimeout(rafRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [observation]);
+
+  // Auto-scroll expanded view when user opens it while still streaming
+  useEffect(() => {
+    if (showContent && expandRef.current) {
+      expandRef.current.scrollTop = expandRef.current.scrollHeight;
+    }
+  }, [displayed, showContent]);
+
+  const isStreaming = !done && !observation;
+
+  return (
+    <div className="tool-output tool-create-file">
+      <div className="tool-header">
+        <span className="tool-icon tool-icon--edit">{icons.edit}</span>
+        <span className="tool-action">Create</span>
+        <span className="tool-target">
+          <FileIcon name={fileName} size={14} />
+          <span className="tool-path" title={filePath}>{filePath}</span>
+        </span>
+        {observation
+          ? <StatusBadge ok={observation.ok} />
+          : <span className="tool-status tool-status--streaming">writing…</span>
+        }
+      </div>
+
+      {/* Streaming view: auto-show while still animating */}
+      {isStreaming && (
+        <div className="tool-create-stream">
+          <pre ref={streamRef} className="tool-command-stream tool-create-content">
+            <code>{displayed}<span className="tool-cursor">▋</span></code>
+          </pre>
+        </div>
+      )}
+
+      {/* After done: collapsible full content */}
+      {done && fullContent && (
+        <div className="tool-details">
+          <button
+            className="tool-toggle"
+            onClick={() => setShowContent(!showContent)}
+          >
+            <ChevronExpand expanded={showContent} size={12} />
+            <span>{showContent ? "Hide content" : `Show content (${fullContent.split("\n").length} lines)`}</span>
+          </button>
+          {showContent && (
+            <div className="tool-code-block">
+              <pre ref={expandRef} className={`language-${lang}`} style={{ maxHeight: 220, overflow: "auto" }}>
+                <code>{fullContent}</code>
+              </pre>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -419,6 +521,8 @@ export function ToolOutput({ tool, input, observation, streamPreview }: ToolOutp
   switch (t) {
     case "read_file":
       return <ReadFileOutput input={input} observation={observation} />;
+    case "create_file":
+      return <CreateFileOutput input={input} observation={observation} />;
     case "write_patch":
       return <WritePatchOutput input={input} observation={observation} />;
     case "run_command":

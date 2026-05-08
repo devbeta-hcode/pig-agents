@@ -496,6 +496,17 @@ export default function App() {
   function deleteChat(id: string) {
     if (!workspace) return;
     sessionCacheRef.current.delete(id);
+
+    // Cancel any pending debounced save for this session so it can't
+    // resurrect the file after the DELETE request completes.
+    if (pendingSaveRef.current?.id === id) {
+      pendingSaveRef.current = null;
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    }
+
     api.deleteChat(workspace, id).catch((err) => console.warn("delete chat failed:", err));
     setChatList((cur) => {
       const next = cur.filter((m) => m.id !== id);

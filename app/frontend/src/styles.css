@@ -4042,6 +4042,48 @@ kbd {
   word-break: break-word;
 }
 
+/* create_file streaming */
+.tool-create-stream {
+  margin: 4px 0 0;
+  padding: 0 4px 4px;
+}
+.tool-create-content {
+  max-height: 220px;
+}
+.tool-cursor {
+  display: inline-block;
+  width: 7px;
+  color: var(--accent-2);
+  animation: blink 0.8s step-start infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.tool-status--streaming {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent-2);
+  opacity: 0.85;
+}
+.tool-status--streaming::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+
 .tool-cmd {
   font-family: var(--font-mono);
   font-size: 10.5px;
