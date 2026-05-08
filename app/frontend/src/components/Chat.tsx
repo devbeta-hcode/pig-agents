@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent } from "react";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
 import { ChatsList } from "./ChatsList";
 import { Markdown } from "./Markdown";
@@ -8,16 +8,25 @@ import { DiffViewer, type DiffItem } from "./DiffViewer";
 import { FileIcon } from "./FileIcon";
 import { CommandApprovalModal, type PendingApproval } from "./CommandApprovalModal";
 import { useDialogs } from "./DialogProvider";
-import { ToolOutput } from "./ToolOutput";
+import { ToolAccordionHeader, ToolOutput } from "./ToolOutput";
+import {
+  actionMarkerCount,
+  mergeWritePatchStreamBody,
+  peekStreamingCreatePathNth,
+  peekStreamingToolArgBodyNth,
+  peekStreamingToolPayloadNth,
+  peekWritePatchSectionNth,
+  splitWritePatchByFileSections,
+} from "../lib/streamingToolPeek";
 import {
   IconX, IconCheck, IconCopy, IconRefreshCw, IconRotateCcw,
   IconSettings, IconAlertTriangle, IconSquareFill, IconMessageSquare, IconBot,
+  IconBrain,
 } from "./Icons";
 import {
   type ChatSession, type ChatTurn, type ChatMode, shortTitle,
   composeAgentTaskWithHistory,
 } from "../lib/sessions";
-
 // Key for storing active session ID in sessionStorage (survives F5)
 // Keyed by workspace path so multiple tabs with different workspaces don't conflict
 function getActiveSessionKey(workspace: string): string {
@@ -28,6 +37,8 @@ function getActiveSessionKey(workspace: string): string {
 
 interface UIEvent extends AgentEvent {
   iteration?: number;
+  /** Stable correlation id for tool_disk_settled (write_patch / create_file). */
+  actionKey?: string;
   /** run_command live stream */
   stream?: "stdout" | "stderr";
   text?: string;
@@ -111,34 +122,6 @@ function removeMentionFrom(text: string, path: string): string {
   return text.replace(re, (_m, lead) => (lead === "" ? "" : lead));
 }
 
-/** One-line label for the trace list — Cursor-style verbs + short detail. */
-function describeToolStep(tool: string | undefined, input: Record<string, unknown> | undefined): string {
-  if (!tool) return "Tool";
-  const t = tool.toLowerCase();
-  const path = (input?.path ?? input?.file ?? input?.target ?? input?.dir) as string | undefined;
-  const q = input?.query as string | undefined;
-  const cmd = (input?.cmd ?? input?.command) as string | undefined;
-  const short = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
-  switch (t) {
-    case "codebase_map":
-      return "Codebase map";
-    case "search_code":
-      return q ? `Grepped ${short(q, 72)}` : "Grepped codebase";
-    case "read_file":
-      return path ? `Read ${short(path, 80)}` : "Read file";
-    case "list_files":
-      return path ? `Listed ${short(path, 80)}` : "Listed directory";
-    case "write_patch":
-      return path ? `Edited ${short(path, 80)}` : "Applied patch";
-    case "run_command":
-      return cmd ? `Ran ${short(cmd, 72)}` : "Ran command";
-    default:
-      if (path) return `${t.replace(/_/g, " ")} · ${short(path, 64)}`;
-      if (cmd) return `${t.replace(/_/g, " ")} · ${short(cmd, 64)}`;
-      return t.replace(/_/g, " ");
-  }
-}
-
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const s = ms / 1000;
@@ -150,18 +133,149 @@ function formatDuration(ms: number): string {
   return `${m}m ${Math.floor(s % 60)}s`;
 }
 
-/** Last agent thought as a single truncated line (for Cursor-style trace header preview). */
-function lastThoughtOneLine(traceSteps: UIEvent[]): string | null {
-  let last = "";
-  for (const e of traceSteps) {
-    if (e.type === "thought" && e.thought?.trim()) last = e.thought.trim();
+function isWriteToolName(tool?: string): boolean {
+  const t = (tool || "").toLowerCase();
+  return t === "write_patch" || t === "create_file";
+}
+
+/**
+ * Ordinal (0-based) of this persisted `action` row within its iteration.
+ * Mirrors `nthActionBlobAfterMarker(streamingPartial, ord)` across multiple ACTION payloads in one stream.
+ */
+function streamedActionOrdinalAtStep(steps: UIEvent[], stepIdx: number): number {
+  const ev = steps[stepIdx];
+  if (ev?.type !== "action") return 0;
+  const it = Number((ev as UIEvent).iteration) || 1;
+  let n = 0;
+  for (let k = 0; k < stepIdx; k++) {
+    const x = steps[k];
+    if (x.type === "action" && (Number((x as UIEvent).iteration) || 1) === it) n++;
   }
-  if (!last) return null;
-  const raw = last.replace(/\s+/g, " ");
-  return raw.length > 140 ? `${raw.slice(0, 137)}…` : raw;
+  return n;
+}
+
+function streamedActionCountForIteration(steps: UIEvent[], iteration: number): number {
+  return steps.filter(
+    (x) => x.type === "action" && (Number((x as UIEvent).iteration) || 1) === iteration,
+  ).length;
+}
+
+/** Transient action row so ToolOutput can stream before the backend emits complete `action`. */
+function syntheticStreamingWriteAction(
+  isStreaming: boolean,
+  streamingText: string,
+  traceSteps: UIEvent[],
+  iteration: number,
+): UIEvent | null {
+  if (!isStreaming || !streamingText.trim()) return null;
+
+  /** More ACTION: markers buffered than SSE `action` rows yet — nth segment is still streaming. */
+  const emittedSameIter = traceSteps.filter(
+    (x) => x.type === "action" && (Number((x as UIEvent).iteration) || 1) === iteration,
+  ).length;
+  const nthPeek = emittedSameIter;
+  if (actionMarkerCount(streamingText) <= nthPeek) return null;
+
+  const peekMeta = peekStreamingToolPayloadNth(streamingText, nthPeek);
+  if (!peekMeta) return null;
+  const peekBody = peekStreamingToolArgBodyNth(streamingText, nthPeek);
+  const peekPath = peekMeta.tool === "create_file" ? (peekStreamingCreatePathNth(streamingText, nthPeek) ?? "") : "";
+
+  if (peekMeta.tool === "create_file") {
+    if (peekBody == null && !peekPath) return null;
+    return { type: "action", iteration, tool: "create_file", input: { path: peekPath, content: "" } };
+  }
+  if (peekBody == null) return null;
+  return { type: "action", iteration, tool: "write_patch", input: { patches: "" } };
+}
+
+function diskSettledForAction(e: UIEvent, all: UIEvent[]): boolean | undefined {
+  if (e.type !== "action") return undefined;
+  if (!isWriteToolName(e.tool)) return undefined;
+  const iter = e.iteration ?? -1;
+  const actionIdx = all.indexOf(e);
+  if (actionIdx === -1) return false;
+  const settles = all.filter(
+    (x) => x.type === "tool_disk_settled" && (x as UIEvent).iteration === iter,
+  ) as UIEvent[];
+  const key = e.actionKey;
+  if (key) {
+    const hit = settles.find((x) => (x as UIEvent).actionKey === key);
+    if (hit) return (hit as UIEvent).ok !== false;
+    return false;
+  }
+  const priorWrites = all.slice(0, actionIdx + 1).filter(
+    (x) =>
+      x.type === "action" &&
+      (x as UIEvent).iteration === iter &&
+      isWriteToolName((x as UIEvent).tool),
+  );
+  const writeIndex = priorWrites.length - 1;
+  const hit = settles[writeIndex];
+  if (hit) return (hit as UIEvent).ok !== false;
+  return false;
+}
+
+/** One combined `observation` often closes all rows at once — collapse earlier write rows as soon as the next ACTION appears. */
+function priorWriteCollapsedBySuccessorAction(steps: UIEvent[], actionIdx: number, ev: UIEvent): boolean {
+  if (ev.type !== "action") return false;
+  if (!isWriteToolName(ev.tool)) return false;
+  const it = Number(ev.iteration) || 1;
+  if (diskSettledForAction(ev, steps as UIEvent[]) !== true) return false;
+  for (let k = actionIdx + 1; k < steps.length; k++) {
+    const x = steps[k] as UIEvent;
+    if (x.type === "action" && (Number(x.iteration) || 1) === it) return true;
+    if (x.type === "observation" && (Number(x.iteration) || 1) === it) return false;
+  }
+  return false;
+}
+
+/** Stable key suffix from `FILE:` line for split write_patch accordion keys. */
+function writePatchAccordionSlug(patchSection: string, fi: number): string {
+  const m = patchSection.match(/^\s*FILE:\s*(.+?)\s*$/im);
+  const raw = (m?.[1] ?? "").trim();
+  const leaf = raw.split(/[/\\]/).filter(Boolean).pop() ?? raw;
+  return leaf.replace(/\W+/g, "-").slice(0, 56) || `f${fi}`;
+}
+
+function streamingThoughtExtract(buf: string): string {
+  const thoughtMatch = buf.match(/THOUGHT:\s*([\s\S]*?)(?=\n+ACTION:|\n+FINAL:|$)/i);
+  let t = thoughtMatch?.[1]?.trim() || "";
+  if (!t) {
+    t = buf
+      .replace(/\n+ACTION:[\s\S]*$/i, "")
+      .replace(/\n+FINAL:[\s\S]*$/i, "")
+      .replace(/\{[\s\S]*"type"\s*:\s*"[^"]+"/i, "")
+      .trim();
+  }
+  return t;
+}
+
+function firstObservationAfter(
+  steps: UIEvent[],
+  startIdx: number,
+  iteration: number | undefined,
+): { ev: UIEvent; idx: number } | undefined {
+  for (let k = startIdx; k < steps.length; k++) {
+    const ev = steps[k];
+    if (ev.type !== "observation") continue;
+    const oi = ev.iteration;
+    const ai = iteration;
+    if (oi === ai || (oi === undefined && ai === undefined)) return { ev, idx: k };
+  }
+  return undefined;
 }
 
 // ---------- sub-components ----------
+
+function isRedundantUiLog(ev: UIEvent): boolean {
+  if (ev.type !== "log") return false;
+  const msg = String(ev.message ?? "").trim();
+  if (/^(Ask|Agent) mode starting:/.test(msg)) return true;
+  if (/^Selected \d+ relevant files\.?$/.test(msg)) return true;
+  if (/^Created checkpoint \(/.test(msg)) return true;
+  return false;
+}
 
 function MentionChips({ text }: { text: string }) {
   const mentions = extractMentions(text);
@@ -217,21 +331,247 @@ function UserMessage({
   );
 }
 
-/** Auto-scrolling thought box for streaming content */
-function StreamingThoughtBox({ content }: { content: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.scrollTop = ref.current.scrollHeight;
-    }
-  }, [content]);
-  return (
-    <div className="streaming-thought">
-      <div className="streaming-thought-content" ref={ref}>
-        <Markdown>{content}</Markdown>
-        <span className="caret" />
+function isTraceLogLike(e: UIEvent): boolean {
+  if (e.type === "log" && !String(e.message || "").startsWith("Parse error:")) return true;
+  if (e.type === "policy_decision" && (e.decision === "deny" || e.decision === "allow_always")) return true;
+  return false;
+}
+
+/** Renders one compact INF / policy row inside a grouped activity block. */
+function TraceLogRow({ e }: { e: UIEvent }) {
+  if (e.type === "log") {
+    const lvl = e.level === "error" ? "ERR" : e.level === "warn" ? "WRN" : "INF";
+    return (
+      <div className="trace-log-flat agent-log-line">
+        <span className={`trace-log-lvl trace-log-lvl--${e.level || "info"}`}>{lvl}</span>
+        <span>{String(e.message ?? "")}</span>
       </div>
+    );
+  }
+  if (e.type === "policy_decision") {
+    if (e.decision === "deny") {
+      return (
+        <div className="trace-log-flat trace-log-flat--deny agent-log-line">
+          <span className="trace-log-lvl trace-log-lvl--error">BLK</span>
+          <span>{(e.cmd ?? "").slice(0, 120)}{(e.cmd ?? "").length > 120 ? "…" : ""}</span>
+        </div>
+      );
+    }
+    if (e.decision === "allow_always") {
+      return (
+        <div className="trace-log-flat agent-log-line">
+          <span className="trace-log-lvl trace-log-lvl--ok">OK</span>
+          <span>{(e.cmd ?? "").slice(0, 120)}</span>
+        </div>
+      );
+    }
+  }
+  return null;
+}
+
+function TraceLogGroup({ items }: { items: UIEvent[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="agent-log-group" role="log" aria-label="Agent activity">
+      {items.map((ev, idx) => (
+        <TraceLogRow key={`${idx}-${ev.type}`} e={ev} />
+      ))}
     </div>
+  );
+}
+
+function thoughtCollapsedPreview(raw: string, maxChars = 100): string {
+  const flat = raw
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .replace(/\n+/g, " ")
+    .replace(/\*{1,2}/g, "");
+  if (flat.length <= maxChars) return flat;
+  return `${flat.slice(0, maxChars - 1)}…`;
+}
+
+function uiObservationToToolObservation(o?: UIEvent) {
+  if (!o || o.type !== "observation") return undefined;
+  return {
+    ok: o.ok ?? false,
+    summary: o.summary ?? "",
+    diffs: o.diffs,
+  };
+}
+
+/** Same peek rules as TraceStep writes — keeps accordion header Applying state accurate. */
+function actionStreamingArgPreview(
+  ev: UIEvent,
+  pairedObservation: UIEvent | undefined,
+  streamingPartial: string,
+  isStreamingTurn: boolean,
+  streamingActionNth: number,
+): string | undefined {
+  if (ev.type !== "action") return undefined;
+  const toolName = (ev.tool || "").toLowerCase();
+  const inFlightWrite =
+    !pairedObservation &&
+    (toolName === "write_patch" || toolName === "create_file") &&
+    streamingPartial.trim().length > 0;
+  if (!(isStreamingTurn || inFlightWrite)) return undefined;
+  if (toolName !== "write_patch" && toolName !== "create_file") return undefined;
+  return peekStreamingToolArgBodyNth(streamingPartial, streamingActionNth) ?? undefined;
+}
+
+/** Left-border + summary tint cue for filesystem vs mutate vs terminal vs search. */
+function toolAccordionAccent(tool?: string): string {
+  const x = String(tool || "").toLowerCase();
+  if (x === "write_patch" || x === "create_file") return "mutate-fs";
+  if (x === "read_file" || x === "list_files") return "read-fs";
+  if (x === "run_command") return "terminal";
+  if (x === "search_code") return "search";
+  if (x === "codebase_map") return "map";
+  return "generic";
+}
+
+function ActionAccordionFold({
+  ev,
+  pairedObservation,
+  streamingPartial,
+  isStreamingTurn,
+  allEvents,
+  writePatchHeaderPreview,
+  streamingActionOrdinal,
+  priorWriteCollapsedBySuccessor,
+  children,
+}: {
+  ev: UIEvent;
+  pairedObservation?: UIEvent;
+  streamingPartial: string;
+  isStreamingTurn: boolean;
+  allEvents: UIEvent[];
+  /** One FILE section when a write_patch accordion is FILE-split — keeps header/teaser from merging all paths. */
+  writePatchHeaderPreview?: string;
+  /** Which ACTION blob in streamingPartial aligns with `ev` (multi-ACTION SSE turns share one token buffer). */
+  streamingActionOrdinal?: number;
+  /** Write finished on disk but stream still lists a later ACTION in the same iteration (focus the active row). */
+  priorWriteCollapsedBySuccessor?: boolean;
+  children: React.ReactNode;
+}) {
+  if (ev.type !== "action") return <>{children}</>;
+  /** Open while APPLYING/RUNNING; collapse once paired observation arrives (minimal Copilot-ish list). */
+  const awaitingObservation = pairedObservation?.type !== "observation";
+  const supersede = Boolean(priorWriteCollapsedBySuccessor);
+  const [foldOpen, setFoldOpen] = useState(() => awaitingObservation && !supersede);
+  useEffect(() => {
+    if (pairedObservation?.type === "observation") setFoldOpen(false);
+  }, [pairedObservation]);
+  useEffect(() => {
+    if (supersede) setFoldOpen(false);
+  }, [supersede]);
+  const streamOrd = streamingActionOrdinal ?? 0;
+  const defaultArgPreview = actionStreamingArgPreview(
+    ev,
+    pairedObservation,
+    streamingPartial,
+    isStreamingTurn,
+    streamOrd,
+  );
+  const headerStreamingPreview = writePatchHeaderPreview ?? defaultArgPreview;
+  const accent = toolAccordionAccent(ev.tool);
+  return (
+    <details
+      className={`assistant-action-fold assistant-action-accent--${accent}`}
+      open={foldOpen}
+      onToggle={(e) => setFoldOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="assistant-action-fold-sum tool-header">
+        <span className="assistant-action-fold-chev" aria-hidden>
+          <ChevronExpand expanded={foldOpen} size={15} />
+        </span>
+        <ToolAccordionHeader
+          tool={ev.tool || "unknown"}
+          input={(ev.input || {}) as Record<string, unknown>}
+          observation={uiObservationToToolObservation(pairedObservation)}
+          streamingArgPreview={headerStreamingPreview}
+          diskSettledOk={diskSettledForAction(ev, allEvents)}
+        />
+      </summary>
+      <div className="assistant-action-fold-body">{children}</div>
+    </details>
+  );
+}
+
+/** Drop open whileThought streams; tuck behind summary once tools begin for this iteration. */
+function LiveThoughtStreamFold({
+  isStreamingAssistant,
+  markdown,
+  startedAt,
+  collapseWhenToolsVisible,
+}: {
+  isStreamingAssistant: boolean;
+  markdown: string;
+  startedAt?: number;
+  collapseWhenToolsVisible?: boolean;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const autoOpenedRef = useRef(false);
+  /** Default collapsed until first reasoning text lands (respects Cursor-style skim). */
+  const [open, setOpen] = useState(false);
+  /** Once ACTIONS begin we tuck this fold away — summary must not resemble an active stream (dots + ticking timer). */
+  const streamingChrome = Boolean(isStreamingAssistant && !collapseWhenToolsVisible);
+  useEffect(() => {
+    if (collapseWhenToolsVisible) {
+      setOpen(false);
+      return;
+    }
+    if (!streamingChrome || !markdown.trim()) return;
+    if (autoOpenedRef.current) return;
+    autoOpenedRef.current = true;
+    setOpen(true);
+  }, [collapseWhenToolsVisible, streamingChrome, markdown]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [markdown, open]);
+
+  const elapsed =
+    streamingChrome && startedAt ? formatDuration(Date.now() - startedAt) : null;
+  const hasMd = markdown.trim().length > 0;
+
+  const summaryPrimary =
+    !streamingChrome
+      ? "Thought"
+      : hasMd && elapsed
+        ? `Thinking · ${elapsed}`
+        : hasMd
+          ? "Thinking…"
+          : elapsed
+            ? `Analyzing · ${elapsed}`
+            : "Analyzing…";
+
+  return (
+    <details
+      className="assistant-stream-thought trace-reasoning assistant-thought-box thought-section assistant-live-thought"
+      open={open}
+      onToggle={(ev) => setOpen((ev.target as HTMLDetailsElement).open)}
+    >
+      <summary className="trace-reasoning-summary assistant-stream-thought-sum assistant-live-thought-summary">
+        <span className="assistant-thought-fold-chev" aria-hidden>
+          <ChevronExpand expanded={open} size={15} />
+        </span>
+        <IconBrain size={13} strokeWidth={1.75} className="assistant-thought-icon" aria-hidden />
+        {streamingChrome && !hasMd ? (
+          <span className="thinking-dots" aria-hidden><span /><span /><span /></span>
+        ) : null}
+        <span className="assistant-thought-summary-label">{summaryPrimary}</span>
+      </summary>
+      <div ref={scrollRef} className="assistant-stream-thought-scroll assistant-thought-content">
+        {hasMd ? (
+          <div className="assistant-stream-thought-md">
+            <Markdown>{markdown}</Markdown>
+          </div>
+        ) : (
+          <div className="assistant-stream-thought-placeholder">Analyzing…</div>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -239,109 +579,120 @@ function TraceStep({
   e,
   observation,
   streamPreview,
+  allEvents,
+  streamingPartial,
+  isStreamingTurn,
+  suppressToolHeader,
+  streamingWritePatchArg,
+  streamingActionOrdinal,
+  suppressWritePatchObservationFollowup,
 }: {
   e: UIEvent;
   observation?: UIEvent;
-  /** Live stdout/stderr merged from command_chunk events (hidden once observation exists). */
   streamPreview?: string;
+  allEvents: UIEvent[];
+  streamingPartial: string;
+  isStreamingTurn: boolean;
+  /** When wrapped in accordion summary, omit duplicate Copilot-style tool row */
+  suppressToolHeader?: boolean;
+  /**
+   * When set (including ""), replaces global peek extraction for write_patch —
+   * used when one SSE action is split into one accordion per FILE.
+   */
+  streamingWritePatchArg?: string;
+  /** Streams may contain multiple sequential ACTION payloads; align peek with persisted row order. */
+  streamingActionOrdinal?: number;
+  suppressWritePatchObservationFollowup?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  let kind: string | null = null;
-  let label = "";
-  let body: React.ReactNode = null;
-  let useToolOutput = false;
-
   if (e.type === "thought") {
-    kind = "Thinking";
-    label = "";
-    body = e.thought?.trim()
-      ? <div className="trace-md"><Markdown>{e.thought}</Markdown></div>
-      : null;
-  } else if (e.type === "action") {
-    // Use the new ToolOutput component for actions
-    useToolOutput = true;
-    const obs = observation ? {
-      ok: observation.ok ?? false,
-      summary: observation.summary ?? "",
-      diffs: observation.diffs,
-    } : undefined;
-    body = (
-      <ToolOutput
-        tool={e.tool || "unknown"}
-        input={e.input || {}}
-        observation={obs}
-        streamPreview={streamPreview}
-      />
+    if (!e.thought?.trim()) return null;
+    const it = Number(e.iteration) || 1;
+    const peek = thoughtCollapsedPreview(e.thought!);
+    return (
+      <details className="thought-step-archive trace-reasoning assistant-thought-box thought-section">
+        <summary className="trace-reasoning-summary thought-step-archive-summary">
+          <span className="thought-step-archive-sum-left">
+            <IconBrain size={14} strokeWidth={1.75} className="thought-step-archive-icon" aria-hidden />
+            <span className="thought-step-archive-title">Step {it}</span>
+          </span>
+          <span className="thought-step-archive-preview">{peek}</span>
+        </summary>
+        <div className="trace-md trace-thought-body trace-reasoning-body assistant-thought-content">
+          <Markdown>{e.thought}</Markdown>
+        </div>
+      </details>
     );
-  } else if (e.type === "observation") {
-    // Standalone observation (shouldn't happen normally, but handle gracefully)
-    kind = e.ok ? "Done" : "Failed";
-    const summary = e.summary ?? "";
-    label = summary.split("\n")[0].slice(0, 100) + (summary.includes("\n") ? "…" : "");
-    body = <pre className="trace-pre">{summary}</pre>;
-  } else if (e.type === "log") {
-    kind = e.level === "error" ? "Error" : e.level === "warn" ? "Warning" : "Info";
-    label = String(e.message ?? "");
-    body = null;
-  } else if (e.type === "policy_decision") {
-    if (e.decision === "deny") {
-      kind = "Blocked";
-      label = (e.cmd ?? "").slice(0, 72) + ((e.cmd ?? "").length > 72 ? "…" : "");
-      body = <pre className="trace-pre">{e.reason ?? "blocked"}{e.matched ? `\nmatched: ${e.matched}` : ""}</pre>;
-    } else if (e.decision === "allow_always") {
-      kind = "Trusted";
-      label = (e.cmd ?? "").slice(0, 72) + ((e.cmd ?? "").length > 72 ? "…" : "");
-      body = null;
-    } else {
-      label = String(e.cmd ?? e.type);
-    }
-  } else {
-    label = String(e.message ?? e.type);
   }
 
-  // For ToolOutput, render directly without the standard trace-step wrapper
-  if (useToolOutput) {
+  if (e.type === "action") {
+    const obs = observation
+      ? {
+          ok: observation.ok ?? false,
+          summary: observation.summary ?? "",
+          diffs: observation.diffs,
+        }
+      : undefined;
+    const toolName = (e.tool || "").toLowerCase();
+    const inFlightWrite =
+      !observation &&
+      (toolName === "write_patch" || toolName === "create_file") &&
+      streamingPartial.trim().length > 0;
+    let argPeek: string | undefined;
+    if (toolName === "write_patch" && streamingWritePatchArg !== undefined) {
+      argPeek = streamingWritePatchArg.trim() ? streamingWritePatchArg : undefined;
+    } else if (
+      (isStreamingTurn || inFlightWrite) &&
+      (toolName === "write_patch" || toolName === "create_file")
+    ) {
+      argPeek =
+        peekStreamingToolArgBodyNth(streamingPartial, streamingActionOrdinal ?? 0) ?? undefined;
+    } else {
+      argPeek = undefined;
+    }
     return (
-      <div className="trace-step trace-action trace-tool-output">
-        {body}
+      <div className="trace-tool-row trace-tool-output">
+        <ToolOutput
+          tool={e.tool || "unknown"}
+          input={e.input || {}}
+          observation={obs}
+          streamPreview={streamPreview}
+          streamingArgPreview={argPeek}
+          diskSettledOk={diskSettledForAction(e, allEvents)}
+          suppressHeader={suppressToolHeader}
+          suppressObservationFollowup={suppressWritePatchObservationFollowup}
+        />
       </div>
     );
   }
 
-  const expandable = !!body;
+  if (e.type === "log") {
+    return <TraceLogRow e={e} />;
+  }
 
-  return (
-    <div className={`trace-step trace-${e.type}${open ? " is-open" : ""}`}>
-      <button
-        type="button"
-        className="trace-step-head"
-        onClick={() => expandable && setOpen((v) => !v)}
-        disabled={!expandable}
-        title={expandable ? (open ? "Collapse" : "Expand") : undefined}
-      >
-        <span className="trace-step-gutter" aria-hidden>
-          {expandable ? <ChevronExpand expanded={open} className="trace-chev" size={14} /> : <span className="trace-step-dot" />}
-        </span>
-        <span className="trace-step-text">
-          {kind && <span className="trace-step-kind">{kind}</span>}
-          {label ? <span className="trace-label">{label}</span> : null}
-        </span>
-      </button>
-      {expandable && (
-        <div className="trace-step-body-shell" aria-hidden={!open}>
-          <div className="trace-step-body-inner">
-            {body ? <div className="trace-body">{body}</div> : null}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  if (e.type === "policy_decision") {
+    return <TraceLogRow e={e} />;
+  }
+
+  if (e.type === "observation") {
+    const summary = e.summary ?? "";
+    return (
+      <div className="trace-step trace-step--flat">
+        <div className="trace-step-flat-head">{e.ok ? "Done" : "Failed"}</div>
+        <pre className="trace-pre trace-obs-pre">{summary}</pre>
+      </div>
+    );
+  }
+
+  if (e.type === "command_chunk") return null;
+
+  return null;
 }
 
 function AssistantMessage({
   turn,
   isStreaming,
   streamingText,
+  streamingIteration,
   awaitingStop,
   sessionConnecting,
   onCopy,
@@ -353,9 +704,8 @@ function AssistantMessage({
   turn: ChatTurn;
   isStreaming: boolean;
   streamingText: string;
-  /** User requested stop; stream/backend may still be winding down */
+  streamingIteration?: number;
   awaitingStop: boolean;
-  /** Waiting for POST /session before SSE attaches */
   sessionConnecting: boolean;
   onCopy: () => void;
   onRegenerate: () => void;
@@ -375,146 +725,386 @@ function AssistantMessage({
       e.type === "action" ||
       e.type === "observation" ||
       e.type === "command_chunk" ||
-      (e.type === "log" && !String(e.message || "").startsWith("Parse error:")) ||
+      (e.type === "log" &&
+        !String(e.message || "").startsWith("Parse error:") &&
+        !isRedundantUiLog(e as UIEvent)) ||
       (e.type === "policy_decision" && (e.decision === "deny" || e.decision === "allow_always")),
   );
-  // Always start collapsed - user can expand if they want
-  const [traceOpen, setTraceOpen] = useState(false);
-  const traceListRef = useRef<HTMLDivElement>(null);
-  const [, setStreamClock] = useState(0);
+  const currentIter =
+    streamingIteration ??
+    Math.max(1, ...traceSteps.map((e) => Number((e as UIEvent).iteration) || 0));
+  const streamPeekAction = syntheticStreamingWriteAction(
+    isStreaming,
+    streamingText,
+    traceSteps,
+    currentIter,
+  );
+
+  const turnMode = turn.mode ?? "agent";
+
+  const [streamPulse, setStreamPulse] = useState(0);
   const finalText = finalEv?.result ?? "";
   const errorText = errorEv?.message ?? "";
   const duration = turn.endedAt && turn.startedAt ? formatDuration(turn.endedAt - turn.startedAt) : null;
-  const thoughtPreview = lastThoughtOneLine(traceSteps);
+  const streamingThoughtMarkdown = useMemo(
+    () => (isStreaming && streamingText.trim() ? streamingThoughtExtract(streamingText) : ""),
+    [isStreaming, streamingText],
+  );
 
-  const handleTraceToggle = () => {
-    setTraceOpen((v) => !v);
-  };
+  const finalizedThoughtIterations = useMemo(() => {
+    const set = new Set<number>();
+    for (const e of events as UIEvent[]) {
+      if (e.type !== "thought") continue;
+      if (!(e.thought ?? "").trim()) continue;
+      set.add(Number(e.iteration) || 1);
+    }
+    return set;
+  }, [events]);
+
+  const streamThoughtIter = streamingIteration ?? 1;
 
   useEffect(() => {
     if (!isStreaming) return;
-    const id = window.setInterval(() => setStreamClock((n) => n + 1), 400);
+    const id = window.setInterval(() => setStreamPulse((n) => n + 1), 400);
     return () => clearInterval(id);
   }, [isStreaming]);
 
-  const traceSummary = useMemo(() => {
-    if (isStreaming) return null;
-    if (duration) return `Thinking · ${duration}`;
-    if (traceSteps.length === 0) return null;
-    return `${traceSteps.length} step${traceSteps.length === 1 ? "" : "s"}`;
-  }, [isStreaming, duration, traceSteps.length]);
+  void streamPulse;
 
-  const streamingThinkingTitle =
-    isStreaming && turn.startedAt
-      ? `Thinking · ${formatDuration(Date.now() - turn.startedAt)}`
-      : "Thinking";
+  const hasAssistantActivity =
+    traceSteps.length > 0 || isStreaming || Boolean(streamPeekAction);
+
+  const phaseBanners = (
+    <>
+      {isStreaming && awaitingStop && (
+        <div className="msg-phase-banner msg-phase-banner--stop" role="status" aria-live="polite">
+          <span className="composer-spinner" aria-hidden />
+          <span>Stopping…</span>
+        </div>
+      )}
+      {isStreaming && !awaitingStop && sessionConnecting && (
+        <div className="msg-phase-banner msg-phase-banner--connect" role="status" aria-live="polite">
+          <span className="composer-spinner" aria-hidden />
+          <span>Connecting…</span>
+        </div>
+      )}
+    </>
+  );
+
+  const assistantStepListJsx = !hasAssistantActivity ? null : (
+    <div className="assistant-step-list">
+      <div className="agent-log-container agent-log-timeline">
+      {(() => {
+        const rendered: React.ReactNode[] = [];
+        const skipIndices = new Set<number>();
+        let liveFoldInjected = false;
+
+        const wantLiveThoughtPanel =
+          turnMode === "agent" &&
+          isStreaming &&
+          !finalizedThoughtIterations.has(streamThoughtIter);
+
+        const peekMatchesThoughtIter =
+          streamPeekAction != null && Number(streamPeekAction.iteration || 1) === streamThoughtIter;
+        const hasActionStepThisThoughtIter = traceSteps.some(
+          (ev) =>
+            ev.type === "action" &&
+            Number((ev as UIEvent).iteration || 1) === streamThoughtIter,
+        );
+        const thoughtCollapseForTools =
+          peekMatchesThoughtIter || hasActionStepThisThoughtIter;
+
+        function pushLiveThoughtIfNeeded(marker: string) {
+          void marker;
+          if (liveFoldInjected || !wantLiveThoughtPanel) return;
+          rendered.push(
+            <LiveThoughtStreamFold
+              key={`live-th-${turn.id}-${streamThoughtIter}`}
+              isStreamingAssistant={Boolean(isStreaming)}
+              markdown={streamingThoughtMarkdown}
+              startedAt={turn.startedAt}
+              collapseWhenToolsVisible={thoughtCollapseForTools}
+            />,
+          );
+          liveFoldInjected = true;
+        }
+
+        traceSteps.forEach((e, i) => {
+          if (skipIndices.has(i)) return;
+          if (e.type === "command_chunk") return;
+
+          if (e.type === "thought") {
+            rendered.push(
+              <TraceStep
+                key={`th-${Number((e as UIEvent).iteration) || 1}-${i}`}
+                e={e as UIEvent}
+                allEvents={events as UIEvent[]}
+                streamingPartial={streamingText}
+                isStreamingTurn={isStreaming}
+              />,
+            );
+            return;
+          }
+
+          if (e.type === "action") {
+            const ev = e as UIEvent;
+            const streamOrd = streamedActionOrdinalAtStep(traceSteps as UIEvent[], i);
+            const actIter = Number(ev.iteration) || 1;
+            if (!liveFoldInjected && actIter === streamThoughtIter) {
+              pushLiveThoughtIfNeeded("before_action");
+            }
+
+            let j = i + 1;
+            let stream = "";
+            while (j < traceSteps.length && traceSteps[j].type === "command_chunk") {
+              const ch = traceSteps[j] as UIEvent;
+              if (ev.iteration !== undefined && ch.iteration !== undefined && ch.iteration !== ev.iteration) break;
+              const t = String(ch.text ?? "");
+              if (t) stream += ch.stream === "stderr" ? `[stderr] ${t}` : t;
+              skipIndices.add(j);
+              j++;
+            }
+            const paired = firstObservationAfter(traceSteps, j, ev.iteration);
+            const hasObservation = paired != null;
+            const inp = ev.input ?? {};
+            const isWp = (ev.tool || "").toLowerCase() === "write_patch";
+            let patchSlices: string[] | null = null;
+            if (isWp) {
+              const stored = String((inp as Record<string, unknown>).patches ?? (inp as Record<string, unknown>).patch ?? "");
+              const merged = mergeWritePatchStreamBody(stored, streamingText, hasObservation, streamOrd);
+              const slices = splitWritePatchByFileSections(merged);
+              if (slices.length > 1) patchSlices = slices;
+            }
+
+            const collapsePriorBecauseSuccessor = priorWriteCollapsedBySuccessorAction(
+              traceSteps as UIEvent[],
+              i,
+              ev,
+            );
+
+            const renderBodySingle = (): ReactNode =>
+              paired ? (
+                <TraceStep
+                  key={`ts-${i}`}
+                  e={ev}
+                  observation={paired.ev}
+                  allEvents={events as UIEvent[]}
+                  streamingPartial={streamingText}
+                  isStreamingTurn={isStreaming}
+                  streamingActionOrdinal={streamOrd}
+                  suppressToolHeader
+                />
+              ) : (
+                <TraceStep
+                  key={`ts-${i}`}
+                  e={ev}
+                  streamPreview={stream.trim() ? stream : undefined}
+                  allEvents={events as UIEvent[]}
+                  streamingPartial={streamingText}
+                  isStreamingTurn={isStreaming}
+                  streamingActionOrdinal={streamOrd}
+                  suppressToolHeader
+                />
+              );
+
+            if (!patchSlices) {
+              rendered.push(
+                <ActionAccordionFold
+                  key={`acc-act-${actIter}-${i}-${ev.tool ?? "tool"}`}
+                  ev={ev}
+                  pairedObservation={paired?.ev}
+                  streamingPartial={streamingText}
+                  isStreamingTurn={isStreaming}
+                  allEvents={events as UIEvent[]}
+                  streamingActionOrdinal={streamOrd}
+                  priorWriteCollapsedBySuccessor={collapsePriorBecauseSuccessor}
+                >
+                  {renderBodySingle()}
+                </ActionAccordionFold>,
+              );
+            } else {
+              patchSlices.forEach((slice, fi) => {
+                const slug = writePatchAccordionSlug(slice, fi);
+                const baseInp = typeof inp === "object" && inp ? (inp as Record<string, unknown>) : {};
+                const sliceEv = {
+                  ...ev,
+                  input: { ...baseInp, patches: slice },
+                } as UIEvent;
+
+                const body = paired ? (
+                  <TraceStep
+                    key={`ts-${i}-wp-${fi}`}
+                    e={sliceEv}
+                    observation={paired.ev}
+                    allEvents={events as UIEvent[]}
+                    streamingPartial={streamingText}
+                    isStreamingTurn={isStreaming}
+                    streamingActionOrdinal={streamOrd}
+                    suppressToolHeader
+                    suppressWritePatchObservationFollowup={fi !== 0}
+                  />
+                ) : (
+                  <TraceStep
+                    key={`ts-${i}-wp-${fi}`}
+                    e={sliceEv}
+                    streamPreview={fi === 0 && stream.trim() ? stream : undefined}
+                    streamingWritePatchArg={peekWritePatchSectionNth(streamingText, streamOrd, fi) ?? ""}
+                    allEvents={events as UIEvent[]}
+                    streamingPartial={streamingText}
+                    isStreamingTurn={isStreaming}
+                    streamingActionOrdinal={streamOrd}
+                    suppressToolHeader
+                    suppressWritePatchObservationFollowup={fi !== 0}
+                  />
+                );
+
+                rendered.push(
+                  <ActionAccordionFold
+                    key={`acc-act-${actIter}-${i}-wp-${fi}-${slug}`}
+                    ev={sliceEv}
+                    pairedObservation={paired?.ev}
+                    streamingPartial={streamingText}
+                    isStreamingTurn={isStreaming}
+                    allEvents={events as UIEvent[]}
+                    streamingActionOrdinal={streamOrd}
+                    priorWriteCollapsedBySuccessor={collapsePriorBecauseSuccessor}
+                    writePatchHeaderPreview={peekWritePatchSectionNth(streamingText, streamOrd, fi) ?? slice}
+                  >
+                    {body}
+                  </ActionAccordionFold>,
+                );
+              });
+            }
+
+            if (paired) skipIndices.add(paired.idx);
+            return;
+          }
+
+          const ev = e as UIEvent;
+          if (isTraceLogLike(ev)) {
+            if (i > 0 && isTraceLogLike(traceSteps[i - 1] as UIEvent)) return;
+            const group: UIEvent[] = [];
+            let j = i;
+            while (j < traceSteps.length && !skipIndices.has(j)) {
+              const x = traceSteps[j] as UIEvent;
+              if (!isTraceLogLike(x)) break;
+              group.push(x);
+              j++;
+            }
+            if (group.length > 0) {
+              rendered.push(<TraceLogGroup key={`loggrp-${i}`} items={group} />);
+            }
+            return;
+          }
+
+          rendered.push(
+            <TraceStep
+              key={`misc-${i}`}
+              e={ev}
+              allEvents={events as UIEvent[]}
+              streamingPartial={streamingText}
+              isStreamingTurn={isStreaming}
+            />,
+          );
+        });
+
+        if (streamPeekAction) {
+          const peekIt = Number(streamPeekAction.iteration) || 1;
+          /** Synthetic peek row aligns with buffered ACTION blobs not yet flushed as SSE `action` events. */
+          const peekStreamOrd = streamedActionCountForIteration(traceSteps as UIEvent[], peekIt);
+          if (!liveFoldInjected && peekIt === streamThoughtIter) {
+            pushLiveThoughtIfNeeded("before_peek");
+          }
+          const peekInRaw = streamPeekAction.input ?? {};
+          const basePeekInp =
+            typeof peekInRaw === "object" && peekInRaw ? (peekInRaw as Record<string, unknown>) : {};
+          const isPeekWp = streamPeekAction.tool?.toLowerCase() === "write_patch";
+          let peekSlices: string[] | null = null;
+          if (isPeekWp) {
+            const storedPeek = String(basePeekInp.patches ?? basePeekInp.patch ?? "");
+            const peekMerged = mergeWritePatchStreamBody(storedPeek, streamingText, false, peekStreamOrd);
+            const ps = splitWritePatchByFileSections(peekMerged);
+            if (ps.length > 1) peekSlices = ps;
+          }
+
+          const pushPeekSingle = (): void => {
+            rendered.push(
+              <ActionAccordionFold
+                key={`acc-peek-${streamPeekAction.iteration}-${streamPeekAction.tool}-${String(streamPeekAction.input?.path ?? "patch")}`}
+                ev={streamPeekAction}
+                pairedObservation={undefined}
+                streamingPartial={streamingText}
+                isStreamingTurn={isStreaming}
+                allEvents={events as UIEvent[]}
+                streamingActionOrdinal={peekStreamOrd}
+              >
+                <TraceStep
+                  key="stream-peek-ts"
+                  e={streamPeekAction}
+                  allEvents={events as UIEvent[]}
+                  streamingPartial={streamingText}
+                  isStreamingTurn={isStreaming}
+                  streamingActionOrdinal={peekStreamOrd}
+                  suppressToolHeader
+                />
+              </ActionAccordionFold>,
+            );
+          };
+
+          if (!peekSlices) {
+            pushPeekSingle();
+          } else {
+            peekSlices.forEach((slice, fi) => {
+              const slug = writePatchAccordionSlug(slice, fi);
+              const sliceEv = {
+                ...streamPeekAction,
+                input: { ...basePeekInp, patches: slice },
+              } as UIEvent;
+              rendered.push(
+                <ActionAccordionFold
+                  key={`acc-peek-${streamPeekAction.iteration}-wp-${fi}-${slug}`}
+                  ev={sliceEv}
+                  pairedObservation={undefined}
+                  streamingPartial={streamingText}
+                  isStreamingTurn={isStreaming}
+                  allEvents={events as UIEvent[]}
+                  streamingActionOrdinal={peekStreamOrd}
+                  writePatchHeaderPreview={peekWritePatchSectionNth(streamingText, peekStreamOrd, fi) ?? slice}
+                >
+                  <TraceStep
+                    key={`stream-peek-ts-${fi}`}
+                    e={sliceEv}
+                    streamingWritePatchArg={peekWritePatchSectionNth(streamingText, peekStreamOrd, fi) ?? ""}
+                    allEvents={events as UIEvent[]}
+                    streamingPartial={streamingText}
+                    isStreamingTurn={isStreaming}
+                    streamingActionOrdinal={peekStreamOrd}
+                    suppressToolHeader
+                    suppressWritePatchObservationFollowup={fi !== 0}
+                  />
+                </ActionAccordionFold>,
+              );
+            });
+          }
+        }
+
+        if (!liveFoldInjected && wantLiveThoughtPanel) {
+          pushLiveThoughtIfNeeded("eof_tail");
+        }
+
+        return rendered;
+      })()}
+      </div>
+    </div>
+  );
 
   return (
     <div className="msg msg-assistant">
       <div className="msg-content">
-        {isStreaming && awaitingStop && (
-          <div className="msg-phase-banner msg-phase-banner--stop" role="status" aria-live="polite">
-            <span className="composer-spinner" aria-hidden />
-            <span>Stopping…</span>
-          </div>
-        )}
-        {isStreaming && !awaitingStop && sessionConnecting && (
-          <div className="msg-phase-banner msg-phase-banner--connect" role="status" aria-live="polite">
-            <span className="composer-spinner" aria-hidden />
-            <span>Connecting…</span>
-          </div>
-        )}
-        {(traceSteps.length > 0 || isStreaming) && (
-          <div className={`trace ${traceOpen ? "open" : ""} ${isStreaming ? "trace--streaming" : ""}`}>
-            <button
-              type="button"
-              className={`trace-toggle${thoughtPreview ? " trace-toggle--has-preview" : ""}`}
-              onClick={handleTraceToggle}
-              title={thoughtPreview && thoughtPreview.length >= 140 ? thoughtPreview : undefined}
-            >
-              <span className="trace-toggle-gutter" aria-hidden>
-                <ChevronExpand expanded={traceOpen} className="trace-toggle-icon" size={14} />
-              </span>
-              <span className="trace-toggle-main">
-                {isStreaming ? (
-                  <span className="trace-head-streaming">
-                    <span className="thinking-dots" aria-hidden><span /><span /><span /></span>
-                    <span className="trace-head-label">{streamingThinkingTitle}</span>
-                  </span>
-                ) : (
-                  <span className="trace-head-label">{traceSummary}</span>
-                )}
-                {thoughtPreview && (
-                  <span className="trace-head-preview">{thoughtPreview}</span>
-                )}
-              </span>
-            </button>
-            <div className="trace-list-shell" aria-hidden={!traceOpen}>
-              <div className="trace-list-inner">
-                <div className="trace-list" ref={traceListRef}>
-                  {(() => {
-                    // Group action + observation pairs together
-                    const rendered: React.ReactNode[] = [];
-                    const skipIndices = new Set<number>();
-
-                    traceSteps.forEach((e, i) => {
-                      if (skipIndices.has(i)) return;
-
-                      if (e.type === "action") {
-                        let j = i + 1;
-                        let stream = "";
-                        const actIter = e.iteration;
-                        while (j < traceSteps.length && traceSteps[j].type === "command_chunk") {
-                          const ch = traceSteps[j] as UIEvent;
-                          if (actIter !== undefined && ch.iteration !== undefined && ch.iteration !== actIter) break;
-                          const t = String(ch.text ?? "");
-                          if (t) stream += ch.stream === "stderr" ? `[stderr] ${t}` : t;
-                          skipIndices.add(j);
-                          j++;
-                        }
-                        const nextObs = traceSteps[j];
-                        if (nextObs?.type === "observation") {
-                          skipIndices.add(j);
-                          rendered.push(<TraceStep key={i} e={e} observation={nextObs} />);
-                        } else {
-                          rendered.push(
-                            <TraceStep key={i} e={e} streamPreview={stream.trim() ? stream : undefined} />,
-                          );
-                        }
-                      } else if (e.type === "observation") {
-                        rendered.push(<TraceStep key={i} e={e} />);
-                      } else {
-                        rendered.push(<TraceStep key={i} e={e} />);
-                      }
-                    });
-
-                    return rendered;
-                  })()}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Streaming content OUTSIDE trace box - with its own auto-scroll */}
-        {isStreaming && !finalText && streamingText && (() => {
-          // Extract meaningful content - remove ACTION/JSON parts
-          const thoughtMatch = streamingText.match(/THOUGHT:\s*([\s\S]*?)(?=\n\nACTION:|$)/i);
-          let displayContent = thoughtMatch?.[1]?.trim() || "";
-          
-          if (!displayContent) {
-            displayContent = streamingText
-              .replace(/ACTION:\s*\{[\s\S]*$/i, "")
-              .replace(/\{[\s\S]*"type"\s*:\s*"[^"]+"/i, "")
-              .trim();
-          }
-          
-          if (!displayContent) return null;
-          return <StreamingThoughtBox content={displayContent} />;
-        })()}
-
+        {phaseBanners}
+        {assistantStepListJsx}
         {finalText && (
-          <div className="msg-text">
+          <div className="assistant-answer msg-text">
             <Markdown>{finalText}</Markdown>
           </div>
         )}
@@ -565,6 +1155,9 @@ function AssistantMessage({
 
 // ---------- main ----------
 
+/** If the user stays within this many px of the chat-log bottom, new tokens keep pinning the tail. */
+const CHAT_LOG_STICK_BOTTOM_PX = 140;
+
 export function Chat({
   session, onUpdate, onDiffs, onAfterRun, refreshKey,
   diffs, onUpdateDiff, onClearDiffs, onRemoveDiff, onOpenFile, onOpenDiff,
@@ -592,7 +1185,9 @@ export function Chat({
   /** True after Stop/Esc until the run finishes cleanup (SSE close + abort acknowledged). */
   const [awaitingStop, setAwaitingStop] = useState(false);
   const [thinking, setThinking] = useState<{ iteration: number; partial: string } | null>(null);
+  /** Sticky-tail state for "↓ Latest" affordance — ref is authoritative to avoid stale effect reads while streaming replays batches. */
   const [autoScroll, setAutoScroll] = useState(true);
+  const stickToBottomRef = useRef(true);
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
   const [attachedImages, setAttachedImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
@@ -674,6 +1269,17 @@ export function Chat({
 
     flushPendingTokensNow();
 
+    // Parsed THOUGHT lands after token stream for this iteration ends; wipe the duplicate
+    // live buffer so the archived row replaces the expandable stream panel.
+    if (ev.type === "thought") {
+      setThinking((cur) => {
+        if (!cur) return cur;
+        const ti = ev.iteration ?? cur.iteration;
+        if (cur.iteration !== ti) return cur;
+        return { iteration: cur.iteration, partial: "" };
+      });
+    }
+
     if (ev.type === "iter_start") {
       tokenIterRef.current = ev.iteration ?? 1;
       setThinking({ iteration: ev.iteration ?? 1, partial: "" });
@@ -712,6 +1318,7 @@ export function Chat({
     const connectToSession = (backendSession: { id: string; task: string; mode: "ask" | "agent"; status: string; createdAt: number }) => {
       console.log("[Chat] Reconnecting to running session:", backendSession.id);
       setRunning(true);
+      stickToBottomRef.current = true;
       setAutoScroll(true);
       setAwaitingStop(false);
       stoppedRef.current = false;
@@ -958,18 +1565,29 @@ export function Chat({
     });
   }
 
-  // Auto-scroll only if the user is near the bottom (don't yank away their scroll)
-  useEffect(() => {
-    if (!autoScroll) return;
+  // Auto-scroll only when intentionally following tail — ref avoids React batch lag vs streamed updates.
+  useLayoutEffect(() => {
+    if (!stickToBottomRef.current) return;
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [session.turns, session.turns.map((t) => t.events.length).join(","), thinking?.partial, autoScroll]);
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [session.turns, session.turns.map((t) => t.events.length).join(","), thinking?.partial]);
+
+  const onWheelLog = useCallback((e: WheelEvent<HTMLDivElement>) => {
+    /** Decisively exit tail-follow mode on deliberate scroll-up (effects may run before scroll position updates). */
+    if (e.deltaY < -8) {
+      stickToBottomRef.current = false;
+      setAutoScroll(false);
+    }
+  }, []);
 
   function onScroll() {
     const el = logRef.current;
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setAutoScroll(distFromBottom < 80);
+    const near = distFromBottom < CHAT_LOG_STICK_BOTTOM_PX;
+    stickToBottomRef.current = near;
+    setAutoScroll(near);
   }
 
   function patchSession(fn: (s: ChatSession) => ChatSession) {
@@ -1006,6 +1624,7 @@ export function Chat({
     setTask("");
     setAttachedImages([]); // Clear images after capturing
     setRunning(true);
+    stickToBottomRef.current = true;
     setAutoScroll(true);
     setAwaitingStop(false);
     stoppedRef.current = false;
@@ -1418,7 +2037,7 @@ export function Chat({
         </div>
       )}
 
-      <div className="chat-log" ref={logRef} onScroll={onScroll}>
+      <div className="chat-log" ref={logRef} onScroll={onScroll} onWheel={onWheelLog}>
         {session.turns.length === 0 && (
           <div className="chat-empty">
             <div className="chat-empty-title">How can I help?</div>
@@ -1446,7 +2065,8 @@ export function Chat({
               <AssistantMessage
                 turn={turn}
                 isStreaming={isStreaming}
-                streamingText={thinking?.partial ?? ""}
+                streamingText={isStreaming ? thinking?.partial ?? "" : ""}
+                streamingIteration={isStreaming ? thinking?.iteration : undefined}
                 awaitingStop={awaitingStop}
                 sessionConnecting={sessionConnecting}
                 onCopy={() => {
@@ -1466,6 +2086,7 @@ export function Chat({
           <button
             className="scroll-bottom"
             onClick={() => {
+              stickToBottomRef.current = true;
               const el = logRef.current;
               if (el) el.scrollTop = el.scrollHeight;
               setAutoScroll(true);

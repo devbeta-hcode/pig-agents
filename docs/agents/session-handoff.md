@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-10 (Select Element to Chat + toolbar/keyboard/browser improvements)
+Last updated: 2026-05-08 (timeline accordion body inset aligns with disclosure chevron)
 
 ---
 
@@ -182,6 +182,110 @@ The dev server URLs:
   - Model dropdown: `right:0; width:auto` so it doesn't overflow the chat panel
 
 ### Last session (2026-05-08)
+
+- **Timeline content inset:** On `.agent-log-timeline`, added `--assistant-timeline-content-inset` (matches summary `padding-left` + `.assistant-action-fold-chev`/`assistant-thought-fold-chev` 22px + flex gap); ACTION fold bodies (`.tool-details`, stream previews, `.tool-create-stream`) and live Thought scroll use it so payloads line up with the header row instead of drifting on a separate 20px indent. Files: `app/frontend/src/styles.css`.
+
+- **Tool timeline single-expand:** Removed inner “Show …” rows in `ToolOutput` for `read_file`, `list_files`, `search_code`, `run_command`, `create_file`, and `write_patch` observation follow-up so the outer timeline accordion is the only expand control; added `.tool-inline-body-*` spacing resets. Files: `app/frontend/src/components/ToolOutput.tsx`, `app/frontend/src/styles.css`.
+
+- **Multi-write ACTION accordion focus:** Earlier `write_patch` / `create_file` rows collapse when disk has settled (`tool_disk_settled`) and trace already shows a later `action` for the same iteration (combined `observation` still pending). Implemented `priorWriteCollapsedBySuccessorAction` + prop on `ActionAccordionFold`. File: `app/frontend/src/components/Chat.tsx`.
+
+- **Live Thought disclosure:** Summary uses `ChevronExpand` plus `.assistant-thought-fold-chev` (shared gutter widths with ACTION rows); removed legacy `.trace-reasoning-summary::before` triangle under `.assistant-live-thought`. Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **Chat auto-scroll respects manual scroll-away:** Streaming token batches could outrun batched `setAutoScroll(false)` from `onScroll`, so pinned-to-bottom scrolling used stale state and yanked users off upward reads. Tail-follow uses `stickToBottomRef` gated in `useLayoutEffect`, clearer bottom slack (`CHAT_LOG_STICK_BOTTOM_PX`), and upward `wheel` breaks stick immediately before replays clamp `scrollTop`. Files: `app/frontend/src/components/Chat.tsx`.
+
+- **`codebase_map` inline map:** Removed inner “Show map / Hide map” toggle (`CodebaseMapOutput`) so one click on the outer timeline accordion reveals the summary; tweaked `.tool-codebase-map-body` spacing. Files: `app/frontend/src/components/ToolOutput.tsx`, `app/frontend/src/styles.css`.
+
+- **ACTION accordion disclosure:** Replaced coarse CSS triangle `::before` with shared `ChevronExpand` SVG on `ActionAccordionFold` summaries (`.assistant-action-fold-chev`). Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **Thought vs Acting UX in agent chat:** Wrapped `.assistant-step-list` in `.agent-log-container.agent-log-timeline`; live + archived Thought use `thought-section assistant-thought-box`, muted `IconBrain` summary, statuses **Analyzing… / Thinking · Ns**, default collapsed until first streamed reasoning arrives (still collapses once tools dominate). ACTION accordions get left-accent variants (`assistant-action-accent--*` for mutate vs read-fs vs terminal vs search vs map). Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/components/Icons.tsx`, `app/frontend/src/styles.css`.
+
+- **Streaming `write_patch` diff-ish preview:** Per-line span classes (+/- / @@ / FILE: / SEARCH/REPLACE markers), file banner row with `FileIcon` + relative path via first `FILE:` line, accordion header shows **Applied** after success / **writing…** while streaming. Files: `app/frontend/src/components/ToolOutput.tsx`, `app/frontend/src/styles.css`.
+
+- **Multi-ACTION SSE turns (`peekNth`):** Streaming peek previously read only the first `ACTION:` block, so subsequent tools in the same token buffer reused the wrong patches / stalled until full JSON landed. Added `nthActionBlobAfterMarker` + `peekStreamingToolArgBodyNth` (+ related), `streamingActionOrdinal` on `TraceStep` / `ActionAccordionFold`, and marker-count–based synthetic write rows. Timeline container uses **flex column + gap** so ACTION accordions do not visually merge (`styles.css`). Files: `app/frontend/src/lib/streamingToolPeek.ts`, `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **Copilot-like agent activity stream in chat.** Grouped consecutive `INF`/policy rows into one compact block; flattened `.trace` panel (theme tokens vs heavy gradient); tightened turn spacing + answer separator (`assistant-answer`); collapsible `<details>` "Reasoning" for completed turns. Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **Removed boxed `.trace` wrapper.** Streaming thought Markdown + elapsed line render as loose blocks in `.msg-content`; INF/tools/peek/streamingArgPreview (`ToolOutput` + `TraceStep`) list as `.assistant-step-list` siblings—no nested scroll shell. Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **Dropped redundant runner INFO logs + hide from persisted chat.** Removed `Ask/Agent mode starting`, `Selected N relevant files`, and checkpoint-created INFO emits; unsuccessful checkpoint is now `warn` only. Frontend filters the same legacy log shapes so old sessions stay clean. Files: `app/backend/src/agent/runner.ts`, `app/frontend/src/components/Chat.tsx`.
+
+- **Chat panel Loading… fixed when chat API fails.** `listChats` / `getChat` errors previously left `activeSession` unset forever; fallback to a local empty session (+ `chatListRef` for GET recovery title meta). Workspace switch clears `activeSessionId` before re-listing. File: `app/frontend/src/App.tsx`.
+
+- **Live Thought folds + ACTION accordions (streaming UX).** Thought `<details>` auto-collapses once the same iteration has a persisted `action` or streaming write peek (`collapseWhenToolsVisible`). ACTION folds start **open** while awaiting observation (`applying…`); close when observation lands. When tools are visible, the thought summary drops thinking dots + elapsed timer so it does not read as active streaming. Files: `app/frontend/src/components/Chat.tsx`.
+
+- **multi-file `write_patch` → one accordion per `FILE:` block.** Parsed via `splitWritePatchByFileSections` + `mergeWritePatchStreamBody` / `peekWritePatchSection` (`streamingToolPeek.ts`). `ActionAccordionFold` pins header stream text per slice (`writePatchHeaderPreview`). Extra rows omit duplicate **Show changes** (`suppressObservationFollowup` → `suppressWritePatchObservationFollowup`). Files: `streamingToolPeek.ts`, `Chat.tsx`, `ToolOutput.tsx`.
+
+- **Per-step archived thought + live stream handoff.** Parsed `thought` SSE clears the duplicate live token buffer and drops into `<details>` with `Step N` + one-line preview (default closed); live Markdown only shows until that iteration’s thought is finalized. `processSessionEvent`: wipe `thinking.partial` on matching `thought`; `TraceStep` renders `thought-step-archive`. CSS: `.thought-step-archive-*`. Files: `app/frontend/src/components/Chat.tsx`, `app/frontend/src/styles.css`.
+
+- **`tool_payload_streaming` omitted from assistant trace.** No duplicate STREAMING/write_patch buffer block; streamed patch/content still flows through `ToolOutput` / synthetic `TraceStep` (`streamingPartial`). Files: `app/frontend/src/components/Chat.tsx`.
+
+- **Flat OpenUI-style agent trace in chat (always visible).** Brought back live
+  “Thinking” (streamed reasoning) and `action` rows via `ToolOutput` (file chips / applying / stream). No chevron
+  collapse: `trace--flat` + `streamingText` / `streamingIteration` wired from
+  `thinking` into `AssistantMessage`. Added flat trace CSS (payload `pre`
+  max-height, log rows, tool row padding). Files: `Chat.tsx`, `styles.css`,
+  `app/frontend/src/lib/streamingToolPeek.ts`.
+
+- **Assistant final markdown: no Insert/Apply on fenced code.** Agent turns
+  already apply edits via tools; full CodeBlock actions duplicated Cursor-style
+  “composer in the bubble”. `Markdown variant="assistant"` keeps Copy only and
+  caps block height. Files: `Markdown.tsx`, `Chat.tsx`, `styles.css`.
+
+- **Sanitize user-visible agent/ask replies.** Models sometimes paste rubric lines
+  like `(Vietnamese) describing that I can…` or duplicate `THOUGHT:` into FINAL
+  or Ask Markdown; the chat bubble showed that junk. Added `sanitizeFinal.ts` and
+  apply `sanitizeFinalOrKeep` before emitting `final` in `runner.ts` (Ask + Agent
+  success paths). Prompts now forbid meta-rubric / THOUGHT-in-FINAL explicitly.
+  Files: `sanitizeFinal.ts`, `runner.ts`, `prompt.ts`, `prompt-compact.ts`.
+
+- **write_patch trace stream: no character typewriter.** The patch panel
+  revealed text ~3 chars per tick, so users often saw `FIL` + caret while the
+  buffer was already spelling `FILE:…`. Live `pre` now mirrors `targetPatches`
+  directly and auto-scrolls on change. File: `ToolOutput.tsx`.
+
+- **Fix false “still writing files” after F5 / history load.** The runner emits
+  `thought` between `action` and `observation`, but the trace UI only paired a
+  tool row with an observation if it was the very next trace row (after
+  `command_chunk`s). That left `observation` missing on reload, so
+  `CreateFileOutput` / `write_patch` behaved like live streaming again. Now we
+  scan forward for the first `observation` with matching `iteration`.
+  File: `Chat.tsx`.
+
+- **Fix streamed `create_file` / `write_patch` `<pre>` stretching the trace.**
+  CSS had forced `max-height: none` on the inner `pre` while only the wrapper
+  was capped, so the block sized to full file content (~thousands of px). Now
+  the `pre` gets `max-height: min(45vh, 360px); overflow: auto`,
+  `.tool-create-stream` has `min-height: 0` for flex safety, and typewriter
+  auto-scroll refs target the `pre` (not the wrapper). Files: `styles.css`,
+  `ToolOutput.tsx`.
+
+- **Removed persisted vertical resize** for the assistant trace card and for
+  `create_file` / `write_patch` live stream panels (no drag handle, no
+  `localStorage` height). Deleted `usePersistedResizeHeight.ts`; streaming
+  blocks use `.tool-create-stream` with a fixed `max-height` and inner scroll.
+  Files: `Chat.tsx`, `ToolOutput.tsx`, `styles.css`.
+
+- **Live THOUGHT in trace header scroll panel.** While streaming, full extracted
+  THOUGHT (Markdown + caret) renders in `div.trace-thought-scroll` under the
+  trace toggle (`max-height` ~38vh cap, scroll inside; auto-scroll to bottom).
+  The
+  one-line `trace-head-preview` is suppressed during stream; after the turn it
+  still shows the truncated line from trace events. Files: `Chat.tsx`,
+  `styles.css`. **Patch/create streaming** (`.tool-create-stream`, fixed max
+  height + scroll) in ToolOutput:
+  `write_patch` and
+  `create_file` use `streamingArgPreview` with typewriter + caret;
+  `pre.tool-patch-stream` shows live patch text until observation. The useless
+  `tool_payload_streaming` trace row is hidden (still emitted by backend, not
+  listed in trace). Files: `ToolOutput.tsx`, `Chat.tsx`, `styles.css`.
+  **In-flight tool card:** the backend only adds `action` to the trace after the
+  ACTION JSON closes, so the UI synthesizes a transient `TraceStep` (with
+  `peekStreamingToolArgBody` / `peekStreamingCreatePath`) until the real event
+  lands; trace auto-expands once per peek signature. Files: `Chat.tsx`,
+  `streamingToolPeek.ts`. **Auto-open tweak:** signature must not include
+  `path` (it grows per token and re-fired `setTraceOpen(true)` after user
+  collapsed); respect manual collapse until the next streaming run (`turn.id` /
+  `isStreaming` edge).
 
 - **Stream-execute: fire tools mid-stream.** The agent loop no longer buffers
   the full LLM response before acting. A new `chatStream` async generator in

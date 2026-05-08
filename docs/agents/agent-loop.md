@@ -15,14 +15,18 @@ The mode is selected by the `Chat.tsx` composer footer pill and posted as
 
 ## ReAct format (strict)
 
-The system prompt forces the model to emit exactly one block per turn:
+The system prompt forces **one short THOUGHT line** (token-efficient — no long
+planning essays), then **one or more `ACTION` JSON blocks** (parallel tools when
+independent) or a single `FINAL`:
 
 ```text
 THOUGHT:
-<1-6 sentences of reasoning>
+<one line, ~25 words max — next step only>
 
 ACTION:
 { "type": "<tool_name>", "input": <object> }
+
+— additional `ACTION` lines allowed in the same turn when independent —
 
 — OR —
 

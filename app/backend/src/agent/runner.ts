@@ -17,7 +17,8 @@ import {
   maxOutputTokensForMode,
 } from "../llm/prompt-mode.js";
 import { rankRelevant } from "../relevance/search.js";
-import { parseAgentResponse } from "./parser.js";
+import { extractAllActions, parseAgentResponse, type AgentStep } from "./parser.js";
+import { sanitizeFinalOrKeep } from "./sanitizeFinal.js";
 import { executeTool, type ToolContext, type ToolOutcome } from "./executor.js";
 import { createCheckpoint, type Checkpoint } from "../utils/checkpoints.js";
 import { cancelAllForRun } from "../utils/approvals.js";
@@ -62,7 +63,10 @@ export type AgentEvent =
   | { type: "iter_start"; iteration: number }
   | { type: "token"; iteration: number; delta: string }
   | { type: "thought"; iteration: number; thought: string }
-  | { type: "action"; iteration: number; tool: string; input: Record<string, unknown> }
+  | { type: "tool_payload_streaming"; iteration: number; tool: string }
+  | { type: "action"; iteration: number; tool: string; input: Record<string, unknown>; actionKey?: string }
+  /** Write tool finished touching disk (before observation, which waits for end of streamed assistant message). */
+  | { type: "tool_disk_settled"; iteration: number; actionKey: string; ok: boolean }
   /** Live stdout/stderr while run_command child is running (event-driven stream; no poll loop). */
   | { type: "command_chunk"; iteration: number; stream: "stdout" | "stderr"; text: string }
   | { type: "observation"; iteration: number; ok: boolean; summary: string; diffs?: string[] }
@@ -217,55 +221,74 @@ function isWriteTool(type: string): boolean {
   return type === "write_patch" || type === "create_file";
 }
 
-/**
- * Scans a partial LLM response buffer for the first complete ACTION JSON object.
- * Returns the parsed action as soon as the JSON brace depth closes, enabling the
- * runner to fire the tool mid-stream rather than waiting for the full response.
- */
-function scanFirstCompleteAction(
-  buf: string,
-): { type: string; input: Record<string, unknown> } | null {
+/** Compare write-tool inputs without fragile JSON.stringify (key order, normalization). */
+function sameWriteToolInput(
+  a: { type: string; input: Record<string, unknown> },
+  b: { type: string; input: Record<string, unknown> },
+): boolean {
+  if (a.type !== b.type) return false;
+  if (a.type === "create_file") {
+    return (
+      String(a.input.path ?? "") === String(b.input.path ?? "") &&
+      String(a.input.content ?? "") === String(b.input.content ?? "")
+    );
+  }
+  if (a.type === "write_patch") {
+    return (
+      String(a.input.patches ?? a.input.patch ?? "") === String(b.input.patches ?? b.input.patch ?? "")
+    );
+  }
+  return false;
+}
+
+/** True when parsed step is exactly one tool call matching the early-stream ACTION (not parallel multi-tool). */
+function actionsMatchEarly(
+  step: AgentStep,
+  early: { type: string; input: Record<string, unknown> },
+): boolean {
+  if (step.kind === "action") {
+    if (isWriteTool(step.type) && isWriteTool(early.type)) {
+      return sameWriteToolInput(step, early);
+    }
+    return step.type === early.type && JSON.stringify(step.input) === JSON.stringify(early.input);
+  }
+  if (step.kind === "multi_action") {
+    if (step.actions.length !== 1) return false;
+    const sa = step.actions[0];
+    if (isWriteTool(sa.type) && isWriteTool(early.type)) {
+      return sameWriteToolInput(sa, early);
+    }
+    return sa.type === early.type && JSON.stringify(sa.input) === JSON.stringify(early.input);
+  }
+  return false;
+}
+
+function actionScheduleKey(type: string, input: Record<string, unknown>): string {
+  return `${type}:${JSON.stringify(input)}`;
+}
+
+type EarlyToolExec = {
+  type: string;
+  input: Record<string, unknown>;
+  promise: Promise<ToolOutcome>;
+  outcome?: ToolOutcome;
+};
+
+function detectStreamingToolPayload(buf: string): { tool: string } | null {
   const markerMatch = /(?:^|\n)ACTION:\s*/i.exec(buf);
   if (!markerMatch) return null;
-  const afterMarker = buf.slice(markerMatch.index + markerMatch[0].length).trimStart();
-  const stripped = /^```(?:json)?\s*\n?/.test(afterMarker)
-    ? afterMarker.replace(/^```(?:json)?\s*\n?/, "")
-    : afterMarker;
-  const jsonStart = stripped.indexOf("{");
-  if (jsonStart === -1) return null;
-  const frag = stripped.slice(jsonStart);
-  let depth = 0, inStr = false, esc = false;
-  for (let i = 0; i < frag.length; i++) {
-    const c = frag[i];
-    if (esc) { esc = false; continue; }
-    if (c === "\\" && inStr) { esc = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === "{") depth++;
-    if (c === "}") {
-      depth--;
-      if (depth === 0) {
-        try {
-          const json = JSON.parse(frag.slice(0, i + 1)) as Record<string, unknown>;
-          if (typeof json.type !== "string") return null;
-          let input: Record<string, unknown>;
-          if (json.input && typeof json.input === "object") {
-            input = json.input as Record<string, unknown>;
-          } else if (json.type === "write_patch" && typeof json.input === "string") {
-            input = { patches: json.input };
-          } else if (json.type === "read_file" && typeof json.input === "string") {
-            input = { path: json.input };
-          } else if (json.type === "run_command" && typeof json.input === "string") {
-            input = { cmd: json.input };
-          } else {
-            input = json.input ? { value: json.input } : {};
-          }
-          return { type: json.type, input };
-        } catch { return null; }
-      }
-    }
+  let after = buf.slice(markerMatch.index + markerMatch[0].length).trimStart();
+  if (/^```(?:json)?\s*\n?/i.test(after)) {
+    after = after.replace(/^```(?:json)?\s*\n?/i, "");
   }
-  return null; // JSON still incomplete — more tokens needed
+  const jsonStart = after.indexOf("{");
+  if (jsonStart === -1) return null;
+  const head = after.slice(jsonStart, jsonStart + 16_000);
+  const m = /"type"\s*:\s*"([^"]+)"/.exec(head);
+  if (!m) return null;
+  const tool = m[1];
+  if (tool === "write_patch" || tool === "create_file") return { tool };
+  return null;
 }
 
 export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
@@ -300,11 +323,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
-
-  emit({ type: "log", level: "info", message: `${mode === "ask" ? "Ask" : "Agent"} mode starting: "${opts.task}"` });
-
   const relevant = await rankRelevant(opts.task, maxFiles);
-  emit({ type: "log", level: "info", message: `Selected ${relevant.length} relevant files` });
 
   // History uses simple string content (images only go in the initial user message, not history)
   const history: { role: "system" | "user" | "assistant"; content: string }[] = [];
@@ -371,7 +390,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       (wrapped as Error & { __emitted?: boolean }).__emitted = true;
       throw wrapped;
     }
-    finalResult = raw.trim();
+    finalResult = sanitizeFinalOrKeep(raw.trim());
     emit({ type: "final", result: finalResult });
     return { result: finalResult, iterations: 1, diffs, events };
   }
@@ -389,10 +408,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     });
     if (preRunCheckpoint) {
       emit({ type: "checkpoint", checkpoint: preRunCheckpoint });
-      const backupType = preRunCheckpoint.backupType === "file" ? "file backup" : "git";
-      emit({ type: "log", level: "info", message: `Created checkpoint (${backupType}).` });
     } else {
-      emit({ type: "log", level: "info", message: "Unable to create checkpoint." });
+      emit({ type: "log", level: "warn", message: "Unable to create checkpoint." });
     }
   } catch (err) {
     emit({ type: "log", level: "warn", message: `Checkpoint failed: ${(err as Error).message}` });
@@ -478,11 +495,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     // These are declared per-iteration so each loop pass starts clean.
     let raw = "";
-    // First complete ACTION JSON detected in the stream — tool is fired immediately.
-    let earlyAction: { type: string; input: Record<string, unknown> } | null = null;
-    let earlyExecPromise: Promise<ToolOutcome> | null = null;
-    // Resolved result for write-type tools (updated before guardrails run).
-    let earlyOutcome: ToolOutcome | null = null;
+    /** ACTION JSON objects that became complete mid-stream — each tool runs without waiting for later ACTION blocks. */
+    const earlyScheduled = new Map<string, EarlyToolExec>();
+    let streamingPayloadHintEmitted = false;
 
     try {
       for await (const delta of chatStream(messages, {
@@ -491,20 +506,36 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       })) {
         raw += delta;
         emit({ type: "token", iteration: i, delta });
-        // As soon as the ACTION JSON brace depth closes, fire the tool
-        // concurrently rather than waiting for the rest of the response.
-        if (!earlyAction) {
-          const detected = scanFirstCompleteAction(raw);
-          if (detected) {
-            earlyAction = detected;
-            emit({ type: "action", iteration: i, tool: detected.type, input: detected.input });
-            earlyExecPromise = executeTool(detected.type, detected.input, toolCtx);
+        // Large write_patch/create_file JSON may stream for a long time; surface a trace row (tool_payload_streaming).
+        if (earlyScheduled.size === 0 && !streamingPayloadHintEmitted) {
+          const streamingTool = detectStreamingToolPayload(raw);
+          if (streamingTool) {
+            streamingPayloadHintEmitted = true;
+            emit({ type: "tool_payload_streaming", iteration: i, tool: streamingTool.tool });
           }
+        }
+        // Every complete ACTION: {...} in the buffer so far — fire new ones as each closes (true parallel multi-file).
+        const completeActions = extractAllActions(raw);
+        for (const act of completeActions) {
+          const key = actionScheduleKey(act.type, act.input);
+          if (earlyScheduled.has(key)) continue;
+          const promise = executeTool(act.type, act.input, toolCtx).then((outcome) => {
+            if (isWriteTool(act.type)) {
+              emit({ type: "tool_disk_settled", iteration: i, actionKey: key, ok: outcome.ok });
+            }
+            return outcome;
+          });
+          earlyScheduled.set(key, {
+            type: act.type,
+            input: act.input,
+            promise,
+          });
+          emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
         }
       }
     } catch (err) {
       // Clean up any in-flight early execution before surfacing the error.
-      if (earlyExecPromise) await earlyExecPromise.catch(() => {});
+      await Promise.all([...earlyScheduled.values()].map((e) => e.promise.catch(() => {})));
       if (opts.signal?.aborted) {
         emit({ type: "aborted", message: "Agent aborted by user" });
         return { result: "aborted", iterations: i, diffs, events };
@@ -522,16 +553,25 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       throw wrapped;
     }
 
-    // For write-type tools fired early, await and record their result now so
-    // that didWrite / writeCount are accurate when the guardrails check them.
-    if (earlyExecPromise && earlyAction && isWriteTool(earlyAction.type)) {
-      earlyOutcome = await earlyExecPromise.catch((e: Error) => ({
-        ok: false, summary: `Tool error: ${e.message}`, diffs: [] as string[],
-      }));
-      if (earlyOutcome.diffs?.length) {
+    // Resolve every tool that started streaming so guardrails see real writes before FINAL checks.
+    await Promise.all(
+      [...earlyScheduled.values()].map((e) =>
+        e.promise
+          .then((o) => {
+            e.outcome = o;
+          })
+          .catch((err: Error) => {
+            e.outcome = { ok: false, summary: `Tool error: ${err.message}`, diffs: [] as string[] };
+          }),
+      ),
+    );
+    for (const e of earlyScheduled.values()) {
+      if (!isWriteTool(e.type)) continue;
+      const o = e.outcome!;
+      if (o.diffs?.length) {
         didWrite = true;
-        writeCount += earlyOutcome.diffs.length;
-        diffs.push(...earlyOutcome.diffs);
+        writeCount += o.diffs.length;
+        diffs.push(...o.diffs);
       }
     }
 
@@ -565,6 +605,29 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     if (step.thought) emit({ type: "thought", iteration: i, thought: step.thought });
 
+    // Write tools finish on disk as soon as each ACTION JSON closes, but the model may
+    // still be streaming THOUGHT/FINAL. Emit observation immediately once we know this
+    // turn won't batch with other tools so the UI doesn't sit on "saving…" for minutes.
+    let iterationObservationEmitted = false;
+    let loneEarlyWrite: EarlyToolExec | null = null;
+    if (earlyScheduled.size === 1) {
+      const only = [...earlyScheduled.values()][0];
+      if (isWriteTool(only.type) && only.outcome) loneEarlyWrite = only;
+    }
+    if (
+      loneEarlyWrite?.outcome &&
+      (step.kind === "final" || actionsMatchEarly(step, { type: loneEarlyWrite.type, input: loneEarlyWrite.input }))
+    ) {
+      emit({
+        type: "observation",
+        iteration: i,
+        ok: loneEarlyWrite.outcome.ok,
+        summary: loneEarlyWrite.outcome.summary,
+        diffs: loneEarlyWrite.outcome.diffs,
+      });
+      iterationObservationEmitted = true;
+    }
+
     if (step.kind === "final") {
       // Owner asked for a plan / discussion before work — accept FINAL without
       // tools on iteration 1 (do not fight with premature / lazy / scaffold nudges).
@@ -574,7 +637,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         i === 1 &&
         step.result.trim().length >= 60
       ) {
-        finalResult = step.result;
+        finalResult = sanitizeFinalOrKeep(step.result);
         emit({ type: "final", result: finalResult });
         return { result: finalResult, iterations: i, diffs, events };
       }
@@ -636,23 +699,33 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         history.push({ role: "user", content: nudge });
         continue;
       }
-      finalResult = step.result;
-      // Consume any early-fired tool (ACTION + FINAL in same model response).
-      if (earlyExecPromise && !earlyOutcome) {
-        earlyOutcome = await earlyExecPromise.catch((e: Error) => ({
-          ok: false, summary: `Tool error: ${e.message}`, diffs: [] as string[],
-        }));
-      }
-      if (earlyOutcome) {
-        if (earlyOutcome.diffs?.length) {
-          didWrite = true;
-          writeCount += earlyOutcome.diffs.length;
-          diffs.push(...earlyOutcome.diffs);
+      finalResult = sanitizeFinalOrKeep(step.result);
+      // ACTION(s) + FINAL in the same assistant message — append OBSERVATION to history if tools ran.
+      if (earlyScheduled.size > 0) {
+        if (!iterationObservationEmitted) {
+          const list = [...earlyScheduled.values()];
+          const allOkEarly = list.every((e) => e.outcome?.ok !== false);
+          const summaryEarly =
+            list.length === 1
+              ? list[0].outcome!.summary
+              : list.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
+          const diffsEarly = list.flatMap((e) => e.outcome?.diffs ?? []);
+          emit({
+            type: "observation",
+            iteration: i,
+            ok: allOkEarly,
+            summary: summaryEarly,
+            diffs: diffsEarly,
+          });
         }
-        emit({ type: "observation", iteration: i, ok: earlyOutcome.ok, summary: earlyOutcome.summary, diffs: earlyOutcome.diffs });
         history.push({ role: "assistant", content: raw });
-        history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${earlyOutcome.ok}):\n${earlyOutcome.summary}` });
-        earlyOutcome = null;
+        const listForHist = [...earlyScheduled.values()];
+        const allOkHist = listForHist.every((e) => e.outcome?.ok !== false);
+        const summaryHist =
+          listForHist.length === 1
+            ? listForHist[0].outcome!.summary
+            : listForHist.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
+        history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOkHist}):\n${summaryHist}` });
       }
       emit({ type: "final", result: finalResult });
       return { result: finalResult, iterations: i, diffs, events };
@@ -688,31 +761,29 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       sameActionCount = 1;
     }
 
-    // Build execution promises — reuse the early-fired promise/outcome for the
-    // matching action so it is never executed twice.
-    let earlyPromiseUsed = false;
+    // Build execution promises — reuse mid-stream runs so tools never execute twice.
     const outcomePromises: Promise<ToolOutcome>[] = stepActions.map((act) => {
-      const isMatch =
-        !earlyPromiseUsed &&
-        earlyAction !== null &&
-        act.type === earlyAction.type &&
-        JSON.stringify(act.input) === JSON.stringify(earlyAction.input);
-      if (isMatch) {
-        earlyPromiseUsed = true;
-        // Use cached resolved value for write tools, live promise for others.
-        return earlyOutcome ? Promise.resolve(earlyOutcome) : earlyExecPromise!;
-      }
-      // Emit action event for tools NOT already emitted during streaming.
-      emit({ type: "action", iteration: i, tool: act.type, input: act.input });
-      return executeTool(act.type, act.input, toolCtx);
+      const key = actionScheduleKey(act.type, act.input);
+      const entry = earlyScheduled.get(key);
+      if (entry?.outcome) return Promise.resolve(entry.outcome);
+      if (entry) return entry.promise;
+      emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
+      return executeTool(act.type, act.input, toolCtx).then((outcome) => {
+        if (isWriteTool(act.type)) {
+          emit({ type: "tool_disk_settled", iteration: i, actionKey: key, ok: outcome.ok });
+        }
+        return outcome;
+      });
     });
 
     checkAbort();
     const outcomes = await Promise.all(outcomePromises);
 
-    // Aggregate diffs/write tracking — skip outcomes already counted via earlyOutcome.
-    for (const outcome of outcomes) {
-      if (outcome === earlyOutcome) continue; // already tallied post-stream
+    // Aggregate diffs/write tracking — mid-stream actions already counted toward didWrite.
+    for (let j = 0; j < outcomes.length; j++) {
+      const act = stepActions[j];
+      if (earlyScheduled.has(actionScheduleKey(act.type, act.input))) continue;
+      const outcome = outcomes[j];
       if (outcome.diffs?.length) {
         didWrite = true;
         writeCount += outcome.diffs.length;
@@ -727,7 +798,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         : outcomes.map((o, j) => `[${stepActions[j].type}]: ${o.summary}`).join("\n\n");
     const combinedDiffs = outcomes.flatMap((o) => o.diffs ?? []);
 
-    emit({ type: "observation", iteration: i, ok: allOk, summary: combinedSummary, diffs: combinedDiffs });
+    if (!iterationObservationEmitted) {
+      emit({ type: "observation", iteration: i, ok: allOk, summary: combinedSummary, diffs: combinedDiffs });
+    }
 
     history.push({ role: "assistant", content: raw });
     history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}` });

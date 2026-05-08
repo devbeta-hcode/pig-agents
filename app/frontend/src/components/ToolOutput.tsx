@@ -1,13 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { FileIcon } from "./FileIcon";
-import { ChevronExpand } from "./ChevronExpand";
 
-/**
- * Modern tool output rendering for agent trace steps.
- * Displays tool calls in a clean, Copilot/Cursor-like style.
- */
-
-interface ToolOutputProps {
+export interface ToolOutputProps {
   tool: string;
   input: Record<string, unknown>;
   /** The observation result - if provided, shows the output */
@@ -18,7 +12,26 @@ interface ToolOutputProps {
   };
   /** Live merged chunks from command_chunk SSE before observation arrives */
   streamPreview?: string;
+  /**
+   * Partial patches / file body from the live token buffer (write_patch +
+   * create_file) while ACTION JSON is still arriving.
+   */
+  streamingArgPreview?: string;
+  /** Disk write finished (SSE tool_disk_settled) before observation is emitted. */
+  diskSettledOk?: boolean;
+  /** Hide the Copilot-style top row — used when the row is rendered in `<summary>`. */
+  suppressHeader?: boolean;
+  /**
+   * When one write_patch spans multiple FILES and we split the UI row-per-file,
+   * only one row should surface observation follow-up (patch results / validation) to avoid duplication.
+   */
+  suppressObservationFollowup?: boolean;
 }
+
+export type ToolAccordionHeaderProps = Pick<
+  ToolOutputProps,
+  "tool" | "input" | "observation" | "streamPreview" | "streamingArgPreview" | "diskSettledOk"
+>;
 
 // Icons as simple SVG components
 const icons = {
@@ -98,17 +111,61 @@ function StatusBadge({ ok, label }: { ok: boolean; label?: string }) {
   );
 }
 
+/** Line-kind styling for streamed patch/diff-ish text (+ unified hunks vs FILE:/SEARCH markers). */
+function patchStreamLineClass(line: string): string {
+  const t = line.replace(/\r$/, "");
+  if (/^FILE:\s/i.test(t)) return "tool-patch-line-file-header";
+  const trimEnd = t.trimEnd();
+  if (trimEnd === "SEARCH") return "tool-patch-line-marker";
+  if (trimEnd === "REPLACE") return "tool-patch-line-marker tool-patch-line-marker-replace";
+  if (trimEnd === "END") return "tool-patch-line-marker";
+  if (/^diff --git\b/.test(t) || /^index [\da-f]{7,}\b/i.test(t)) return "tool-patch-line-meta";
+  if (/^---\s/.test(t) || /^\+\+\+\s/.test(t)) return "tool-patch-line-meta";
+  if (t.startsWith("@@")) return "tool-patch-line-hunk";
+  if (t.startsWith("+")) return "tool-patch-line-add";
+  if (t.startsWith("-")) return "tool-patch-line-del";
+  if (/^ /.test(t)) return "tool-patch-line-ctx";
+  return "tool-patch-line-content";
+}
+
+function PatchStreamHighlighted({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <>
+      {lines.map((line, i) => (
+        <span key={i} className={`tool-patch-stream-line ${patchStreamLineClass(line)}`}>
+          {line}
+          {i < lines.length - 1 ? "\n" : ""}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function firstRelativePathFromPatchStream(text: string): string | undefined {
+  const m = text.match(/^FILE:\s*(.+)$/m);
+  return m?.[1]?.trim() || undefined;
+}
+
 // Renders read_file tool output
-function ReadFileOutput({ input, observation }: { input: Record<string, unknown>; observation?: ToolOutputProps["observation"] }) {
+function ReadFileOutput({
+  input,
+  observation,
+  suppressHeader,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+  suppressHeader?: boolean;
+}) {
   const path = String(input.path || "");
   const fileName = path.split("/").pop() || path;
-  const [showContent, setShowContent] = useState(false);
 
   // Extract file content from observation summary
   const content = observation?.summary?.replace(/^read_file .+\n/, "") || "";
 
   return (
     <div className="tool-output tool-read-file">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon">{icons.file}</span>
         <span className="tool-action">Read</span>
@@ -116,81 +173,127 @@ function ReadFileOutput({ input, observation }: { input: Record<string, unknown>
           <FileIcon name={fileName} size={14} />
           <span className="tool-path" title={path}>{path}</span>
         </span>
-        {observation && <StatusBadge ok={observation.ok} />}
+        {observation ? (
+          <StatusBadge ok={observation.ok} />
+        ) : (
+          <span className="tool-status tool-status--streaming">reading…</span>
+        )}
       </div>
+      )}
       {observation && content && (
-        <div className="tool-details">
-          <button 
-            className="tool-toggle"
-            onClick={() => setShowContent(!showContent)}
-          >
-            <ChevronExpand expanded={showContent} size={12} />
-            <span>{showContent ? "Hide content" : "Show content"}</span>
-          </button>
-          {showContent && <CodeBlock content={content} language={guessLanguage(fileName)} />}
+        <div className="tool-details tool-inline-body-read">
+          {/* Outer timeline accordion handles collapse — no nested Show/Hide row. */}
+          <CodeBlock content={content} language={guessLanguage(fileName)} />
         </div>
       )}
     </div>
   );
 }
 
-// Renders create_file tool output — with streaming typewriter for content
+/** Prefer live token peek while OBSERVATION is pending so the pre keeps up with the model buffer. */
+function pickCreateFileStreamBody(
+  observation: ToolOutputProps["observation"] | undefined,
+  fullContent: string,
+  streamingArgPreview: string | undefined,
+): string {
+  if (observation != null) return fullContent;
+  const peek = streamingArgPreview ?? "";
+  if (peek.length > fullContent.length) return peek;
+  if (fullContent.length > 0) return fullContent;
+  return peek;
+}
+
+function pickPatchStreamBody(
+  observation: ToolOutputProps["observation"] | undefined,
+  fullPatches: string,
+  streamingArgPreview: string | undefined,
+): string {
+  if (observation != null) return fullPatches;
+  const peek = streamingArgPreview ?? "";
+  if (peek.length > fullPatches.length) return peek;
+  if (fullPatches.length > 0) return fullPatches;
+  return peek;
+}
+
+/** Shared file chip list for write_patch header + accordion summary. */
+function writePatchHeaderFileLists(
+  input: Record<string, unknown>,
+  observation: ToolOutputProps["observation"] | undefined,
+  streamingArgPreview: string | undefined,
+): { chips: string[]; okFiles: string[]; failFiles: string[] } {
+  const patches = String(input.patches || input.patch || "");
+  const targetPatches = pickPatchStreamBody(observation, patches, streamingArgPreview);
+  const peekFiles = (targetPatches.match(/FILE:\s*([^\n]+)/g) || []).map((m) =>
+    m.replace(/^FILE:\s*/i, "").trim(),
+  );
+  const filesFromInput =
+    patches.match(/FILE:\s*([^\n]+)/g)?.map((m) => m.replace(/^FILE:\s*/i, "").trim()) ?? [];
+  const files = peekFiles.length > 0 ? peekFiles : filesFromInput;
+  const okFiles = observation?.summary?.match(/OK ([^\n]+)/g)?.map((m) => m.replace("OK ", "")) || [];
+  const failFiles =
+    observation?.summary?.match(/FAIL ([^\n:]+)/g)?.map((m) => m.replace("FAIL ", "").split(":")[0]) || [];
+  const chipSource = files.length > 0 ? files : [...okFiles, ...failFiles];
+  return { chips: chipSource, okFiles, failFiles };
+}
+
+// Renders create_file — typewriter + streamingArgPreview in ToolOutput; Thinking stays THOUGHT-only.
 function CreateFileOutput({
   input,
   observation,
+  streamingArgPreview,
+  diskSettledOk,
+  suppressHeader,
 }: {
   input: Record<string, unknown>;
   observation?: ToolOutputProps["observation"];
+  streamingArgPreview?: string;
+  diskSettledOk?: boolean;
+  suppressHeader?: boolean;
 }) {
   const filePath = String(input.path || "");
   const fileName = filePath.split("/").pop() || filePath;
   const fullContent = String(input.content ?? "");
+  const targetContent = pickCreateFileStreamBody(observation, fullContent, streamingArgPreview);
   const lang = guessLanguage(fileName);
-
-  // Typewriter: stream content char-by-char while observation is pending
   const [displayed, setDisplayed] = useState("");
-  const [done, setDone] = useState(false);
-  const [showContent, setShowContent] = useState(false);
   const rafRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const streamRef = useRef<HTMLPreElement>(null);
-  const expandRef = useRef<HTMLPreElement>(null);
+  const streamPreRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
+    if (rafRef.current) {
+      clearTimeout(rafRef.current);
+      rafRef.current = null;
+    }
     if (observation) {
       setDisplayed(fullContent);
-      setDone(true);
+      return;
+    }
+    const streamTarget = pickCreateFileStreamBody(undefined, fullContent, streamingArgPreview);
+    if (!streamTarget.trim()) {
+      setDisplayed("");
       return;
     }
     let pos = 0;
+    setDisplayed("");
     function tick() {
-      pos = Math.min(pos + 4, fullContent.length);
-      setDisplayed(fullContent.slice(0, pos));
-      // Auto-scroll streaming pre to bottom
-      if (streamRef.current) {
-        streamRef.current.scrollTop = streamRef.current.scrollHeight;
-      }
-      if (pos < fullContent.length) {
-        rafRef.current = setTimeout(tick, 16);
-      } else {
-        setDone(true);
-      }
+      pos = Math.min(pos + 4, streamTarget.length);
+      setDisplayed(streamTarget.slice(0, pos));
+      if (streamPreRef.current) streamPreRef.current.scrollTop = streamPreRef.current.scrollHeight;
+      if (pos < streamTarget.length) rafRef.current = setTimeout(tick, 16);
     }
     rafRef.current = setTimeout(tick, 16);
     return () => { if (rafRef.current) clearTimeout(rafRef.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [observation]);
+  }, [observation, fullContent, streamingArgPreview]);
 
-  // Auto-scroll expanded view when user opens it while still streaming
   useEffect(() => {
-    if (showContent && expandRef.current) {
-      expandRef.current.scrollTop = expandRef.current.scrollHeight;
-    }
-  }, [displayed, showContent]);
+    if (streamPreRef.current) streamPreRef.current.scrollTop = streamPreRef.current.scrollHeight;
+  }, [displayed]);
 
-  const isStreaming = !done && !observation;
+  const showStreamShell = !observation;
 
   return (
     <div className="tool-output tool-create-file">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon tool-icon--edit">{icons.edit}</span>
         <span className="tool-action">Create</span>
@@ -198,108 +301,153 @@ function CreateFileOutput({
           <FileIcon name={fileName} size={14} />
           <span className="tool-path" title={filePath}>{filePath}</span>
         </span>
-        {observation
-          ? <StatusBadge ok={observation.ok} />
-          : <span className="tool-status tool-status--streaming">writing…</span>
-        }
+        {observation ? (
+          <StatusBadge ok={observation.ok} />
+        ) : diskSettledOk === true ? (
+          <span className="tool-status tool-status--streaming">saved…</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">applying…</span>
+        )}
       </div>
+      )}
 
-      {/* Streaming view: auto-show while still animating */}
-      {isStreaming && (
+      {showStreamShell && (
         <div className="tool-create-stream">
-          <pre ref={streamRef} className="tool-command-stream tool-create-content">
-            <code>{displayed}<span className="tool-cursor">▋</span></code>
+          <pre ref={streamPreRef} className="tool-command-stream tool-create-content tool-stream-pre-inner">
+            <code>
+              {targetContent.trim() ? (
+                <>
+                  {displayed}
+                  <span className="tool-cursor">▋</span>
+                </>
+              ) : (
+                <>
+                  <span className="tool-stream-placeholder">Receiving file content…</span>
+                  <span className="tool-cursor">▋</span>
+                </>
+              )}
+            </code>
           </pre>
         </div>
       )}
 
-      {/* After done: collapsible full content */}
-      {done && fullContent && (
-        <div className="tool-details">
-          <button
-            className="tool-toggle"
-            onClick={() => setShowContent(!showContent)}
-          >
-            <ChevronExpand expanded={showContent} size={12} />
-            <span>{showContent ? "Hide content" : `Show content (${fullContent.split("\n").length} lines)`}</span>
-          </button>
-          {showContent && (
-            <div className="tool-code-block">
-              <pre ref={expandRef} className={`language-${lang}`} style={{ maxHeight: 220, overflow: "auto" }}>
-                <code>{fullContent}</code>
-              </pre>
-            </div>
-          )}
+      {observation && fullContent && (
+        <div className="tool-details tool-inline-body-create">
+          <div className="tool-code-block">
+            <pre className={`language-${lang}`} style={{ maxHeight: 280, overflow: "auto" }}>
+              <code>{fullContent}</code>
+            </pre>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-// Renders write_patch tool output
-function WritePatchOutput({ input, observation }: { input: Record<string, unknown>; observation?: ToolOutputProps["observation"] }) {
+// Renders write_patch — live stream in <pre.tool-patch-stream> (streamingArgPreview → full patches) until observation.
+function WritePatchOutput({
+  input,
+  observation,
+  streamingArgPreview,
+  diskSettledOk,
+  suppressHeader,
+  suppressObservationFollowup,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+  streamingArgPreview?: string;
+  diskSettledOk?: boolean;
+  suppressHeader?: boolean;
+  suppressObservationFollowup?: boolean;
+}) {
   const patches = String(input.patches || input.patch || "");
-  const [showDiff, setShowDiff] = useState(false);
-  
-  // Parse affected files from patches
-  const fileMatches = patches.match(/FILE:\s*([^\n]+)/g) || [];
-  const files = fileMatches.map(m => m.replace("FILE:", "").trim());
-  
-  // Parse from observation summary
-  const okFiles = observation?.summary?.match(/OK ([^\n]+)/g)?.map(m => m.replace("OK ", "")) || [];
-  const failFiles = observation?.summary?.match(/FAIL ([^\n:]+)/g)?.map(m => m.replace("FAIL ", "").split(":")[0]) || [];
+  const targetPatches = pickPatchStreamBody(observation, patches, streamingArgPreview);
+
+  const { chips, okFiles, failFiles } = writePatchHeaderFileLists(input, observation, streamingArgPreview);
+
+  /** Live patch text tracks the model buffer directly — no typewriter (avoids absurd "FIL…" as FILE: arrives). */
+  const showLivePre = !observation && targetPatches.length > 0;
+
+  const patchPreRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    const el = patchPreRef.current;
+    if (!el || observation || !showLivePre) return;
+    el.scrollTop = el.scrollHeight;
+  }, [targetPatches, observation, showLivePre]);
 
   return (
     <div className="tool-output tool-write-patch">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon tool-icon--edit">{icons.edit}</span>
         <span className="tool-action">Edit</span>
         <span className="tool-files">
-          {(files.length > 0 ? files : [...okFiles, ...failFiles]).slice(0, 3).map((f, i) => (
+          {chips.slice(0, 3).map((f, i) => (
             <span key={i} className="tool-file-chip">
               <FileIcon name={f.split("/").pop() || ""} size={12} />
               <span>{f.split("/").pop()}</span>
             </span>
           ))}
-          {files.length > 3 && <span className="tool-file-more">+{files.length - 3}</span>}
+          {chips.length > 3 && <span className="tool-file-more">+{chips.length - 3}</span>}
         </span>
-        {observation && <StatusBadge ok={observation.ok} />}
+        {observation ? (
+          <StatusBadge ok={observation.ok} label={observation.ok ? "Applied" : undefined} />
+        ) : diskSettledOk === true ? (
+          <span className="tool-status tool-status--streaming">saved…</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">writing…</span>
+        )}
       </div>
-      {observation && (
-        <div className="tool-details">
-          <button 
-            className="tool-toggle"
-            onClick={() => setShowDiff(!showDiff)}
-          >
-            <ChevronExpand expanded={showDiff} size={12} />
-            <span>{showDiff ? "Hide changes" : "Show changes"}</span>
-          </button>
-          {showDiff && (
-            <div className="tool-patch-results">
-              {okFiles.map((f, i) => (
-                <div key={i} className="tool-patch-file tool-patch-file--ok">
-                  <span className="tool-patch-status">{icons.check}</span>
-                  <FileIcon name={f.split("/").pop() || ""} size={12} />
-                  <span>{f}</span>
-                </div>
-              ))}
-              {failFiles.map((f, i) => (
-                <div key={i} className="tool-patch-file tool-patch-file--fail">
-                  <span className="tool-patch-status">{icons.error}</span>
-                  <FileIcon name={f.split("/").pop() || ""} size={12} />
-                  <span>{f}</span>
-                </div>
-              ))}
-              {observation.summary?.includes("Validation:") && (
-                <div className="tool-validation">
-                  <CodeBlock 
-                    content={observation.summary.split("Validation:")[1]?.trim() || ""} 
-                    maxLines={6}
-                  />
-                </div>
-              )}
-            </div>
-          )}
+      )}
+      {showLivePre && (
+        <div className="tool-create-stream">
+          <div className="tool-patch-file-banner" aria-label="Streaming patch target">
+            {(() => {
+              const bp = firstRelativePathFromPatchStream(targetPatches);
+              if (!bp) return <span className="tool-patch-file-banner-placeholder">Patch stream</span>;
+              return (
+                <>
+                  <FileIcon name={bp.split("/").pop() || bp} size={13} />
+                  <span className="tool-patch-file-banner-path">{bp}</span>
+                </>
+              );
+            })()}
+          </div>
+          <pre ref={patchPreRef} className="tool-command-stream tool-patch-stream tool-stream-pre-inner language-diff">
+            <code>
+              <PatchStreamHighlighted text={targetPatches} />
+              <span className="tool-cursor">▋</span>
+            </code>
+          </pre>
+        </div>
+      )}
+      {observation && !suppressObservationFollowup && (
+        <div className="tool-details tool-inline-body-patch">
+          <div className="tool-patch-results">
+            {okFiles.map((f, i) => (
+              <div key={i} className="tool-patch-file tool-patch-file--ok">
+                <span className="tool-patch-status">{icons.check}</span>
+                <FileIcon name={f.split("/").pop() || ""} size={12} />
+                <span>{f}</span>
+              </div>
+            ))}
+            {failFiles.map((f, i) => (
+              <div key={i} className="tool-patch-file tool-patch-file--fail">
+                <span className="tool-patch-status">{icons.error}</span>
+                <FileIcon name={f.split("/").pop() || ""} size={12} />
+                <span>{f}</span>
+              </div>
+            ))}
+            {observation.summary?.includes("Validation:") && (
+              <div className="tool-validation">
+                <CodeBlock
+                  content={observation.summary.split("Validation:")[1]?.trim() || ""}
+                  maxLines={6}
+                />
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -311,13 +459,14 @@ function RunCommandOutput({
   input,
   observation,
   streamPreview,
+  suppressHeader,
 }: {
   input: Record<string, unknown>;
   observation?: ToolOutputProps["observation"];
   streamPreview?: string;
+  suppressHeader?: boolean;
 }) {
   const cmd = String(input.cmd || input.command || "");
-  const [showOutput, setShowOutput] = useState(false);
 
   // Parse exit code and output from observation
   const exitMatch = observation?.summary?.match(/exit=(-?\d+)/);
@@ -344,19 +493,20 @@ function RunCommandOutput({
 
   return (
     <div className="tool-output tool-run-command">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon tool-icon--terminal">{icons.terminal}</span>
         <span className="tool-action">Run</span>
         <code className="tool-cmd" title={cmd}>
           {cmd.length > 60 ? cmd.slice(0, 57) + "…" : cmd}
         </code>
-        {observation && (
-          <StatusBadge
-            ok={observation.ok}
-            label={statusLabel}
-          />
+        {observation ? (
+          <StatusBadge ok={observation.ok} label={statusLabel} />
+        ) : (
+          <span className="tool-status tool-status--streaming">running…</span>
         )}
       </div>
+      )}
       {streamPreview && !observation && (
         <div className="tool-command-stream-wrap" aria-live="polite">
           <span className="tool-command-stream-label">Output…</span>
@@ -364,15 +514,8 @@ function RunCommandOutput({
         </div>
       )}
       {observation && output && (
-        <div className="tool-details">
-          <button 
-            className="tool-toggle"
-            onClick={() => setShowOutput(!showOutput)}
-          >
-            <ChevronExpand expanded={showOutput} size={12} />
-            <span>{showOutput ? "Hide output" : "Show output"}</span>
-          </button>
-          {showOutput && <CodeBlock content={output} language="shell" maxLines={20} />}
+        <div className="tool-details tool-inline-body-run">
+          <CodeBlock content={output} language="shell" maxLines={20} />
         </div>
       )}
     </div>
@@ -380,10 +523,17 @@ function RunCommandOutput({
 }
 
 // Renders search_code tool output
-function SearchCodeOutput({ input, observation }: { input: Record<string, unknown>; observation?: ToolOutputProps["observation"] }) {
+function SearchCodeOutput({
+  input,
+  observation,
+  suppressHeader,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+  suppressHeader?: boolean;
+}) {
   const query = String(input.query || "");
-  const [showResults, setShowResults] = useState(false);
-  
+
   // Parse hit count from observation
   const hitsMatch = observation?.summary?.match(/\((\d+) hits\)/);
   const hitCount = hitsMatch ? parseInt(hitsMatch[1], 10) : 0;
@@ -393,24 +543,21 @@ function SearchCodeOutput({ input, observation }: { input: Record<string, unknow
 
   return (
     <div className="tool-output tool-search-code">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon tool-icon--search">{icons.search}</span>
         <span className="tool-action">Search</span>
         <code className="tool-query">"{query}"</code>
-        {observation && (
+        {observation ? (
           <span className="tool-hit-count">{hitCount} matches</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">searching…</span>
         )}
       </div>
+      )}
       {observation && resultsText && (
-        <div className="tool-details">
-          <button 
-            className="tool-toggle"
-            onClick={() => setShowResults(!showResults)}
-          >
-            <ChevronExpand expanded={showResults} size={12} />
-            <span>{showResults ? "Hide results" : "Show results"}</span>
-          </button>
-          {showResults && <CodeBlock content={resultsText} maxLines={15} />}
+        <div className="tool-details tool-inline-body-search">
+          <CodeBlock content={resultsText} maxLines={15} />
         </div>
       )}
     </div>
@@ -418,10 +565,17 @@ function SearchCodeOutput({ input, observation }: { input: Record<string, unknow
 }
 
 // Renders list_files tool output
-function ListFilesOutput({ input, observation }: { input: Record<string, unknown>; observation?: ToolOutputProps["observation"] }) {
+function ListFilesOutput({
+  input,
+  observation,
+  suppressHeader,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+  suppressHeader?: boolean;
+}) {
   const dir = String(input.dir || ".");
-  const [showList, setShowList] = useState(false);
-  
+
   // Parse file count
   const content = observation?.summary?.replace(/^list_files [^\n]+:\n/, "") || "";
   const lines = content.split("\n").filter(Boolean);
@@ -429,40 +583,35 @@ function ListFilesOutput({ input, observation }: { input: Record<string, unknown
 
   return (
     <div className="tool-output tool-list-files">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon tool-icon--folder">{icons.folder}</span>
         <span className="tool-action">List</span>
         <span className="tool-path" title={dir}>{dir}</span>
-        {observation && (
+        {observation ? (
           <span className="tool-file-count">{fileCount} items</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">listing…</span>
         )}
       </div>
+      )}
       {observation && content && (
-        <div className="tool-details">
-          <button 
-            className="tool-toggle"
-            onClick={() => setShowList(!showList)}
-          >
-            <ChevronExpand expanded={showList} size={12} />
-            <span>{showList ? "Hide files" : "Show files"}</span>
-          </button>
-          {showList && (
-            <div className="tool-file-list">
-              {lines.slice(0, 30).map((line, i) => {
-                const isDir = line.includes("[D]");
-                const name = line.replace(/^\s*\[D\]\s*/, "").replace(/^\s+/, "").trim();
-                return (
-                  <div key={i} className="tool-file-item">
-                    {isDir ? icons.folder : <FileIcon name={name} size={14} />}
-                    <span>{name}</span>
-                  </div>
-                );
-              })}
-              {lines.length > 30 && (
-                <div className="tool-file-more-items">+{lines.length - 30} more items</div>
-              )}
-            </div>
-          )}
+        <div className="tool-details tool-inline-body-list">
+          <div className="tool-file-list">
+            {lines.slice(0, 30).map((line, i) => {
+              const isDir = line.includes("[D]");
+              const name = line.replace(/^\s*\[D\]\s*/, "").replace(/^\s+/, "").trim();
+              return (
+                <div key={i} className="tool-file-item">
+                  {isDir ? icons.folder : <FileIcon name={name} size={14} />}
+                  <span>{name}</span>
+                </div>
+              );
+            })}
+            {lines.length > 30 && (
+              <div className="tool-file-more-items">+{lines.length - 30} more items</div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -470,28 +619,35 @@ function ListFilesOutput({ input, observation }: { input: Record<string, unknown
 }
 
 // Renders codebase_map tool output
-function CodebaseMapOutput({ input, observation }: { input: Record<string, unknown>; observation?: ToolOutputProps["observation"] }) {
+function CodebaseMapOutput({
+  input,
+  observation,
+  suppressHeader,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+  suppressHeader?: boolean;
+}) {
   const maxDepth = input.max_depth || input.depth || 5;
-  const [showMap, setShowMap] = useState(false);
 
   return (
     <div className="tool-output tool-codebase-map">
+      {!suppressHeader && (
       <div className="tool-header">
         <span className="tool-icon tool-icon--map">{icons.map}</span>
         <span className="tool-action">Codebase Map</span>
         <span className="tool-depth">depth: {String(maxDepth)}</span>
-        {observation && <StatusBadge ok={observation.ok} />}
+        {observation ? (
+          <StatusBadge ok={observation.ok} />
+        ) : (
+          <span className="tool-status tool-status--streaming">mapping…</span>
+        )}
       </div>
+      )}
       {observation?.summary && (
-        <div className="tool-details">
-          <button 
-            className="tool-toggle"
-            onClick={() => setShowMap(!showMap)}
-          >
-            <ChevronExpand expanded={showMap} size={12} />
-            <span>{showMap ? "Hide map" : "Show map"}</span>
-          </button>
-          {showMap && <CodeBlock content={observation.summary} maxLines={30} />}
+        <div className="tool-details tool-codebase-map-body">
+          {/* Outer timeline accordion already hides/shows payload — skip nested toggle. */}
+          <CodeBlock content={observation.summary} maxLines={30} />
         </div>
       )}
     </div>
@@ -514,33 +670,253 @@ function guessLanguage(filename: string): string {
   return map[ext] || "text";
 }
 
+/** Row for `<summary>` — keep in sync with each tool’s `suppressHeader={false}` header. */
+export function ToolAccordionHeader({
+  tool,
+  input,
+  observation,
+  streamingArgPreview,
+  diskSettledOk,
+}: ToolAccordionHeaderProps): JSX.Element | null {
+  const t = tool.toLowerCase();
+
+  if (t === "read_file") {
+    const path = String(input.path || "");
+    const fileName = path.split("/").pop() || path;
+    return (
+      <>
+        <span className="tool-icon">{icons.file}</span>
+        <span className="tool-action">Read</span>
+        <span className="tool-target">
+          <FileIcon name={fileName} size={14} />
+          <span className="tool-path" title={path}>
+            {path}
+          </span>
+        </span>
+        {observation ? (
+          <StatusBadge ok={observation.ok} />
+        ) : (
+          <span className="tool-status tool-status--streaming">reading…</span>
+        )}
+      </>
+    );
+  }
+
+  if (t === "create_file") {
+    const filePath = String(input.path || "");
+    const fileName = filePath.split("/").pop() || filePath;
+    return (
+      <>
+        <span className="tool-icon tool-icon--edit">{icons.edit}</span>
+        <span className="tool-action">Create</span>
+        <span className="tool-target">
+          <FileIcon name={fileName} size={14} />
+          <span className="tool-path" title={filePath}>
+            {filePath}
+          </span>
+        </span>
+        {observation ? (
+          <StatusBadge ok={observation.ok} />
+        ) : diskSettledOk === true ? (
+          <span className="tool-status tool-status--streaming">saved…</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">writing…</span>
+        )}
+      </>
+    );
+  }
+
+  if (t === "write_patch") {
+    const { chips } = writePatchHeaderFileLists(input, observation, streamingArgPreview);
+    return (
+      <>
+        <span className="tool-icon tool-icon--edit">{icons.edit}</span>
+        <span className="tool-action">Edit</span>
+        <span className="tool-files">
+          {chips.slice(0, 3).map((f, i) => (
+            <span key={i} className="tool-file-chip">
+              <FileIcon name={f.split("/").pop() || ""} size={12} />
+              <span>{f.split("/").pop()}</span>
+            </span>
+          ))}
+          {chips.length > 3 && <span className="tool-file-more">+{chips.length - 3}</span>}
+        </span>
+        {observation ? (
+          <StatusBadge ok={observation.ok} label={observation.ok ? "Applied" : undefined} />
+        ) : diskSettledOk === true ? (
+          <span className="tool-status tool-status--streaming">saved…</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">writing…</span>
+        )}
+      </>
+    );
+  }
+
+  if (t === "run_command") {
+    const cmd = String(input.cmd || input.command || "");
+    const exitMatch = observation?.summary?.match(/exit=(-?\d+)/);
+    const exitCode = exitMatch ? parseInt(exitMatch[1], 10) : null;
+    const isBackground =
+      observation?.summary?.includes("[BG]") || observation?.summary?.includes("[RUNNING IN BACKGROUND]");
+    const statusLabel = isBackground
+      ? "Running"
+      : exitCode === 0
+        ? "Done"
+        : exitCode !== null
+          ? `Exit ${exitCode}`
+          : undefined;
+    return (
+      <>
+        <span className="tool-icon tool-icon--terminal">{icons.terminal}</span>
+        <span className="tool-action">Run</span>
+        <code className="tool-cmd" title={cmd}>
+          {cmd.length > 60 ? cmd.slice(0, 57) + "…" : cmd}
+        </code>
+        {observation ? (
+          <StatusBadge ok={observation.ok} label={statusLabel} />
+        ) : (
+          <span className="tool-status tool-status--streaming">running…</span>
+        )}
+      </>
+    );
+  }
+
+  if (t === "search_code") {
+    const query = String(input.query || "");
+    const hitsMatch = observation?.summary?.match(/\((\d+) hits\)/);
+    const hitCount = hitsMatch ? parseInt(hitsMatch[1], 10) : 0;
+    return (
+      <>
+        <span className="tool-icon tool-icon--search">{icons.search}</span>
+        <span className="tool-action">Search</span>
+        <code className="tool-query">&quot;{query}&quot;</code>
+        {observation ? (
+          <span className="tool-hit-count">{hitCount} matches</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">searching…</span>
+        )}
+      </>
+    );
+  }
+
+  if (t === "list_files") {
+    const dir = String(input.dir || ".");
+    const content = observation?.summary?.replace(/^list_files [^\n]+:\n/, "") || "";
+    const fileCount = content.split("\n").filter(Boolean).length;
+    return (
+      <>
+        <span className="tool-icon tool-icon--folder">{icons.folder}</span>
+        <span className="tool-action">List</span>
+        <span className="tool-path" title={dir}>
+          {dir}
+        </span>
+        {observation ? (
+          <span className="tool-file-count">{fileCount} items</span>
+        ) : (
+          <span className="tool-status tool-status--streaming">listing…</span>
+        )}
+      </>
+    );
+  }
+
+  if (t === "codebase_map") {
+    const maxDepth = input.max_depth ?? input.depth ?? 5;
+    return (
+      <>
+        <span className="tool-icon tool-icon--map">{icons.map}</span>
+        <span className="tool-action">Codebase Map</span>
+        <span className="tool-depth">depth: {String(maxDepth)}</span>
+        {observation ? (
+          <StatusBadge ok={observation.ok} />
+        ) : (
+          <span className="tool-status tool-status--streaming">mapping…</span>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <span className="tool-icon">{icons.terminal}</span>
+      <span className="tool-action">{tool.replace(/_/g, " ")}</span>
+      <span className="tool-target" style={{ flex: 1 }} />
+      {observation ? (
+        <StatusBadge ok={observation.ok} />
+      ) : (
+        <span className="tool-status tool-status--streaming">working…</span>
+      )}
+    </>
+  );
+}
+
 // Main export - renders appropriate tool output based on type
-export function ToolOutput({ tool, input, observation, streamPreview }: ToolOutputProps) {
+export function ToolOutput({
+  tool,
+  input,
+  observation,
+  streamPreview,
+  streamingArgPreview,
+  diskSettledOk,
+  suppressHeader,
+  suppressObservationFollowup,
+}: ToolOutputProps) {
   const t = tool.toLowerCase();
   
   switch (t) {
     case "read_file":
-      return <ReadFileOutput input={input} observation={observation} />;
+      return <ReadFileOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
     case "create_file":
-      return <CreateFileOutput input={input} observation={observation} />;
+      return (
+        <CreateFileOutput
+          input={input}
+          observation={observation}
+          streamingArgPreview={streamingArgPreview}
+          diskSettledOk={diskSettledOk}
+          suppressHeader={suppressHeader}
+        />
+      );
     case "write_patch":
-      return <WritePatchOutput input={input} observation={observation} />;
+      return (
+        <WritePatchOutput
+          input={input}
+          observation={observation}
+          streamingArgPreview={streamingArgPreview}
+          diskSettledOk={diskSettledOk}
+          suppressHeader={suppressHeader}
+          suppressObservationFollowup={suppressObservationFollowup}
+        />
+      );
     case "run_command":
-      return <RunCommandOutput input={input} observation={observation} streamPreview={streamPreview} />;
+      return (
+        <RunCommandOutput
+          input={input}
+          observation={observation}
+          streamPreview={streamPreview}
+          suppressHeader={suppressHeader}
+        />
+      );
     case "search_code":
-      return <SearchCodeOutput input={input} observation={observation} />;
+      return <SearchCodeOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
     case "list_files":
-      return <ListFilesOutput input={input} observation={observation} />;
+      return <ListFilesOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
     case "codebase_map":
-      return <CodebaseMapOutput input={input} observation={observation} />;
+      return <CodebaseMapOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
     default:
       // Fallback for unknown tools
       return (
         <div className="tool-output tool-generic">
+          {!suppressHeader && (
           <div className="tool-header">
             <span className="tool-icon">{icons.terminal}</span>
             <span className="tool-action">{tool.replace(/_/g, " ")}</span>
+            <span className="tool-target" style={{ flex: 1, minWidth: 0 }} aria-hidden />
+            {observation ? (
+              <StatusBadge ok={observation.ok} />
+            ) : (
+              <span className="tool-status tool-status--streaming">working…</span>
+            )}
           </div>
+          )}
           <pre className="tool-fallback-pre">{JSON.stringify(input, null, 2)}</pre>
           {observation && (
             <pre className="tool-fallback-pre">{observation.summary}</pre>

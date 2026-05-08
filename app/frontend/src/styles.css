@@ -2131,9 +2131,9 @@ a:hover { text-decoration: underline; }
 .msg-mode-badge.mode-agent { background: rgba(255,180,90,0.35); }
 
 .chat-log {
-  flex: 1; overflow: auto; padding: 16px 14px 20px;
+  flex: 1; overflow: auto; padding: 12px 12px 18px;
   font-size: 13px;
-  display: flex; flex-direction: column; gap: 20px;
+  display: flex; flex-direction: column; gap: 12px;
   scroll-behavior: smooth;
   position: relative;
 }
@@ -2157,8 +2157,14 @@ a:hover { text-decoration: underline; }
 .chat-empty-tips { font-size: 11px; opacity: 0.7; }
 
 .chat-turn {
-  display: flex; flex-direction: column; gap: 12px;
+  display: flex; flex-direction: column; gap: 8px;
   min-width: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.chat-turn:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
 }
 
 /* ----- message bubbles ----- */
@@ -2231,8 +2237,332 @@ a:hover { text-decoration: underline; }
 }
 .msg-assistant .msg-content {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 6px;
   animation: ui-msg-assistant-in 0.42s var(--ease-out-expo) both;
+}
+
+.assistant-answer {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.assistant-answer.msg-text {
+  font-size: 13px;
+  line-height: 1.62;
+}
+
+/* Flat assistant thread: streaming thought + ToolOutput/peek live in `.msg-content` (no boxed `.trace`). */
+.assistant-stream-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  margin: 2px 0 6px;
+}
+.assistant-live-markdown {
+  margin: 0 0 10px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.62;
+  color: var(--fg);
+  overflow: visible;
+  border: none;
+  background: transparent;
+}
+.assistant-live-markdown-inner {
+  min-width: 0;
+}
+.assistant-live-markdown-inner p {
+  margin: 0 0 0.55em;
+}
+.assistant-live-markdown-inner p:last-child {
+  margin-bottom: 0;
+}
+.assistant-live-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: color-mix(in srgb, var(--accent-2) 75%, transparent);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: caret-blink 0.85s steps(2) infinite;
+}
+
+.assistant-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ---- Agent timeline: collapsible ACTION rows + live Thought stream ---- */
+.assistant-action-fold {
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  background: var(--bg-3);
+  overflow: hidden;
+  min-width: 0;
+}
+.assistant-action-fold-sum {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  user-select: none;
+}
+.assistant-action-fold-sum.tool-header {
+  gap: 6px;
+  padding: 5px 10px 5px 4px;
+  font-weight: normal;
+}
+.assistant-action-fold-sum::-webkit-details-marker {
+  display: none;
+}
+.assistant-action-fold-chev,
+.assistant-thought-fold-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  color: color-mix(in srgb, var(--fg-dim) 88%, transparent);
+  opacity: 0.95;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+.assistant-action-fold-chev svg,
+.assistant-thought-fold-chev svg {
+  display: block;
+}
+.assistant-action-fold-sum:hover .assistant-action-fold-chev,
+.assistant-live-thought.trace-reasoning > .assistant-live-thought-summary:hover .assistant-thought-fold-chev {
+  color: color-mix(in srgb, var(--fg-dim) 70%, var(--accent));
+  opacity: 1;
+}
+.assistant-action-fold-sum:hover {
+  background: color-mix(in srgb, var(--bg-4) 55%, transparent);
+}
+.assistant-action-fold-body {
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-2) 40%, transparent);
+}
+.assistant-action-fold-body .trace-tool-output {
+  margin: 0;
+}
+
+/* Line up folded bodies with `<summary>` content (past ChevronExpand), not `.tool-details`’ generic indent. */
+.agent-log-container.agent-log-timeline .assistant-action-fold-body .tool-details {
+  margin-left: var(--assistant-timeline-content-inset);
+}
+.agent-log-container.agent-log-timeline .assistant-action-fold-body .tool-command-stream-wrap {
+  margin-left: var(--assistant-timeline-content-inset);
+}
+.agent-log-container.agent-log-timeline .assistant-action-fold-body .tool-output > .tool-create-stream:first-child {
+  margin-left: var(--assistant-timeline-content-inset);
+}
+
+.assistant-stream-thought.trace-reasoning {
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: var(--bg-3);
+  margin-bottom: 0;
+}
+.assistant-stream-thought .assistant-stream-thought-sum {
+  font-size: 11px;
+}
+.assistant-stream-thought-scroll {
+  max-height: min(280px, 42vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 10px 10px var(--assistant-timeline-content-inset, 24px);
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.assistant-stream-thought-md p {
+  margin: 0 0 0.5em;
+}
+.assistant-stream-thought-md p:last-child {
+  margin-bottom: 0;
+}
+.assistant-stream-thought-placeholder {
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+/* ---- Agent activity log: Cursor-style timeline shell (Thought vs Acting) ---- */
+.agent-log-container.agent-log-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* border-left: 2px solid color-mix(in srgb, var(--border) 55%, transparent); */
+  padding-left: 10px;
+  margin-left: 4px;
+  min-width: 0;
+  /* Disclosure column shared by ACTION summaries and live Thought:< padding-left + 22px chevron + gap */
+  --assistant-timeline-summary-pad-left: 4px;
+  --assistant-timeline-chevron-slot: 22px;
+  --assistant-timeline-after-chevron-gap: 6px;
+  --assistant-timeline-content-inset: calc(
+    var(--assistant-timeline-summary-pad-left) +
+      var(--assistant-timeline-chevron-slot) +
+      var(--assistant-timeline-after-chevron-gap)
+  );
+}
+.assistant-live-thought-summary {
+  justify-content: flex-start;
+  gap: 6px;
+  flex-wrap: nowrap;
+  align-items: center;
+  font-weight: 600;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--fg-dim) 92%, transparent);
+  padding: 6px 10px 6px 4px;
+}
+
+/* Disclosure chevron lives in-summary (ChevronExpand) — hide legacy triangle pseudo. */
+.assistant-live-thought.trace-reasoning > .assistant-live-thought-summary::before {
+  content: none;
+  display: none;
+  border: none;
+}
+.assistant-thought-summary-label {
+  letter-spacing: 0.02em;
+}
+.assistant-thought-icon,
+.thought-step-archive-icon {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--fg-dim) 80%, transparent);
+  opacity: 0.94;
+}
+.assistant-live-thought.assistant-stream-thought {
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  background: var(--bg-3);
+}
+.thought-step-archive.assistant-thought-box.thought-section {
+  border-radius: 8px;
+  border-bottom: none;
+}
+.thought-step-archive-sum-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.assistant-thought-content.trace-thought-body {
+  color: color-mix(in srgb, var(--fg) 90%, var(--fg-dim));
+}
+
+.assistant-action-accent--mutate-fs {
+  border-left: 3px solid color-mix(in srgb, #a78bfa 76%, transparent);
+  background: color-mix(in srgb, #a78bfa 11%, var(--bg-3));
+}
+.assistant-action-accent--read-fs {
+  border-left: 3px solid color-mix(in srgb, #38bdf8 72%, transparent);
+  background: color-mix(in srgb, #38bdf8 8%, var(--bg-3));
+}
+.assistant-action-accent--terminal {
+  border-left: 3px solid color-mix(in srgb, #34d399 68%, transparent);
+  background: color-mix(in srgb, #34d399 7%, var(--bg-3));
+}
+.assistant-action-accent--search {
+  border-left: 3px solid color-mix(in srgb, #fbbf24 62%, transparent);
+  background: color-mix(in srgb, #fbbf24 7%, var(--bg-3));
+}
+.assistant-action-accent--map {
+  border-left: 3px solid color-mix(in srgb, #f472b6 62%, transparent);
+  background: color-mix(in srgb, #f472b6 8%, var(--bg-3));
+}
+.assistant-action-accent--generic {
+  border-left: 3px solid color-mix(in srgb, var(--fg-dim) 42%, transparent);
+}
+
+.tool-patch-file-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: color-mix(in srgb, var(--bg-2) 62%, transparent);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+}
+.tool-patch-file-banner-path {
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: rgba(220, 228, 240, 0.95);
+}
+.tool-patch-file-banner-placeholder {
+  color: color-mix(in srgb, var(--fg-dim) 90%, transparent);
+  font-style: italic;
+}
+
+.tool-patch-stream-line {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding-inline: 2px;
+  margin-inline: -2px;
+}
+.tool-patch-line-file-header {
+  font-weight: 650;
+  color: color-mix(in srgb, #c7d2fe 95%, transparent);
+  background: color-mix(in srgb, #6366f1 14%, transparent);
+}
+.tool-patch-line-marker {
+  font-weight: 600;
+  color: color-mix(in srgb, #fcd34d 95%, transparent);
+}
+.tool-patch-line-marker-replace {
+  color: color-mix(in srgb, #6ee7b7 95%, transparent);
+}
+.tool-patch-line-meta {
+  color: color-mix(in srgb, var(--fg-dim) 94%, transparent);
+}
+.tool-patch-line-hunk {
+  color: color-mix(in srgb, #7dd3fc 92%, transparent);
+}
+.tool-patch-line-add {
+  background: color-mix(in srgb, #22c55e 26%, transparent);
+  color: #e8fff3;
+}
+.tool-patch-line-del {
+  background: color-mix(in srgb, #ef4444 22%, transparent);
+  color: #fff0f1;
+}
+.tool-patch-line-ctx {
+  color: color-mix(in srgb, var(--fg) 78%, var(--fg-dim));
+}
+.tool-patch-line-content {
+  color: rgba(220, 228, 240, 0.9);
+}
+
+.tool-create-stream .tool-patch-stream.tool-stream-pre-inner {
+  border-radius: 0 0 6px 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.assistant-step-list .agent-log-group {
+  border-bottom: none;
+  background: transparent;
+}
+.assistant-step-list .trace-reasoning {
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  overflow: hidden;
 }
 .msg-assistant .msg-text {
   color: var(--fg);
@@ -2307,26 +2637,259 @@ a:hover { text-decoration: underline; }
   color: var(--fg-dim);
 }
 
-/* ----- trace / reasoning (Cursor-style collapsible) ----- */
+/* ----- trace / agent activity (Copilot-like compact stream) ----- */
 .trace {
   display: flex; flex-direction: column;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  background: linear-gradient(165deg, rgba(255, 255, 255, 0.045) 0%, rgba(0, 0, 0, 0.2) 100%);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 8px 24px rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  background: color-mix(in srgb, var(--bg-3) 88%, var(--bg));
   font-size: 12px;
   overflow: hidden;
   max-width: 100%;
 }
-.trace--streaming {
-  border-color: rgba(124, 158, 255, 0.22);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.05) inset,
-    0 0 0 1px rgba(124, 158, 255, 0.08),
-    0 8px 28px rgba(0, 0, 0, 0.22);
+.trace--activity-stream {
+  box-shadow: none;
+  background: var(--bg-3);
 }
+.trace--streaming {
+  border-color: color-mix(in srgb, var(--accent-2) 28%, var(--border));
+}
+.trace--streaming.trace--activity-stream {
+  background: color-mix(in srgb, var(--bg-3) 94%, var(--accent) 6%);
+}
+
+/* Flat always-visible trace (no chevron); activity rows */
+.trace--flat .trace-head-static {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+}
+.trace--flat .trace-list--flat {
+  max-height: min(48vh, 400px);
+  border-top: none;
+}
+.trace-step--flat {
+  padding: 6px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+.trace-step--flat:last-child {
+  border-bottom: none;
+}
+.trace-step-flat-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin-bottom: 4px;
+}
+.trace-payload-tool {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(124, 158, 255, 0.12);
+  color: rgba(200, 210, 255, 0.9);
+}
+.trace-payload-pre {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.trace-payload-pre code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: rgba(220, 225, 240, 0.88);
+}
+.trace-tool-row {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.trace-tool-row:last-child {
+  border-bottom: none;
+}
+.trace-thought-body {
+  padding: 0 2px 4px;
+}
+.trace-log-flat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--fg-dim);
+  border-bottom: none;
+  word-break: break-word;
+}
+.agent-log-group {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  background: color-mix(in srgb, var(--bg) 40%, transparent);
+}
+.agent-log-group:last-child {
+  border-bottom: none;
+}
+.agent-log-group .agent-log-line:first-child {
+  padding-top: 6px;
+}
+.agent-log-group .agent-log-line:last-child {
+  padding-bottom: 6px;
+}
+.trace-log-flat--deny {
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+}
+.trace-log-lvl {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--bg-4);
+  color: var(--fg-dim);
+}
+.trace-log-lvl--error {
+  background: color-mix(in srgb, var(--bad) 22%, var(--bg-4));
+  color: var(--fg);
+}
+.trace-log-lvl--warn {
+  background: color-mix(in srgb, #f59e0b 18%, var(--bg-4));
+  color: var(--fg);
+}
+.trace-log-lvl--ok {
+  background: color-mix(in srgb, var(--good) 20%, var(--bg-4));
+  color: var(--fg);
+}
+.trace-obs-pre {
+  margin: 0;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.trace-header-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.trace-thought-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 160px;
+  min-height: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.trace-thought-scroll-inner {
+  min-width: 0;
+}
+.trace-thought-scroll-inner p {
+  margin: 0 0 8px;
+}
+.trace-thought-scroll-inner p:last-child {
+  margin-bottom: 0;
+}
+.trace-thought-caret {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: rgba(160, 180, 255, 0.75);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 1s infinite;
+}
+
+/* Collapsed model reasoning after a turn completes (Copilot-style) */
+.trace-reasoning {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  font-size: 12px;
+}
+.trace-reasoning:last-child {
+  border-bottom: none;
+}
+.trace-reasoning-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  user-select: none;
+}
+.trace-reasoning-summary::-webkit-details-marker {
+  display: none;
+}
+.trace-reasoning-summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--fg-dim);
+  transform: rotate(0deg);
+  transition: transform 0.2s var(--ease-out-expo);
+}
+.trace-reasoning[open] > .trace-reasoning-summary::before {
+  transform: rotate(90deg);
+}
+.trace-reasoning-summary:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--bg-4) 65%, transparent);
+}
+.trace-reasoning-body {
+  padding: 4px 10px 10px 24px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  color: var(--fg);
+}
+
+.thought-step-archive.trace-reasoning .trace-reasoning-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+}
+.thought-step-archive-title {
+  flex-shrink: 0;
+  color: var(--fg);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+}
+.thought-step-archive-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+
 .trace-toggle {
   display: flex; align-items: center; gap: 2px;
   background: transparent;
@@ -2383,7 +2946,9 @@ a:hover { text-decoration: underline; }
   text-align: left;
 }
 .trace-head-label {
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
 }
 .trace--streaming .trace-head-streaming {
   animation: trace-pulse 1.5s ease-in-out infinite;
@@ -2393,7 +2958,7 @@ a:hover { text-decoration: underline; }
   50% { opacity: 1; }
 }
 .trace--streaming .trace-head-label {
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--fg);
 }
 .trace-head-streaming {
   display: inline-flex;
@@ -2442,11 +3007,11 @@ a:hover { text-decoration: underline; }
 }
 
 .trace-list {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: none;
   display: flex;
   flex-direction: column;
-  background: rgba(0, 0, 0, 0.18);
-  max-height: 300px;
+  background: transparent;
+  max-height: min(48vh, 400px);
   overflow-y: auto;
 }
 
@@ -2851,6 +3416,21 @@ kbd {
 .code-block pre {
   margin: 0; padding: 8px 10px;
   overflow: auto; font-family: var(--font-mono); font-size: 11.5px;
+}
+
+/* Assistant final answer: reference snippets only — not a second composer (Cursor-style). */
+.code-block--assistant {
+  background: rgba(0, 0, 0, 0.28);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.code-block--assistant .code-block-head {
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+.code-block--assistant pre {
+  max-height: min(38vh, 260px);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 /* ===== chat-embedded diffs =====
@@ -3339,7 +3919,7 @@ kbd {
 }
 
 @media (max-width: 820px) {
-  .chat-log { padding: 12px 10px 16px; gap: 14px; }
+  .chat-log { padding: 10px 8px 14px; gap: 10px; }
   .msg-user { margin-left: 12px; }
   .composer { margin: 8px; }
   .composer-header { padding: 7px 7px 2px; }
@@ -4042,12 +4622,25 @@ kbd {
   word-break: break-word;
 }
 
-/* create_file streaming */
+/* create_file / write_patch streaming — scroll inside <pre> so trace layout isn’t stretched */
 .tool-create-stream {
+  box-sizing: border-box;
   margin: 4px 0 0;
   padding: 0 4px 4px;
+  min-width: 0;
+  min-height: 0;
+}
+.tool-create-stream .tool-command-stream.tool-stream-pre-inner,
+.tool-create-stream .tool-create-content,
+.tool-create-stream .tool-patch-stream {
+  max-height: min(45vh, 360px);
+  overflow: auto;
+  margin: 0;
 }
 .tool-create-content {
+  max-height: 220px;
+}
+.tool-patch-stream {
   max-height: 220px;
 }
 .tool-cursor {
@@ -4055,6 +4648,10 @@ kbd {
   width: 7px;
   color: var(--accent-2);
   animation: blink 0.8s step-start infinite;
+}
+.tool-stream-placeholder {
+  color: rgba(180, 200, 255, 0.5);
+  font-style: italic;
 }
 @keyframes blink {
   0%, 100% { opacity: 1; }
@@ -4163,6 +4760,32 @@ kbd {
 .tool-details {
   padding: 0;
   margin-left: 20px;
+}
+
+.tool-codebase-map-body.tool-details {
+  margin-left: 12px;
+}
+.tool-codebase-map-body.tool-details > .tool-code-block {
+  margin-left: 0;
+  margin-top: 6px;
+}
+
+/* Inline tool bodies: timeline accordion handles expand — no inner Show row; avoid double indent */
+.tool-inline-body-read.tool-details > .tool-code-block,
+.tool-inline-body-search.tool-details > .tool-code-block,
+.tool-inline-body-run.tool-details > .tool-code-block,
+.tool-inline-body-create.tool-details > .tool-code-block {
+  margin-left: 0;
+  margin-top: 6px;
+}
+.tool-inline-body-list.tool-details > .tool-file-list {
+  margin-left: 0;
+  margin-top: 6px;
+  padding-left: 8px;
+}
+.tool-inline-body-patch.tool-details > .tool-patch-results {
+  margin-top: 6px;
+  padding-left: 8px;
 }
 
 .tool-toggle {
@@ -4277,46 +4900,6 @@ kbd {
   color: rgba(255, 255, 255, 0.7);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* ============================================================================
-   Streaming Thought Box - scrollable container for live thinking
-   ============================================================================ */
-.streaming-thought {
-  margin: 4px 0;
-  border-radius: 6px;
-  background: rgba(30, 35, 50, 0.4);
-  border: 1px solid rgba(140, 160, 255, 0.12);
-  overflow: hidden;
-  min-width: 0;
-}
-
-.streaming-thought-content {
-  max-height: 200px;
-  overflow-x: auto;
-  overflow-y: auto;
-  min-width: 0;
-  padding: 10px 12px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: rgba(210, 220, 255, 0.85);
-}
-
-.streaming-thought-content p {
-  margin: 0 0 8px;
-}
-.streaming-thought-content p:last-child {
-  margin-bottom: 0;
-}
-
-.streaming-thought-content .caret {
-  display: inline-block;
-  width: 2px;
-  height: 14px;
-  background: rgba(160, 180, 255, 0.7);
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  animation: blink 1s infinite;
 }
 
 /* Streaming cursor - Cursor-style blinking cursor at end of streaming text */

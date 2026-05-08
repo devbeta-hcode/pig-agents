@@ -338,13 +338,37 @@ async function* _sseStream(res: Response, ollama: boolean): AsyncGenerator<strin
       }
       try {
         const obj = JSON.parse(payload) as {
-          choices?: { delta?: { content?: string }; message?: { content?: string } }[];
+          choices?: Array<{
+            delta?: {
+              content?: string | null;
+              /** Some OpenAI / proxy variants stream reasoning separately from answer tokens. */
+              reasoning?: string | null;
+              reasoning_content?: string | null;
+            };
+            message?: { content?: string };
+          }>;
           message?: { content?: string };
           done?: boolean;
         };
         const delta = ollama
           ? (obj.message?.content ?? "")
-          : (obj.choices?.[0]?.delta?.content ?? obj.choices?.[0]?.message?.content ?? "");
+          : (() => {
+              const choice0 = obj.choices?.[0];
+              const d = choice0?.delta as Record<string, unknown> | undefined;
+              const msg0 = choice0?.message;
+              const content =
+                (typeof d?.content === "string" ? d.content : "") ||
+                (typeof msg0?.content === "string" ? msg0.content : "");
+              // Merge reasoning-shaped fields so the ReAct trace / THOUGHT preview can stream like other providers.
+              let reasoning = "";
+              if (d) {
+                for (const k of ["reasoning", "reasoning_content", "thinking"] as const) {
+                  const v = d[k];
+                  if (typeof v === "string") reasoning += v;
+                }
+              }
+              return reasoning + content;
+            })();
         if (delta) yield delta;
       } catch { /* skip malformed chunk */ }
     }

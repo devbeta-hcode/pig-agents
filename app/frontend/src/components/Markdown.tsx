@@ -62,13 +62,13 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
         <span className="lang">{lang || "text"}</span>
         {targetName && <span className="target" title={targetPath}>→ {targetName}</span>}
         <span className="cb-spacer" />
-        <button onClick={copy} title="Copy code to clipboard">
+        <button type="button" onClick={copy} title="Copy code to clipboard">
           {copied ? <><IconCheck size={13} style={{ marginRight: 3 }} />Copied</> : <><IconCopy size={13} style={{ marginRight: 3 }} />Copy</>}
         </button>
-        <button onClick={insert} disabled={!targetPath} title={targetPath ? `Insert at cursor in ${targetName}` : "Open a file in the editor first"}>
+        <button type="button" onClick={insert} disabled={!targetPath} title={targetPath ? `Insert at cursor in ${targetName}` : "Open a file in the editor first"}>
           {acted === "insert" ? <><IconCheck size={13} style={{ marginRight: 3 }} />Inserted</> : "↳ Insert"}
         </button>
-        <button onClick={apply} disabled={!targetPath} className="apply" title={targetPath ? `Replace contents of ${targetName}` : "Open a file in the editor first"}>
+        <button type="button" onClick={apply} disabled={!targetPath} className="apply" title={targetPath ? `Replace contents of ${targetName}` : "Open a file in the editor first"}>
           {acted === "replace" ? <><IconCheck size={13} style={{ marginRight: 3 }} />Applied</> : <><IconCheck size={13} style={{ marginRight: 3 }} />Apply</>}
         </button>
       </div>

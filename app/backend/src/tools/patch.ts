@@ -13,6 +13,87 @@ export interface PatchResult {
   error?: string;
 }
 
+/** Short stable codes for OBSERVATION summaries so the model and UI can scan failures quickly. */
+export type PatchApplyErrorCode = "WP_SEARCH_MISS" | "WP_SEARCH_AMBIGUOUS" | "WP_FILE_MISSING" | "WP_APPLY";
+
+export function patchApplyErrorCode(error: string | undefined): PatchApplyErrorCode {
+  if (!error) return "WP_APPLY";
+  if (error === "SEARCH text not found") return "WP_SEARCH_MISS";
+  if (/^SEARCH text matches \d+ times\b/.test(error)) return "WP_SEARCH_AMBIGUOUS";
+  if (error.startsWith("File not found:")) return "WP_FILE_MISSING";
+  return "WP_APPLY";
+}
+
+export type WritePatchFormatError = {
+  code: WritePatchFormatCode;
+  message: string;
+};
+
+export type WritePatchFormatCode =
+  | "WP_EMPTY"
+  | "WP_FMT_FILE_TRUNC"
+  | "WP_FMT_AFTER_FILE"
+  | "WP_FMT_DEFAULT_SEARCH"
+  | "WP_FMT_NEED_FILE_OR_PATH";
+
+/**
+ * Structural validation before parsing/applying. Catches the common model mistake:
+ * `FILE: path` then raw file body with no SEARCH/REPLACE markers.
+ *
+ * @returns `null` if shape is acceptable for `parsePatch`; otherwise code + message (summary uses `[code] message`).
+ */
+export function validateWritePatchPayload(raw: string, defaultPathTrimmed?: string): WritePatchFormatError | null {
+  const text = raw.replace(/\r\n/g, "\n");
+  const t = text.trim();
+  if (!t) return { code: "WP_EMPTY", message: "write_patch patches string is empty." };
+
+  if (/^FILE:/m.test(t)) {
+    const parts = t.split(/(?=^FILE:)/m);
+    for (const part of parts) {
+      const seg = part.trim();
+      if (!seg.startsWith("FILE:")) continue;
+      const nl = seg.indexOf("\n");
+      if (nl === -1) {
+        return {
+          code: "WP_FMT_FILE_TRUNC",
+          message:
+            'Each FILE: line must be followed by a newline, then a line exactly "SEARCH", then old text, a line "REPLACE", new text, optional "END".',
+        };
+      }
+      const pathHint = seg.slice(0, nl).replace(/^FILE:[ \t]*/i, "").trim() || "(path)";
+      const afterPath = seg.slice(nl + 1);
+      if (!afterPath.startsWith("SEARCH\n")) {
+        return {
+          code: "WP_FMT_AFTER_FILE",
+          message:
+            `After FILE: ${pathHint} the next line must be exactly "SEARCH", then old text, then "REPLACE", then new text, then optional "END". ` +
+            `Do not paste raw file content under FILE:. For a new file use SEARCH\\n\\nREPLACE\\n<full file>\\nEND.`,
+        };
+      }
+    }
+    return null;
+  }
+
+  if (defaultPathTrimmed) {
+    if (!t.startsWith("SEARCH\n")) {
+      return {
+        code: "WP_FMT_DEFAULT_SEARCH",
+        message:
+          'When using input.path, the patches body must start with "SEARCH\\n", then old text, "REPLACE\\n", then new text. ' +
+          "Or use multi-file format: FILE: rel/path then SEARCH/REPLACE blocks.",
+      };
+    }
+    return null;
+  }
+
+  return {
+    code: "WP_FMT_NEED_FILE_OR_PATH",
+    message:
+      "Include at least one FILE: <relative-path> block with SEARCH/REPLACE/END, " +
+      'or pass path plus a body that starts with "SEARCH\\n".',
+  };
+}
+
 /**
  * Parse a patch payload. Two accepted shapes:
  *

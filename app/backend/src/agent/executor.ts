@@ -1,6 +1,6 @@
 import { listFiles, readFile, writeFile, searchCode, buildCodebaseMapSummary, globFiles } from "../tools/file.js";
 import { runSmartCommand } from "../tools/smartCommand.js";
-import { applyPatches, type PatchResult } from "../tools/patch.js";
+import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, type PatchResult } from "../tools/patch.js";
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
 import { startAgentCommand } from "./commandLog.js";
 import { getWorkspace } from "../utils/workspace.js";
@@ -253,12 +253,26 @@ export async function executeTool(
       case "write_patch": {
         const raw = String(input.patches ?? input.patch ?? "");
         const path = typeof input.path === "string" ? input.path : undefined;
-        if (!raw) return { ok: false, summary: "write_patch: missing 'patches'" };
+        if (!raw) return { ok: false, summary: "[WP_INPUT] write_patch: missing 'patches'." };
+        const pathTrim = path?.trim();
+        const formatErr = validateWritePatchPayload(raw, pathTrim);
+        if (formatErr) return { ok: false, summary: `[${formatErr.code}] ${formatErr.message}` };
         const results: PatchResult[] = await applyPatches(raw, path);
-        if (results.length === 0) return { ok: false, summary: "write_patch: no valid SEARCH/REPLACE blocks parsed" };
+        if (results.length === 0) {
+          return {
+            ok: false,
+            summary:
+              "[WP_PARSE_NONE] No SEARCH/REPLACE blocks could be parsed. Use FILE: path then SEARCH/REPLACE/END, or pass path + body starting with SEARCH.",
+          };
+        }
 
         const ok = results.every((r) => r.applied);
-        const lines = results.map((r) => r.applied ? `OK ${r.path}` : `FAIL ${r.path}: ${r.error}`);
+        const lines = results.map((r) => {
+          if (r.applied) return `OK ${r.path}`;
+          const code = patchApplyErrorCode(r.error);
+          const oneLine = (r.error ?? "unknown").replace(/\s+/g, " ").trim();
+          return `FAIL [${code}] ${r.path} — ${oneLine}`;
+        });
         let validation: ValidationReport = { ran: [], ok: true };
         if (ok) validation = await autoValidate();
         const valSummary = ok ? `\n${summarizeValidation(validation)}` : "";

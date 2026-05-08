@@ -164,18 +164,10 @@ async function runAgentInBackground(state: SessionState): Promise<void> {
     session.status = "completed";
     session.result = result;
     session.completedAt = Date.now();
-    
-    // Emit a synthetic "session_completed" event so listeners know it's done
-    const doneEvent: AgentEvent = { type: "final", result: result.result };
-    for (const listener of state.listeners) {
-      const l = listener;
-      setImmediate(() => {
-        try {
-          l(doneEvent);
-        } catch { /* ignore */ }
-      });
-    }
-    
+
+    // `runAgent` already emitted `final` through onEvent (and it's in session.events).
+    // Do not broadcast a second `final` — downstream UIs would append duplicate events.
+
     logger.info(`Session completed: ${session.id}`);
     
   } catch (err) {

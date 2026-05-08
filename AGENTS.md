@@ -176,7 +176,7 @@ Implemented and known-working:
   highlights, selection → "Add to Chat" floating action
 - Chat panel: Ask/Agent modes, slash commands, model dropdown, file mention
   chips with individual remove, drag-files-into-chat, code-block Apply,
-  streaming agent thinking, regenerate / copy / stop · shared SVG chevrons
+  regenerate / copy / stop · shared SVG chevrons
   (`ChevronExpand` / `PlayTriangle`) for disclosures and small affordances
 - Composer: `MentionInput` auto-grow; avoid spurious empty-state scrollbar
   (overflow hidden until max height — see `MentionInput.tsx` + `styles.css`)

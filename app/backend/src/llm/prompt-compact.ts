@@ -94,7 +94,7 @@ TOOLS:
 - search_code: {"type":"search_code","input":{"query":"function name"}}
 - glob: {"type":"glob","input":{"pattern":"**/*.ts"}}
 - run_command: {"type":"run_command","input":{"cmd":"npm test"}}
-- write_patch: {"type":"write_patch","input":{"patches":"FILE:path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND"}}
+- write_patch: {"type":"write_patch","input":{"patches":"FILE:path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND"}} — after FILE: rel/path the next line must be SEARCH then REPLACE (never raw file body under FILE:); new file = SEARCH\\n\\nREPLACE\\n<content>\\nEND. Or {"path":"x.ts","patches":"SEARCH\\n..."} only.
 - create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}}
 
 Parallel: emit multiple ACTION lines for independent ops (e.g. reading several files at once).
@@ -120,8 +120,8 @@ FINAL: I'm doing well! How can I help you with your code today?
 RULES:
 1. ONE action per turn (THOUGHT + ACTION, or THOUGHT + FINAL)
 2. Questions about files → read_file first
-3. Creating/editing files → use write_patch (never paste code in FINAL)
-4. Simple questions → FINAL directly
+3. Creating/editing files → use write_patch (never paste code in FINAL); each FILE: block must use SEARCH/REPLACE lines as in TOOLS. On patch failure read OBSERVATION codes like [WP_SEARCH_MISS].
+4. Simple questions → FINAL directly (user-facing text only — no meta-rubric, no THOUGHT pasted into FINAL)
 5. Match user's language in FINAL`;
 
 /** Even more compact for simple tasks */
@@ -144,7 +144,8 @@ export const ASK_SYSTEM_PROMPT_COMPACT = `Helpful coding assistant. Answer in Ma
 - Use fenced code blocks with language tags
 - Be concise, skip filler
 - If proposing changes, show the patched code
-- Never output THOUGHT/ACTION/FINAL format`;
+- Never output THOUGHT/ACTION/FINAL format
+- Reply in plain Markdown only — no internal meta-rubric lines (e.g. language tags "describing that I…")`;
 
 /** Ultra-short ASK system prompt (minimal token use). */
 export const ASK_SYSTEM_PROMPT_MINIMAL = `Coding assistant. Reply in Markdown only (no tools). Short answers; code in fenced blocks.`;

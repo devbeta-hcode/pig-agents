@@ -219,7 +219,7 @@ export function DiffEditorView({
   const clearWidgets = useCallback(() => {
     const ed = editorRef.current?.getModifiedEditor();
     if (!ed) return;
-    ed.changeViewZones((accessor) => {
+    ed.changeViewZones((accessor: MonacoEditorNS.IViewZoneChangeAccessor) => {
       for (const id of zoneIdsRef.current) accessor.removeZone(id);
     });
     zoneIdsRef.current = [];
@@ -233,7 +233,7 @@ export function DiffEditorView({
     clearWidgets();
     if (!gitContext || !onHunkActionRef.current || hunks.length === 0) return;
 
-    ed.changeViewZones((accessor) => {
+    ed.changeViewZones((accessor: MonacoEditorNS.IViewZoneChangeAccessor) => {
       hunks.forEach((h, i) => {
         const node = document.createElement("div");
         node.className = "bha-git-widget bha-git-zone";

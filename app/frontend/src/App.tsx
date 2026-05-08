@@ -117,6 +117,10 @@ export default function App() {
   //   - `activeSession` : the full session (turns + events), loaded on demand
   // Saving is debounced so streaming agent events don't hammer the disk.
   const [chatList, setChatList] = useState<ChatSessionMeta[]>([]);
+  const chatListRef = useRef<ChatSessionMeta[]>([]);
+  useEffect(() => {
+    chatListRef.current = chatList;
+  }, [chatList]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
   const sessionCacheRef = useRef<Map<string, ChatSession>>(new Map());
@@ -375,6 +379,7 @@ export default function App() {
     let cancelled = false;
     sessionCacheRef.current.clear();
     setActiveSession(null);
+    setActiveSessionId("");
     setDiffs([]);
     (async () => {
       try {
@@ -398,6 +403,14 @@ export default function App() {
         }
       } catch (err) {
         console.warn("listChats failed:", err);
+        if (!cancelled) {
+          const s = newSession(workspace);
+          sessionCacheRef.current.set(s.id, s);
+          setChatList([metaFromSession(s)]);
+          setActiveSessionId(s.id);
+          setActiveSession(s);
+          api.putChat(workspace, s).catch(() => { /* noop */ });
+        }
       }
     })();
     return () => { cancelled = true; flushSave(); };
@@ -406,7 +419,8 @@ export default function App() {
   // Load full session whenever the active id changes (lazy, with cache).
   useEffect(() => {
     if (!workspace || !activeSessionId) return;
-    const cached = sessionCacheRef.current.get(activeSessionId);
+    const idLoading = activeSessionId;
+    const cached = sessionCacheRef.current.get(idLoading);
     if (cached) {
       setActiveSession(cached);
       const d = sanitizePendingDiffs(cached.pendingDiffs);
@@ -417,7 +431,7 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const s = await api.getChat<ChatSession>(workspace, activeSessionId);
+        const s = await api.getChat<ChatSession>(workspace, idLoading);
         if (cancelled) return;
         if (!Array.isArray(s.turns)) s.turns = [];
         const d = sanitizePendingDiffs(s.pendingDiffs);
@@ -428,6 +442,22 @@ export default function App() {
         if (d.length === 0) migrateLegacyBrowserDiffsOnce(workspace, normalized);
       } catch (err) {
         console.warn("getChat failed:", err);
+        if (cancelled) return;
+        const meta = chatListRef.current.find((m) => m.id === idLoading);
+        const now = Date.now();
+        const fallback: ChatSession = {
+          id: idLoading,
+          title: meta?.title ?? "Chat",
+          workspace,
+          mode: meta?.mode,
+          createdAt: meta?.createdAt ?? now,
+          updatedAt: now,
+          turns: [],
+          pendingDiffs: [],
+        };
+        sessionCacheRef.current.set(fallback.id, fallback);
+        setActiveSession(fallback);
+        setDiffs([]);
       }
     })();
     return () => { cancelled = true; };

@@ -579,8 +579,8 @@ export function SettingsModal({ onClose }: Props) {
             onChange={(e) => field("MAX_CONTEXT_FILES", Number(e.target.value))}
           />
           <div className="hint">
-            Top-N files (ranked by relevance to the prompt) auto-attached to the model's context before
-            each run. Higher = more code visible to the agent, but more tokens per turn. Recommended: <code>10–20</code>.
+            How many <strong>existing workspace files</strong> are ranked and injected into the prompt as context each turn — not how many new files are written in parallel, and not extra LLM calls.
+            Higher = more code visible to the agent, more tokens. Recommended: <code>10–20</code>.
           </div>
         </div>
 

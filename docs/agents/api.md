@@ -51,7 +51,7 @@ WS protocol (JSON frames):
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/agent/run` | body `{ task, mode? }` (`mode` = `"ask"` or `"agent"`); returns full result JSON |
-| POST | `/agent/run?stream=1` | **SSE**: events `log`, `iter_start`, `token`, `thought`, `action`, `observation`, `final`, `error`, `aborted`, `done` |
+| POST | `/agent/run?stream=1` | **SSE**: events `log`, `iter_start`, `token`, `thought`, `tool_payload_streaming` (optional `tool`), `action` (optional `actionKey`), `tool_disk_settled` (`actionKey`, `ok` — write tools finished on disk before stream ends), `observation`, `final`, `error`, `aborted`, `done` |
 
 Client cancels by closing the `EventSource` / aborting the `fetch`; the
 backend listens to `res.on("close")` and aborts the underlying

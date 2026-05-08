@@ -92,8 +92,10 @@ Available tools (set "type" to one of these):
 - "search_code"   input: { "query": "text" }
 - "glob"          input: { "pattern": "**/*.ts" }  — find files matching a glob pattern (** = any depth, * = within segment).
 - "run_command"   input: { "cmd": "shell command" }  — Executes shell commands. Long-running processes (servers, watchers, builds) auto-detect and return immediately when ready. See "Execution Intelligence" below.
-- "write_patch"   input: { "patches": "FILE: path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND\\n..." }
+- "write_patch"   input: { "patches": "FILE: path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND\\n..." } — optional { "path": "rel/path", "patches": "SEARCH\\n..." } for single-file edits only (body must start with SEARCH).
 - "create_file"   input: { "path": "rel/path", "content": "full file content" }  — create or overwrite a file directly (simpler than write_patch for new files).
+
+write_patch shape is strict: after every \`FILE: <relative-path>\` line, the next line must be exactly \`SEARCH\`, then the old text, then a line exactly \`REPLACE\`, then the new text, then optional \`END\`. Do not paste a full file right under \`FILE:\` without those markers. New file: empty SEARCH (\`SEARCH\\n\\nREPLACE\\n<full content>\\nEND\`). On failure, OBSERVATION may include bracket codes (\`[WP_FMT_AFTER_FILE]\`, \`[WP_SEARCH_MISS]\`, etc.)—read them and adjust the patch or re-read the file.
 
 **Parallel execution**: You may emit MULTIPLE ACTION blocks in a single response. All are dispatched concurrently. Only do this for genuinely independent operations (e.g. reading several unrelated files, creating multiple files that don't depend on each other). Format:
 THOUGHT: I need to read A and B to understand the issue.
@@ -160,6 +162,10 @@ Iteration awareness — pace yourself:
 
 - FINAL must be a SHORT summary describing what files were created/modified and why,
   pointing the user at the diff. Do NOT repeat the file contents in FINAL.
+- The text you put in FINAL is shown to the user **verbatim**. Do NOT paste internal
+  rubrics like \`(Vietnamese) describing that I can read code…\`, and do NOT repeat
+  or paste your THOUGHT inside FINAL — keep planning in THOUGHT only; FINAL is the
+  actual answer they read.
 
 Reasoning & tool discipline (keep THOUGHT to 1–6 sentences, but make them *useful*):
 - Anchor each THOUGHT in evidence: what you learned from RECENT STEPS / OBSERVATION (or previews),
@@ -244,7 +250,8 @@ Guidelines:
 - For non-trivial questions: brief diagnosis → concrete steps or options → note trade-offs or risks when relevant.
 - Separate facts you can infer from the prompt from guesses; say what you would open or run to verify.
 - If you need a file you weren't given, say which file you'd want to see.
-- NEVER output THOUGHT/ACTION/FINAL/JSON tool calls. Plain Markdown only.`;
+- NEVER output THOUGHT/ACTION/FINAL/JSON tool calls. Plain Markdown only.
+- Write as if speaking to the user: no internal rubrics (e.g. \`(Vietnamese) describing that I can…\`) and no THOUGHT/FINAL scaffold — only the answer.`;
 
 export function buildAskMessage(task: string, relevant: ScoredFile[], history: { role: string; content: string }[]): string {
   const filesBlock = relevant.length === 0

@@ -48,6 +48,8 @@ export interface AgentEvent {
     | "iter_start"
     | "token"
     | "thought"
+    | "tool_payload_streaming"
+    | "tool_disk_settled"
     | "action"
     | "command_chunk"
     | "observation"
