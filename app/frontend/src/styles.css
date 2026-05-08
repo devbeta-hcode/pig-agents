@@ -5628,22 +5628,35 @@ kbd {
 .browser-inspect-banner {
   pointer-events: none;
   position: absolute;
-  top: 8px;
+  bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--accent);
-  color: #fff;
+  background: rgba(30, 30, 30, 0.82);
+  color: #ccc;
   font-size: 11px;
-  font-weight: 600;
-  padding: 4px 14px;
-  border-radius: 10px;
+  font-weight: 500;
+  padding: 3px 12px;
+  border-radius: 8px;
   white-space: nowrap;
   z-index: 10;
-  opacity: 0.92;
+  border: 1px solid rgba(255,255,255,0.1);
+  backdrop-filter: blur(4px);
 }
 .browser-inspect-banner--msg {
   background: var(--bg-4);
   color: var(--fg-dim);
   border: 1px solid var(--border);
   opacity: 1;
+}
+
+/* Inspect mode element highlight — VSCode-style blue overlay */
+.browser-inspect-highlight {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid #4fc3f7;
+  background: rgba(79, 195, 247, 0.12);
+  border-radius: 2px;
+  z-index: 9;
+  box-shadow: 0 0 0 1px rgba(79, 195, 247, 0.3);
+  transition: left 60ms ease, top 60ms ease, width 60ms ease, height 60ms ease;
 }

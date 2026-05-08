@@ -47,7 +47,6 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
   const [loading, setLoading] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [currentUrl, setCurrentUrl] = useState("");
-  const [selectedEl, setSelectedEl] = useState<ElementInfo | null>(null);
   const [hoverLabel, setHoverLabel] = useState<string | null>(null);
   const [hoverScreen, setHoverScreen] = useState<{ x: number; y: number } | null>(null);
   const [starting, setStarting] = useState(false);
@@ -56,7 +55,9 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
   const [viewportFocused, setViewportFocused] = useState(false);
   const [inspecting, setInspecting] = useState(false);
   const [inspectMsg, setInspectMsg] = useState<string>("");
+  const [inspectRect, setInspectRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const inspectMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inspectHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingStartAfterInstall = useRef(false);
   const handleStartRef = useRef<() => Promise<void>>();
 
@@ -225,14 +226,23 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
       }
       return;
     }
-    const r = await post("/click", { x, y });
-    if (r.element) setSelectedEl(r.element);
+    await post("/click", { x, y });
   }
 
   function handleImgMouseMove(e: React.MouseEvent<HTMLImageElement>) {
     if (!imgRef.current) return;
     const { x, y } = scaleCoords(e);
     setHoverScreen({ x: e.clientX, y: e.clientY });
+
+    // In inspect mode: debounce element highlight
+    if (inspecting) {
+      if (inspectHoverTimer.current) clearTimeout(inspectHoverTimer.current);
+      inspectHoverTimer.current = setTimeout(async () => {
+        const r = await post("/element", { x, y });
+        if (r.element?.rect) setInspectRect(r.element.rect);
+      }, 60);
+      return;
+    }
 
     // Debounce hover label fetch (100ms)
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -305,13 +315,6 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
       onAddToChat!(text);
     }
   }, [currentUrl, onAddToChat, onAddElementToChat]);
-
-  const handleAddToChat = useCallback(() => {
-    if (!selectedEl || !onAddToChat) return;
-    const text = `**Element**: \`${selectedEl.path}\`\n\n**HTML:**\n\`\`\`html\n${selectedEl.outerHTML}\n\`\`\`\n\n**URL**: ${currentUrl}`;
-    onAddToChat(text);
-    setSelectedEl(null);
-  }, [selectedEl, currentUrl, onAddToChat]);
 
   // ── render ────────────────────────────────────────────────────────────────
   if (!status.installed) {
@@ -473,7 +476,7 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
         onWheel={handleWheel}
         onFocus={() => setViewportFocused(true)}
         onBlur={() => setViewportFocused(false)}
-        onMouseLeave={() => { setHoverLabel(null); setHoverScreen(null); }}
+        onMouseLeave={() => { setHoverLabel(null); setHoverScreen(null); setInspectRect(null); }}
         style={{ outline: "none" }}
       >
         {connState !== "connected" ? (
@@ -492,6 +495,24 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
             onMouseMove={handleImgMouseMove}
           />
         )}
+        {/* inspect hover highlight overlay */}
+        {inspecting && inspectRect && imgRef.current && (() => {
+          const img = imgRef.current!.getBoundingClientRect();
+          const vp = viewportRef.current!.getBoundingClientRect();
+          const scaleX = img.width / 1280;
+          const scaleY = img.height / 800;
+          const left = img.left - vp.left + inspectRect.left * scaleX;
+          const top = img.top - vp.top + inspectRect.top * scaleY;
+          const width = inspectRect.width * scaleX;
+          const height = inspectRect.height * scaleY;
+          return (
+            <div
+              className="browser-inspect-highlight"
+              style={{ left, top, width, height }}
+              aria-hidden
+            />
+          );
+        })()}
         {/* hover label tooltip */}
         {hoverLabel && hoverScreen && (
           <div
@@ -513,26 +534,7 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
         )}
       </div>
 
-      {/* ── element inspector ── */}
-      {selectedEl && (
-        <div className="browser-inspector">
-          <div className="browser-inspector-header">
-            <span className="browser-inspector-path">{selectedEl.path}</span>
-            <div className="browser-inspector-actions">
-              {onAddToChat && (
-                <button className="browser-inspector-btn" onClick={handleAddToChat} title="Add element context to chat">
-                  Add to Chat
-                </button>
-              )}
-              <button className="browser-inspector-close" onClick={() => setSelectedEl(null)} title="Dismiss">✕</button>
-            </div>
-          </div>
-          {selectedEl.textContent && (
-            <div className="browser-inspector-text">{selectedEl.textContent.slice(0, 120)}</div>
-          )}
-          <pre className="browser-inspector-html">{selectedEl.outerHTML.slice(0, 500)}</pre>
-        </div>
-      )}
+
     </div>
   );
 }
