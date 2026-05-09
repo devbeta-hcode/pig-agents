@@ -148,6 +148,22 @@ function snippetsFromDiff(diff: string): { original: string; modified: string } 
   return { original: o.join("\n"), modified: m.join("\n") };
 }
 
+/**
+ * True when the unified diff was generated against an absent original
+ * (i.e. the patch CREATED the file). The backend marks these with a
+ * `# ba:created-from-absent` line in the diff body, and `git`-style new
+ * files use `--- /dev/null`. In both cases there's nothing to read off
+ * disk for the "before" side, and a missing-file ENOENT is expected (and
+ * not actually an error) — we should just render the diff snippet without
+ * the scary "File can't be read" banner.
+ */
+function isCreatedFromAbsentDiff(diff: string): boolean {
+  if (!diff) return false;
+  if (diff.includes("# ba:created-from-absent")) return true;
+  if (/^---\s+\/dev\/null/m.test(diff)) return true;
+  return false;
+}
+
 type MonacoNS = typeof import("monaco-editor");
 
 export function DiffEditorView({
@@ -170,15 +186,44 @@ export function DiffEditorView({
   useEffect(() => {
     let cancelled = false;
     setError(null); setModified(null);
+    // For "created from absent" diffs the file may legitimately not exist
+    // yet (or got reverted). Skip the read so we don't surface a misleading
+    // ENOENT — the modified content is fully reconstructible from the diff
+    // body, and the original side is just empty.
+    if (isCreatedFromAbsentDiff(diff)) {
+      const s = snippetsFromDiff(diff);
+      setModified(s.modified);
+      return () => { cancelled = true; };
+    }
     api.readFile(path)
       .then((r) => { if (!cancelled) setModified(r.content); })
-      .catch((e) => { if (!cancelled) setError((e as Error).message); });
+      .catch((e) => {
+        if (cancelled) return;
+        // Treat ENOENT as a soft fallback: render whatever we can from the
+        // diff body instead of blocking with an error banner. This happens
+        // when the diff references a path outside the active workspace
+        // (e.g. an old chat session whose workspace differed) or after a
+        // file was deleted.
+        const msg = (e as Error).message || String(e);
+        if (/ENOENT|no such file/i.test(msg)) {
+          const s = snippetsFromDiff(diff);
+          setModified(s.modified || "");
+        } else {
+          setError(msg);
+        }
+      });
     return () => { cancelled = true; };
   }, [path, diff]);
 
   const hunks = useMemo(() => parseHunks(diff), [diff]);
 
   const { original, modifiedText } = useMemo(() => {
+    // New-file diffs: there's no "before" to show; left side stays empty
+    // and the right side is the modified text we already have (either from
+    // disk or reconstructed from the diff body in the read effect above).
+    if (isCreatedFromAbsentDiff(diff)) {
+      return { original: "", modifiedText: modified ?? snippetsFromDiff(diff).modified };
+    }
     if (modified !== null) {
       return { original: reverseApply(modified, diff), modifiedText: modified };
     }

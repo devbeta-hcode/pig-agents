@@ -69,7 +69,14 @@ router.get("/file", async (req, res) => {
     const content = await readFile(p);
     res.json({ path: p, content });
   } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
+    // ENOENT is a normal "this file doesn't exist (yet)" condition — for
+    // example diff entries that point at a path outside the active
+    // workspace, or files the user just deleted. Reporting it as 400 makes
+    // it look like a client bug in the network tab; 404 matches HTTP
+    // semantics and lets the frontend handle it as a soft fallback.
+    const msg = (err as Error).message || String(err);
+    const code = /ENOENT|no such file/i.test(msg) ? 404 : 400;
+    res.status(code).json({ error: msg });
   }
 });
 
