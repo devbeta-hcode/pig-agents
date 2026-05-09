@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-09
+Last updated: 2026-05-12
 
 ---
 
@@ -126,6 +126,36 @@ The dev server URLs:
    [`workflows.md`](workflows.md).
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
+
+### Last session (2026-05-12) — diff streaming + chat memory caps
+
+- `app/backend/src/agent/runner.ts`: `EarlyToolExec` now carries a
+  `streamedObservation` flag. When a write tool finishes mid-iteration the
+  runner emits its `observation` event (with diffs) immediately, so a
+  multi-file turn (e.g. 5 `create_file` calls) populates the diff sidebar
+  one file at a time instead of dumping all five only after the iteration
+  wraps up. The four iteration-level aggregator emit sites (lone-write fast
+  path, consultation FINAL path, ACTION+FINAL combo, multi-action tail)
+  filter out diffs from already-streamed entries so the diff list never
+  doubles up.
+- `app/frontend/src/components/Chat.tsx`:
+  - Added `STREAMING_BUFFER_CAP = 256_000` and `capStreamingBuffer()`. Both
+    `flushTokenRaf` and `flushPendingTokensNow` now cap `thinking.partial`
+    so a runaway iteration with a multi-MB tool payload can't grow the
+    streaming buffer unbounded (was the prime cause of "tràn bộ nhớ" during
+    very long agent reasoning streams).
+  - Added a turn-window (`turnWindow` state, default 60, +60 per click)
+    around `session.turns.map(...)`; only the last N turns render. A
+    rounded-pill "Load N older message(s)" button appears at the top of the
+    log when the window is cropping. Window resets when `session.id`
+    changes. This is a pragmatic stand-in for full virtualization — the
+    existing scroll/stick-to-bottom machinery is too entangled to swap to
+    `react-virtuoso` safely in a single pass.
+- `app/frontend/src/styles.css`: added `.chat-load-older` / `.chat-load-older-btn`
+  / `.chat-load-older-count` rules.
+- `app/frontend/package.json`: added `react-virtuoso` (currently unused;
+  reserved for the proper virtualization pass when the scroll machinery
+  gets refactored).
 
 ### Last session (2026-05-09) — chat trace separation invariant
 

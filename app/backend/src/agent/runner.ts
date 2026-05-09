@@ -293,6 +293,10 @@ type EarlyToolExec = {
   input: Record<string, unknown>;
   promise: Promise<ToolOutcome>;
   outcome?: ToolOutcome;
+  /** True once we've emitted a per-tool `observation` for this entry. The
+   *  iteration-level aggregator skips these so diffs aren't double-counted
+   *  in the chat trace and on the diff sidebar. */
+  streamedObservation?: boolean;
 };
 
 function detectStreamingToolPayload(buf: string): { tool: string } | null {
@@ -544,17 +548,36 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         for (const act of completeActions) {
           const key = actionScheduleKey(act.type, act.input);
           if (earlyScheduled.has(key)) continue;
+          // Reserve the slot synchronously so the per-tool observation hook
+          // below can flip the `streamedObservation` flag on the same entry.
+          const entryRef: EarlyToolExec = {
+            type: act.type,
+            input: act.input,
+            promise: Promise.resolve(undefined as unknown as ToolOutcome),
+          };
+          earlyScheduled.set(key, entryRef);
           const promise = executeTool(act.type, act.input, toolCtx).then((outcome) => {
             if (isWriteTool(act.type)) {
               emit({ type: "tool_disk_settled", iteration: i, actionKey: key, ok: outcome.ok });
+              // Stream a per-file observation as soon as the disk write
+              // settles. This unblocks the diff sidebar — when the model
+              // dispatches 5 create_file calls in a single turn the user
+              // sees each file appear in the diff list immediately instead
+              // of waiting for all 5 to finish + the iteration to wrap up.
+              if (outcome.diffs?.length) {
+                entryRef.streamedObservation = true;
+                emit({
+                  type: "observation",
+                  iteration: i,
+                  ok: outcome.ok,
+                  summary: outcome.summary,
+                  diffs: outcome.diffs,
+                });
+              }
             }
             return outcome;
           });
-          earlyScheduled.set(key, {
-            type: act.type,
-            input: act.input,
-            promise,
-          });
+          entryRef.promise = promise;
           emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
         }
       }
@@ -653,13 +676,19 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       loneEarlyWrite?.outcome &&
       (step.kind === "final" || actionsMatchEarly(step, { type: loneEarlyWrite.type, input: loneEarlyWrite.input }))
     ) {
-      emit({
-        type: "observation",
-        iteration: i,
-        ok: loneEarlyWrite.outcome.ok,
-        summary: loneEarlyWrite.outcome.summary,
-        diffs: loneEarlyWrite.outcome.diffs,
-      });
+      // Per-tool observation may have already streamed mid-iteration with the
+      // diffs payload; in that case still mark the iteration as observed but
+      // avoid emitting a second observation event (prevents duplicate trace
+      // rows + duplicate diff entries on the sidebar).
+      if (!loneEarlyWrite.streamedObservation) {
+        emit({
+          type: "observation",
+          iteration: i,
+          ok: loneEarlyWrite.outcome.ok,
+          summary: loneEarlyWrite.outcome.summary,
+          diffs: loneEarlyWrite.outcome.diffs,
+        });
+      }
       iterationObservationEmitted = true;
     }
 
@@ -675,7 +704,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
           const summary = list.length === 1
             ? list[0].outcome!.summary
             : list.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
-          const ds = list.flatMap((e) => e.outcome?.diffs ?? []);
+          // Skip diffs already streamed per-tool to prevent the sidebar from
+          // showing duplicate hunks for the same file.
+          const ds = list.flatMap((e) => (e.streamedObservation ? [] : e.outcome?.diffs ?? []));
           emit({ type: "observation", iteration: i, ok: allOk, summary, diffs: ds });
         }
         emit({ type: "final", result: finalResult });
@@ -762,7 +793,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
             list.length === 1
               ? list[0].outcome!.summary
               : list.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
-          const diffsEarly = list.flatMap((e) => e.outcome?.diffs ?? []);
+          // Skip diffs that already streamed per-tool to avoid duplicates.
+          const diffsEarly = list.flatMap((e) => (e.streamedObservation ? [] : e.outcome?.diffs ?? []));
           emit({
             type: "observation",
             iteration: i,
@@ -849,7 +881,15 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       outcomes.length === 1
         ? outcomes[0].summary
         : outcomes.map((o, j) => `[${stepActions[j].type}]: ${o.summary}`).join("\n\n");
-    const combinedDiffs = outcomes.flatMap((o) => o.diffs ?? []);
+    // Per-tool observation events may have already streamed each diff for the
+    // early-scheduled write tools — drop those diffs here so the diff sidebar
+    // doesn't merge the same hunks twice.
+    const combinedDiffs = outcomes.flatMap((o, j) => {
+      const act = stepActions[j];
+      const early = earlyScheduled.get(actionScheduleKey(act.type, act.input));
+      if (early?.streamedObservation) return [];
+      return o.diffs ?? [];
+    });
 
     if (!iterationObservationEmitted) {
       emit({ type: "observation", iteration: i, ok: allOk, summary: combinedSummary, diffs: combinedDiffs });

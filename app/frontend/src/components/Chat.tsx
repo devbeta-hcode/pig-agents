@@ -261,6 +261,18 @@ function streamingThoughtExtract(buf: string): string {
     .trim();
 }
 
+/** Hard cap on the in-flight streaming buffer for a single iteration. Without
+ *  this a multi-MB tool payload (huge `create_file` body) keeps the entire
+ *  string in React state every animation frame, which O(n) re-allocates and
+ *  starves the tab's heap. The cap is large enough that the live preview
+ *  (peek + thought extract) still gets the latest text; older bytes stayed
+ *  irrelevant for what's visible. */
+const STREAMING_BUFFER_CAP = 256_000; // ~256 KB
+function capStreamingBuffer(s: string): string {
+  if (s.length <= STREAMING_BUFFER_CAP) return s;
+  return s.slice(s.length - STREAMING_BUFFER_CAP);
+}
+
 /** Extract the FINAL: body from a streaming buffer so we can render token-by-token
  *  before the `final` SSE event arrives. Tolerates any trailing garbage. */
 function streamingFinalExtract(buf: string): string {
@@ -1625,6 +1637,16 @@ export function Chat({
   const [autoScroll, setAutoScroll] = useState(true);
   /** Whether the chat log actually has scrollable overflow — pill only renders when true to avoid the "fake Latest" affordance on short logs. */
   const [hasOverflow, setHasOverflow] = useState(false);
+  /** Window over `session.turns` — render only the last N to keep the DOM
+   *  bounded for very long chats. The "Load older messages" button below
+   *  doubles the window. New chats start fresh and the window auto-resets
+   *  when the active session id changes. */
+  const TURN_WINDOW_INITIAL = 60;
+  const TURN_WINDOW_STEP = 60;
+  const [turnWindow, setTurnWindow] = useState(TURN_WINDOW_INITIAL);
+  useEffect(() => {
+    setTurnWindow(TURN_WINDOW_INITIAL);
+  }, [session.id]);
   const stickToBottomRef = useRef(true);
   // scrollTop set by our own auto-snap — used by onScroll to ignore programmatic events.
   const lastProgrammaticTopRef = useRef(0);
@@ -1675,7 +1697,7 @@ export function Chat({
     const cur = thinkingRef.current;
     const next = {
       iteration: it ?? cur?.iteration ?? 1,
-      partial: (cur?.partial ?? "") + add,
+      partial: capStreamingBuffer((cur?.partial ?? "") + add),
     };
     thinkingRef.current = next;
     setThinking(next);
@@ -1703,7 +1725,7 @@ export function Chat({
     const cur = thinkingRef.current;
     const next = {
       iteration: it ?? cur?.iteration ?? 1,
-      partial: (cur?.partial ?? "") + add,
+      partial: capStreamingBuffer((cur?.partial ?? "") + add),
     };
     thinkingRef.current = next;
     setThinking(next);
@@ -2670,8 +2692,26 @@ export function Chat({
             </div>
           </div>
         )}
-        {session.turns.map((turn, ti) => {
-          const isLast = ti === session.turns.length - 1;
+        {session.turns.length > turnWindow && (
+          <div className="chat-load-older">
+            <button
+              type="button"
+              className="chat-load-older-btn"
+              onClick={() => setTurnWindow((w) => w + TURN_WINDOW_STEP)}
+              title={`${session.turns.length - turnWindow} older message(s) hidden`}
+            >
+              Load {Math.min(TURN_WINDOW_STEP, session.turns.length - turnWindow)} older message(s)
+              <span className="chat-load-older-count">
+                ({session.turns.length - turnWindow} hidden)
+              </span>
+            </button>
+          </div>
+        )}
+        {(session.turns.length > turnWindow
+          ? session.turns.slice(session.turns.length - turnWindow)
+          : session.turns
+        ).map((turn, idx, arr) => {
+          const isLast = idx === arr.length - 1;
           const isStreaming = isLast && running;
           return (
             <div key={turn.id} className="chat-turn">
