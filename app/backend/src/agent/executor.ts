@@ -28,6 +28,8 @@ export interface ToolContext {
   /** ReAct iteration (for command_chunk SSE tagging). */
   iteration?: number;
   emit?: (event: { type: string; [k: string]: unknown }) => void;
+  /** Per-run read_file cache to prevent duplicate file reads wasting tokens. */
+  readCache?: Map<string, string>;
 }
 
 export async function executeTool(
@@ -40,7 +42,44 @@ export async function executeTool(
       case "read_file": {
         const p = String(input.path || "");
         if (!p) return { ok: false, summary: "read_file: missing 'path'" };
-        const content = await readFile(p);
+        // Return cached result if same file already read this run
+        if (ctx.readCache?.has(p)) {
+          const cached = ctx.readCache.get(p)!;
+          const maxLen = cached.length > 10000 ? 4000 : cached.length > 5000 ? 6000 : 8000;
+          const truncated = cached.length > maxLen ? cached.slice(0, maxLen) + `\n…[+${Math.floor((cached.length-maxLen)/1000)}k chars, cached]` : cached;
+          return { ok: true, summary: `${p} (${cached.length}c, cached):\n${truncated}`, data: cached };
+        }
+        let content: string;
+        try {
+          content = await readFile(p);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // ENOENT: try to suggest the right path so the agent stops looping
+          // on the same wrong filename. Match by basename across the tree.
+          if (/ENOENT/i.test(msg)) {
+            const base = p.split("/").pop() || p;
+            let suggestions: string[] = [];
+            try {
+              const matches = await globFiles(`**/${base}`, 20);
+              suggestions = matches.slice(0, 5);
+              // If no exact basename match, try case-insensitive partial match
+              if (suggestions.length === 0 && base.includes(".")) {
+                const stem = base.split(".").slice(0, -1).join(".");
+                const ext = base.split(".").pop();
+                if (stem.length >= 3) {
+                  const fuzzy = await globFiles(`**/*${stem}*.${ext}`, 20);
+                  suggestions = fuzzy.slice(0, 5);
+                }
+              }
+            } catch { /* best-effort */ }
+            const hint = suggestions.length > 0
+              ? `\n[!] File not found. Did you mean one of:\n${suggestions.map(s => `  - ${s}`).join("\n")}\nUse list_files <dir> to confirm before retrying.`
+              : `\n[!] File not found and no similarly-named file exists. Use list_files or search_code to discover the correct path. Do NOT retry with the same path.`;
+            return { ok: false, summary: `read_file error: ${msg}${hint}` };
+          }
+          return { ok: false, summary: `read_file error: ${msg}` };
+        }
+        ctx.readCache?.set(p, content);
         // Adaptive truncation: shorter for large files
         const maxLen = content.length > 10000 ? 4000 : content.length > 5000 ? 6000 : 8000;
         const truncated = content.length > maxLen ? content.slice(0, maxLen) + `\n…[+${Math.floor((content.length-maxLen)/1000)}k chars]` : content;
@@ -273,6 +312,8 @@ export async function executeTool(
           const oneLine = (r.error ?? "unknown").replace(/\s+/g, " ").trim();
           return `FAIL [${code}] ${r.path} — ${oneLine}`;
         });
+        // Invalidate read cache for patched files so subsequent reads get fresh content
+        results.filter(r => r.applied).forEach(r => ctx.readCache?.delete(r.path));
         let validation: ValidationReport = { ran: [], ok: true };
         if (ok) validation = await autoValidate();
         const valSummary = ok ? `\n${summarizeValidation(validation)}` : "";
@@ -288,6 +329,7 @@ export async function executeTool(
         const content = String(input.content ?? "");
         if (!p) return { ok: false, summary: "create_file: missing 'path'" };
         await writeFile(p, content);
+        ctx.readCache?.delete(p);
         return { ok: true, summary: `Created ${p} (${content.length} chars)` };
       }
       case "glob": {

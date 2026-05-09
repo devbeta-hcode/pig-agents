@@ -14,22 +14,28 @@ export function activeUserTaskSlice(task: string): string {
  */
 export function taskSignalsConsultationFirst(task: string): boolean {
   const t = activeUserTaskSlice(task);
-  if (t.length < 8) return false;
+  if (t.length < 4) return false;
   const en =
-    /\b(plan\s+first|before\s+you\s+(start|do|run|install)|discuss\s+first|approval\s+first|ask\s+first|get\s+approval|don'?t\s+start|do\s+not\s+start|wait\s+for|your\s+opinion|which\s+(option|approach)|what\s+do\s+you\s+think|consult\s+me|run\s+it\s+by\s+me)\b/i;
+    /\b(plan\s+first|before\s+you\s+(start|do|run|install)|discuss\s+first|approval\s+first|ask\s+first|get\s+approval|don'?t\s+start|do\s+not\s+start|wait\s+for|your\s+opinion|which\s+(option|approach)|what\s+do\s+you\s+think|consult\s+me|run\s+it\s+by\s+me|any\s+(suggestions?|ideas?|thoughts?)|do\s+you\s+(have|recommend|suggest))\b/i;
   const vi =
-    /(trước\s*khi\s*(làm|làm\s*gì|bắt\s*đầu|chạy|cài)|lên\s*kế\s*hoạch|kế\s*hoạch\s*trước|hỏi\s*ý\s*kiến|tham\s*khảo|chưa\s*(làm|chạy|cài)|đồng\s*ý\s*trước|xin\s*ý\s*kiến|góp\s*ý|hỏi\s*trước)/i;
-  // Feasibility / permission questions — not a direct imperative (e.g. “bạn có thể tạo web … k?”).
+    /(trước\s*khi\s*(làm|làm\s*gì|bắt\s*đầu|chạy|cài)|lên\s*kế\s*hoạch|kế\s*hoạch\s*trước|hỏi\s*ý\s*kiến|tham\s*khảo|chưa\s*(làm|chạy|cài)|đồng\s*ý\s*trước|xin\s*ý\s*kiến|góp\s*ý|hỏi\s*trước|gợi\s*ý|đề\s*(xuất|cập)|ý\s*tưởng|nên\s*(làm|dùng|chọn))/i;
+  // Vietnamese informal yes/no questions often end with bare "k" / "ko" / "kh" / "hông"
+  // (no "?" mark). Detect any sentence ending in these particles after a space.
+  const viInformalYesNo =
+    /(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t);
+  // Feasibility / permission questions — not a direct imperative (e.g. "bạn có thể tạo web … k?").
   const viFeasibility =
-    /^\s*bạn\s+có\s+(thể|làm\s+được)\b/im.test(t) ||
-    /có\s+thể[\s\S]{0,500}(không|k)\s*[?.!]?\s*$/im.test(t) ||
-    /làm\s+được[\s\S]{0,200}(không|k)\s*[?.!]?\s*$/im.test(t) ||
-    /được\s+không\s*[?.!]?\s*$/im.test(t);
+    /^\s*bạn\s+có\s+(thể|làm\s+được|đề\s*(xuất|cập)|gợi\s*ý|ý\s*tưởng|nên)/im.test(t) ||
+    /có\s+thể[\s\S]{0,500}(không|k|ko)\s*[?.!]?\s*$/im.test(t) ||
+    /làm\s+được[\s\S]{0,200}(không|k|ko)\s*[?.!]?\s*$/im.test(t) ||
+    /được\s+(không|k|ko)\s*[?.!]?\s*$/im.test(t) ||
+    // "có … gì/ý/cách/đề xuất … (không|k)?" — asking for suggestions/ideas
+    /\bcó\s+(gì|ý|cách|đề\s*(xuất|cập)|gợi\s*ý|ý\s*tưởng|đề\s*nghị)\b[\s\S]{0,300}(không|k|ko)?\s*[?.!]?\s*$/im.test(t);
   const enFeasibility =
     /\b(can|could)\s+you\b[\s\S]{0,500}\?\s*$/im.test(t) ||
     /\b(is|are)\s+(it|this|that)\s+possible\b[\s\S]{0,200}\?/im.test(t) ||
     /\bwould\s+you\s+(be\s+)?(able|willing)\s+to\b[\s\S]{0,400}\?/im.test(t);
-  return en.test(t) || vi.test(t) || viFeasibility || enFeasibility;
+  return en.test(t) || vi.test(t) || viInformalYesNo || viFeasibility || enFeasibility;
 }
 
 /**
@@ -48,7 +54,8 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
   
   const viExplain =
     /^(giải\s*thích|cho\s*hỏi|hỏi|tại\s*sao|vì\s*sao|sao\s*lại|\.\.\.?\s*là\s*gì)/i.test(t) ||
-    /\blà\s*gì\s*(\?|$)/i.test(t);
+    /\blà\s*gì\s*(\?|$)/i.test(t) ||
+    /^(tìm\s*hiểu|cho\s*biết|nói\s*(về|cho|thêm)|phân\s*tích|đánh\s*giá|tóm\s*tắt|review|miêu\s*tả|mô\s*tả)\b/i.test(t);
   
   // English how-to / explanation patterns
   const enHowTo =
@@ -56,13 +63,19 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
     /^what('s|\s+is)\s+the\s+(best\s+)?(way|method|approach)\s+to\s+/i.test(t);
   
   const enExplain =
-    /^(what\s+(is|are|does)|why\s+(is|are|does|do)|explain|tell\s+me\s+(about|how|what|why))/i.test(t) ||
+    /^(what\s+(is|are|does)|why\s+(is|are|does|do)|explain|tell\s+me\s+(about|how|what|why)|describe|summari[sz]e|review)/i.test(t) ||
     /\?[\s]*$/m.test(t);
   
   // Short questions with "?" are likely questions needing explanation
   const shortQuestion = t.length < 80 && /\?[\s]*$/.test(t);
+
+  // Vietnamese informal yes/no question (ends in bare "k/ko/kh/hông") — short messages
+  // are almost always questions, not action commands.
+  const viInformalShort =
+    t.length < 120 &&
+    /(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t);
   
-  return viHowTo || viExplain || enHowTo || enExplain || shortQuestion;
+  return viHowTo || viExplain || enHowTo || enExplain || shortQuestion || viInformalShort;
 }
 
 export const SYSTEM_PROMPT = `You are an autonomous coding agent embedded in a real developer tool.
@@ -284,9 +297,11 @@ export function buildContextMessage(
     .join("\n\n");
 
   const consultHint =
-    history.length === 0 && taskSignalsConsultationFirst(task)
-      ? "\n\nNOTE: The message looks like a plan/consult request or a feasibility question (e.g. \u201có thể … không?\u201d) — on this first turn use FINAL only (no run_command / write_patch); outline strategy and ask if they want you to scaffold now.\n"
-      : "";
+    taskSignalsConsultationFirst(task)
+      ? "\n\nNOTE: The message looks like a plan/consult request or a feasibility question (e.g. \u201có thể … không?\u201d, ends with bare \u201ck/ko/kh\u201d) \u2014 on this turn use FINAL only (no run_command / write_patch); outline strategy and ask if they want you to scaffold now.\n"
+      : taskIsExplanatoryQuestion(task)
+        ? "\n\nNOTE: The message is a how-to / explanatory question \u2014 answer it directly with FINAL. You MAY use ONE quick read_file/list_files only if you genuinely need to ground the answer in the codebase; otherwise skip tools entirely. Do NOT scaffold, install, or write_patch unless the user explicitly asks for changes.\n"
+        : "";
 
   const workspaceSection = tree
     ? `\nWORKSPACE (depth \u2264 3, skips node_modules/dist/\u2026):\n${tree}\n`

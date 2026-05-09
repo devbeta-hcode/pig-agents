@@ -126,8 +126,9 @@ function DiffRow({
 }
 
 export function DiffViewer({ diffs, onClear, onUpdate, onOpen, onOpenDiff, onRemove, hideHeader }: Props) {
-  /** With no header there is no toggle — keep the file list expanded (not collapsed). */
-  const [collapsed, setCollapsed] = useState(false);
+  /** Closed by default: user explicitly opens the file list when they want to review. New diffs arriving never auto-expand. When hideHeader is true there's no toggle button, so always render expanded. */
+  const [collapsed, setCollapsed] = useState(true);
+  const isCollapsed = !hideHeader && collapsed;
   const [busyAll, setBusyAll] = useState<null | "undo" | "keep">(null);
 
   if (diffs.length === 0) {
@@ -174,15 +175,15 @@ export function DiffViewer({ diffs, onClear, onUpdate, onOpen, onOpenDiff, onRem
   }
 
   return (
-    <div className={`diff-viewer ${collapsed ? "" : "diff-viewer--expanded"}`}>
+    <div className={`diff-viewer ${isCollapsed ? "" : "diff-viewer--expanded"}`}>
       {!hideHeader && (
         <div className="diff-viewer-head">
           <button
             className="changes-toggle"
             onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? "Expand list" : "Collapse list"}
+            title={isCollapsed ? "Expand list" : "Collapse list"}
           >
-            <ChevronExpand expanded={!collapsed} className="chev" />
+            <ChevronExpand expanded={!isCollapsed} className="chev" />
             <span className="count">{activeCount} {activeCount === 1 ? "File" : "Files"}</span>
           </button>
           <span className="spacer" />
@@ -206,7 +207,7 @@ export function DiffViewer({ diffs, onClear, onUpdate, onOpen, onOpenDiff, onRem
           >Review</button>
         </div>
       )}
-      <div className="diff-rows-shell" aria-hidden={collapsed}>
+      <div className="diff-rows-shell" aria-hidden={isCollapsed}>
         <div className="diff-rows-inner">
           <div className="diff-rows">
             {diffs.map((it) => (

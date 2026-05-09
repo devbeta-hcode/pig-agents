@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
 import { ChatsList } from "./ChatsList";
 import { Markdown } from "./Markdown";
@@ -253,6 +253,17 @@ function streamingThoughtExtract(buf: string): string {
   return t;
 }
 
+/** Extract the FINAL: body from a streaming buffer so we can render token-by-token
+ *  before the `final` SSE event arrives. Tolerates any trailing garbage. */
+function streamingFinalExtract(buf: string): string {
+  const m = buf.match(/(?:^|\n)\s*FINAL:\s*([\s\S]*)$/i);
+  if (!m) return "";
+  // Strip a trailing partial THOUGHT/ACTION header if model started another block (rare).
+  return m[1]
+    .replace(/\n+(THOUGHT|ACTION)\s*:[\s\S]*$/i, "")
+    .trimEnd();
+}
+
 function firstObservationAfter(
   steps: UIEvent[],
   startIdx: number,
@@ -382,16 +393,7 @@ function TraceLogGroup({ items }: { items: UIEvent[] }) {
   );
 }
 
-function thoughtCollapsedPreview(raw: string, maxChars = 100): string {
-  const flat = raw
-    .replace(/\r\n/g, "\n")
-    .trim()
-    .replace(/\n+/g, " ")
-    .replace(/\*{1,2}/g, "")
-    .replace(/`/g, "");
-  if (flat.length <= maxChars) return flat;
-  return `${flat.slice(0, maxChars - 1)}…`;
-}
+
 
 function uiObservationToToolObservation(o?: UIEvent) {
   if (!o || o.type !== "observation") return undefined;
@@ -583,31 +585,12 @@ function LiveThoughtStreamFold({
 }
 
 function ThoughtStepArchive({ e }: { e: UIEvent }) {
-  const [open, setOpen] = useState(false);
-  const it = Number(e.iteration) || 1;
-  const peek = thoughtCollapsedPreview(e.thought!);
+  const body = (e.thought || "").trim();
+  if (!body) return null;
   return (
-    <details
-      className="thought-step-archive trace-reasoning assistant-thought-box thought-section"
-      open={open}
-      onToggle={(ev) => setOpen((ev.target as HTMLDetailsElement).open)}
-    >
-      <summary className="trace-reasoning-summary thought-step-archive-summary">
-        <div className="thought-step-archive-sum-inner">
-          <span className="assistant-action-fold-chev" aria-hidden>
-            <ChevronExpand expanded={open} size={15} />
-          </span>
-          <span className="thought-step-archive-sum-left">
-            <IconBrain size={14} strokeWidth={1.75} className="thought-step-archive-icon" aria-hidden />
-            <span className="thought-step-archive-title">Step {it}</span>
-          </span>
-          <span className="thought-step-archive-preview">{peek}</span>
-        </div>
-      </summary>
-      <div className="trace-md trace-thought-body trace-reasoning-body assistant-thought-content">
-        <Markdown>{e.thought || ""}</Markdown>
-      </div>
-    </details>
+    <div className="thought-step-inline trace-md">
+      <Markdown>{body}</Markdown>
+    </div>
   );
 }
 
@@ -773,6 +756,13 @@ function AssistantMessage({
 
   const [streamPulse, setStreamPulse] = useState(0);
   const finalText = finalEv?.result ?? "";
+  // While streaming, parse FINAL: out of the live token buffer so the answer
+  // appears token-by-token instead of waiting for the SSE `final` event.
+  const streamingFinalText = useMemo(
+    () => (isStreaming && !finalText ? streamingFinalExtract(streamingText) : ""),
+    [isStreaming, streamingText, finalText],
+  );
+  const displayedFinalText = finalText || streamingFinalText;
   const errorText = errorEv?.message ?? "";
   const duration = turn.endedAt && turn.startedAt ? formatDuration(turn.endedAt - turn.startedAt) : null;
   const streamingThoughtMarkdown = useMemo(
@@ -841,7 +831,7 @@ function AssistantMessage({
             Number((ev as UIEvent).iteration || 1) === streamThoughtIter,
         );
         const thoughtCollapseForTools =
-          peekMatchesThoughtIter || hasActionStepThisThoughtIter;
+          peekMatchesThoughtIter || hasActionStepThisThoughtIter || streamingFinalText.length > 0;
 
         function pushLiveThoughtIfNeeded(marker: string) {
           void marker;
@@ -1136,13 +1126,13 @@ function AssistantMessage({
       <div className="msg-content">
         {phaseBanners}
         {assistantStepListJsx}
-        {finalText && (
+        {displayedFinalText && (
           <div className="assistant-answer msg-text">
-            <Markdown>{finalText}</Markdown>
+            <Markdown>{displayedFinalText}</Markdown>
           </div>
         )}
 
-        {errorText && !finalText && (
+        {errorText && !displayedFinalText && (
           <div className="msg-error">
             <div className="msg-error-head">
               <span><IconAlertTriangle size={13} style={{ marginRight: 4 }} />Error</span>
@@ -1152,7 +1142,7 @@ function AssistantMessage({
           </div>
         )}
 
-        {turn.status === "stopped" && !finalText && (
+        {turn.status === "stopped" && !displayedFinalText && (
           <div className="msg-stopped"><IconSquareFill size={10} />Stopped by user</div>
         )}
 
@@ -1199,12 +1189,55 @@ export function Chat({
   pendingInject, onInjectConsumed, pendingInjectImage, onInjectImageConsumed,
 }: Props) {
   const dlg = useDialogs();
+  // taskRef holds the live value — never stale, no re-render on keystroke.
+  const taskRef = useRef("");
+  // task state: only updated for external changes (inject / clear / slash) so
+  // MentionInput can sync its internal textarea via the value prop.
   const [task, setTask] = useState("");
+  // Bumped on every external setTask call so MentionInput re-syncs its DOM
+  // textarea even when the new string equals the current React state (e.g.
+  // clear-after-send: state was already "" because keystrokes don't update it).
+  const [taskVersion, setTaskVersion] = useState(0);
+  // Derived state that is allowed to cause re-renders — updated only at
+  // actual change boundaries so typing mostly avoids re-rendering Chat.
+  const [composerMentions, setComposerMentions] = useState<string[]>([]);
+  const [taskHasContent, setTaskHasContent] = useState(false);
+  const rafRef = useRef<number | null>(null);
+
+  // Stable onChange for MentionInput — does NOT call setTask, so Chat does
+  // not re-render on every keystroke. Only updates the two lightweight states.
+  const handleComposerChange = useCallback((v: string) => {
+    taskRef.current = v;
+    // Defer state updates to next animation frame so the DOM input responds
+    // immediately and React state catches up after the frame is painted.
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const cur = taskRef.current;
+      setComposerMentions(prev => {
+        const next = extractMentions(cur);
+        return next.join("\0") === prev.join("\0") ? prev : next;
+      });
+      setTaskHasContent(cur.trim().length > 0);
+    });
+  }, []);
+
+  // Helper for external updates (inject, clear, slash, drag-drop).
+  // Updates both the ref and the sync state so MentionInput gets the new value.
+  const setTaskExternal = useCallback((vOrFn: string | ((prev: string) => string)) => {
+    const v = typeof vOrFn === "function" ? vOrFn(taskRef.current) : vOrFn;
+    taskRef.current = v;
+    setTask(v);
+    setTaskVersion((n) => n + 1);
+    setComposerMentions(extractMentions(v));
+    setTaskHasContent(v.trim().length > 0);
+  }, []);
+
   // When a context snippet is injected from an external panel (e.g. BrowserPanel "Add to Chat"),
   // append it to whatever the user has already typed and switch to that panel.
   useEffect(() => {
     if (!pendingInject) return;
-    setTask((t) => (t ? `${t}\n\n${pendingInject}` : pendingInject));
+    setTaskExternal((t) => (t ? `${t}\n\n${pendingInject}` : pendingInject));
     onInjectConsumed?.();
   }, [pendingInject]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1220,7 +1253,19 @@ export function Chat({
   const [thinking, setThinking] = useState<{ iteration: number; partial: string } | null>(null);
   /** Sticky-tail state for "↓ Latest" affordance — ref is authoritative to avoid stale effect reads while streaming replays batches. */
   const [autoScroll, setAutoScroll] = useState(true);
+  /** Whether the chat log actually has scrollable overflow — pill only renders when true to avoid the "fake Latest" affordance on short logs. */
+  const [hasOverflow, setHasOverflow] = useState(false);
   const stickToBottomRef = useRef(true);
+  // scrollTop set by our own auto-snap — used by onScroll to ignore programmatic events.
+  const lastProgrammaticTopRef = useRef(0);
+  // Last observed scrollTop for user-direction detection (any upward delta exits tail mode).
+  const lastScrollTopRef = useRef(0);
+  /** Track scrollHeight so a shrink (fold collapse) doesn't masquerade as a user upward scroll. */
+  const lastScrollHeightRef = useRef(0);
+  /** Once the user explicitly breaks stick (wheel/touch/key), re-engage only when they cuộn sát đáy — not from any "near bottom" sample, otherwise streaming snaps drag them back constantly. */
+  const userBrokeStickRef = useRef(false);
+  /** Sentinel rendered as the very last child of the chat log. IntersectionObserver watches it: visible = at tail = auto-follow. */
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
   const [attachedImages, setAttachedImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
@@ -1353,6 +1398,7 @@ export function Chat({
       console.log("[Chat] Reconnecting to running session:", backendSession.id);
       setRunning(true);
       stickToBottomRef.current = true;
+      userBrokeStickRef.current = false;
       setAutoScroll(true);
       setAwaitingStop(false);
       stoppedRef.current = false;
@@ -1565,7 +1611,7 @@ export function Chat({
       const d = (e as CustomEvent<SelectionDetail>).detail;
       const fence = "```";
       const block = `${fence}${d.language}\n// ${d.path}:${rangeLabel(d)}\n${d.text}\n${fence}\n`;
-      setTask((t) => {
+      setTaskExternal((t) => {
         const hasMention = t.includes(`@${d.path}`);
         const lead = hasMention ? "" : `@${d.path}\n`;
         const sep = t.length === 0 ? "" : (t.endsWith("\n") ? "" : "\n\n");
@@ -1576,7 +1622,7 @@ export function Chat({
       const d = (e as CustomEvent<SelectionDetail>).detail;
       patchSession((s) => ({ ...s, mode: "agent", updatedAt: Date.now() }));
       const fence = "```";
-      setTask(
+      setTaskExternal(
         `Edit @${d.path} (${rangeLabel(d)}). Replace this snippet with an improved version:\n\n` +
         `${fence}${d.language}\n${d.text}\n${fence}\n\n`,
       );
@@ -1591,7 +1637,7 @@ export function Chat({
 
   // Append a path to the composer as an `@mention`. Used by drag-drop.
   function appendMentionPath(p: string) {
-    setTask((t) => {
+    setTaskExternal((t) => {
       if (t.includes(`@${p}`)) return t;
       const trimmed = t.replace(/\s+$/, "");
       if (trimmed.length === 0) return `@${p} `;
@@ -1599,44 +1645,119 @@ export function Chat({
     });
   }
 
+  // Snap to bottom helper — records the programmatic scrollTop so the onScroll
+  // handler can distinguish our own snap from a real user gesture.
+  const snapToBottom = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const target = el.scrollHeight - el.clientHeight;
+    el.scrollTop = target;
+    lastProgrammaticTopRef.current = target;
+    lastScrollTopRef.current = target;
+  }, []);
+
   // Auto-scroll only when intentionally following tail — ref avoids React batch lag vs streamed updates.
   useLayoutEffect(() => {
     if (!stickToBottomRef.current) return;
-    const el = logRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [session.turns, session.turns.map((t) => t.events.length).join(","), thinking?.partial]);
+    snapToBottom();
+  }, [session.turns, session.turns.map((t) => t.events.length).join(","), thinking?.partial, snapToBottom]);
 
-  // ResizeObserver fallback: when accordion content expands (e.g. create_file stream growing),
-  // scrollHeight increases without a React state change — keep following if still in tail mode.
+  // IntersectionObserver on the bottom sentinel is the source of truth for
+  // "is the user reading the tail?" — far more robust than scrollTop deltas
+  // during streaming (Copilot/Cursor/Claude all use this pattern). When the
+  // sentinel leaves view (because the user scrolled up OR new content pushed
+  // it below the viewport) we drop tail-follow; when it re-enters we resume.
+  useEffect(() => {
+    const root = logRef.current;
+    const sentinel = bottomSentinelRef.current;
+    if (!root || !sentinel) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const e = entries[0];
+        if (!e) return;
+        const overflow = root.scrollHeight > root.clientHeight + 4;
+        setHasOverflow((prev) => (prev === overflow ? prev : overflow));
+        if (e.isIntersecting) {
+          // Sentinel back in view → user is at the tail again. Resume follow.
+          if (!stickToBottomRef.current) {
+            stickToBottomRef.current = true;
+            userBrokeStickRef.current = false;
+            setAutoScroll(true);
+          }
+        } else {
+          // Sentinel out of view. Distinguish two causes:
+          //  - We are still in stick mode but new content just pushed it down
+          //    by 1 frame → snap back, do NOT mark as user break.
+          //  - We are not in stick mode (user scrolled up) → mark as broken
+          //    so the pill appears.
+          if (stickToBottomRef.current) {
+            snapToBottom();
+          } else if (!userBrokeStickRef.current) {
+            userBrokeStickRef.current = true;
+            setAutoScroll(false);
+          }
+        }
+      },
+      { root, threshold: 0, rootMargin: "0px 0px 32px 0px" },
+    );
+    io.observe(sentinel);
+    // Also keep ResizeObserver to refresh hasOverflow when content height changes.
+    const ro = new ResizeObserver(() => {
+      const overflow = root.scrollHeight > root.clientHeight + 4;
+      setHasOverflow((prev) => (prev === overflow ? prev : overflow));
+      if (stickToBottomRef.current) snapToBottom();
+    });
+    ro.observe(root);
+    for (const child of Array.from(root.children)) ro.observe(child);
+    return () => {
+      io.disconnect();
+      ro.disconnect();
+    };
+  }, [snapToBottom]);
+
+  // Wheel/touch/keyboard listener: any explicit upward gesture immediately
+  // breaks stick. This catches the case where the user nudges up by 1-2px,
+  // which IntersectionObserver wouldn't fire for (sentinel still visible).
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
-    });
-    ro.observe(el);
-    // Also observe direct children so inner height changes are caught
-    for (const child of Array.from(el.children)) ro.observe(child);
-    return () => ro.disconnect();
-  }, []);
-
-  const onWheelLog = useCallback((e: WheelEvent<HTMLDivElement>) => {
-    /** Decisively exit tail-follow mode on deliberate scroll-up (effects may run before scroll position updates). */
-    if (e.deltaY < -8) {
+    const breakStick = () => {
+      if (!stickToBottomRef.current) return;
       stickToBottomRef.current = false;
+      userBrokeStickRef.current = true;
       setAutoScroll(false);
-    }
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < -1) breakStick();
+    };
+    let touchStartY = 0;
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY ?? 0;
+      if (y - touchStartY > 4) breakStick();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
+        breakStick();
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("keydown", onKeyDown);
+    };
   }, []);
 
-  function onScroll() {
-    const el = logRef.current;
-    if (!el) return;
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const near = distFromBottom < CHAT_LOG_STICK_BOTTOM_PX;
-    stickToBottomRef.current = near;
-    setAutoScroll(near);
-  }
+  // No onScroll handler needed — IntersectionObserver handles re-engagement.
+  // Keep an empty stub so the JSX prop binding stays stable.
+  function onScroll() { /* intentionally empty */ }
 
   function patchSession(fn: (s: ChatSession) => ChatSession) {
     const next = fn(sessionRef.current);
@@ -1669,10 +1790,11 @@ export function Chat({
       turns: [...s.turns, turn],
       updatedAt: Date.now(),
     }));
-    setTask("");
+    setTaskExternal("");
     setAttachedImages([]); // Clear images after capturing
     setRunning(true);
     stickToBottomRef.current = true;
+    userBrokeStickRef.current = false;
     setAutoScroll(true);
     setAwaitingStop(false);
     stoppedRef.current = false;
@@ -1760,7 +1882,7 @@ export function Chat({
     }
   }, [running, onDiffs, onAfterRun, processSessionEvent]);
 
-  function send() { void runTask(task.trim()); }
+  function send() { void runTask(taskRef.current.trim()); }
 
   // ---- Image attachment handling ----
   const addImageFromFile = useCallback((file: File) => {
@@ -1929,13 +2051,13 @@ export function Chat({
         onNewChat?.();
         return true;
       case "explain":
-        if (activeFile) setTask(`Explain what @${activeFile} does and how it fits in the codebase.`);
+        if (activeFile) setTaskExternal(`Explain what @${activeFile} does and how it fits in the codebase.`);
         return; // leave the seeded text in the input
       case "fix":
-        if (activeFile) setTask(`Review @${activeFile} carefully and fix any bugs you find.`);
+        if (activeFile) setTaskExternal(`Review @${activeFile} carefully and fix any bugs you find.`);
         return;
       case "test":
-        if (activeFile) setTask(`Write unit tests for @${activeFile}.`);
+        if (activeFile) setTaskExternal(`Write unit tests for @${activeFile}.`);
         return;
       default:
         return false;
@@ -1973,8 +2095,6 @@ export function Chat({
     status === "error" ? "● error" :
     status === "stopped" ? "● stopped" :
     "● ready";
-
-  const composingMentions = extractMentions(task);
 
   const [chatsBrowserOpen, setChatsBrowserOpen] = useState(false);
 
@@ -2085,7 +2205,8 @@ export function Chat({
         </div>
       )}
 
-      <div className="chat-log" ref={logRef} onScroll={onScroll} onWheel={onWheelLog}>
+      <div className="chat-log-wrap">
+      <div className="chat-log" ref={logRef} onScroll={onScroll}>
         {session.turns.length === 0 && (
           <div className="chat-empty">
             <div className="chat-empty-title">How can I help?</div>
@@ -2129,19 +2250,21 @@ export function Chat({
             </div>
           );
         })}
+        <div ref={bottomSentinelRef} className="chat-log-sentinel" aria-hidden />
+      </div>
 
-        {!autoScroll && (
-          <button
-            className="scroll-bottom"
-            onClick={() => {
-              stickToBottomRef.current = true;
-              const el = logRef.current;
-              if (el) el.scrollTop = el.scrollHeight;
-              setAutoScroll(true);
-            }}
-            title="Scroll to bottom"
-          >↓ Latest</button>
-        )}
+      {!autoScroll && hasOverflow && session.turns.length > 0 && (
+        <button
+          className="scroll-bottom"
+          onClick={() => {
+            stickToBottomRef.current = true;
+            userBrokeStickRef.current = false;
+            snapToBottom();
+            setAutoScroll(true);
+          }}
+          title="Scroll to bottom"
+        >↓ Latest</button>
+      )}
       </div>
 
       <div
@@ -2193,17 +2316,18 @@ export function Chat({
           <div className="composer-lower" onPaste={handlePaste}>
             <div className="composer-input">
               <ComposerHeader
-                mentions={composingMentions}
+                mentions={composerMentions}
                 images={attachedImages}
                 running={running}
                 awaitingStop={awaitingStop}
                 onStop={stop}
-                onRemoveMention={(p) => setTask((t) => removeMentionFrom(t, p))}
+                onRemoveMention={(p) => setTaskExternal((t) => removeMentionFrom(t, p))}
                 onRemoveImage={removeImage}
               />
               <MentionInput
                 value={task}
-                onChange={setTask}
+                valueVersion={taskVersion}
+                onChange={handleComposerChange}
                 onSubmit={send}
                 disabled={running}
                 placeholder={
@@ -2279,7 +2403,7 @@ export function Chat({
                   <button
                     className="composer-send"
                     onClick={send}
-                    disabled={!task.trim()}
+                    disabled={!taskHasContent}
                     title="Send (Enter)"
                     aria-label="Send"
                   >

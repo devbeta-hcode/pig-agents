@@ -452,6 +452,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     /** Current ReAct iteration — run_command streams tag with this for the UI. */
     iteration: 0,
     emit: (e: { type: string; [k: string]: unknown }) => emit(e as AgentEvent),
+    /** Cache file reads for the duration of this run to avoid duplicate token waste. */
+    readCache: new Map(),
   };
 
   const promptMode = normalizePromptMode(process.env.PROMPT_MODE);

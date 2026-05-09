@@ -52,6 +52,11 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onRevealInTe
   const [root, setRoot] = useState<Node[]>([]);
   const rootRef = useRef<Node[]>([]);
   const loadingRef = useRef(false);
+  // Track the workspace the current `root` belongs to. When it changes we
+  // wipe the tree immediately so the user sees a loading state instead of the
+  // previous workspace's stale tree (and we skip restoring expanded paths
+  // that don't exist in the new workspace, which used to make the load hang).
+  const loadedWorkspaceRef = useRef<string | undefined>(workspace);
   useEffect(() => { rootRef.current = root; }, [root]);
   const [busy, setBusy] = useState(false);
   const [operating, setOperating] = useState(false);
@@ -155,16 +160,25 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onRevealInTe
     loadingRef.current = true;
     setBusy(true);
     setError(null);
+    // Detect a workspace switch: the previous tree's expanded paths refer to
+    // a different filesystem and would all 404 in sequence (slow + jank).
+    const isWorkspaceSwitch = loadedWorkspaceRef.current !== workspace;
+    if (isWorkspaceSwitch) {
+      setRoot([]);
+      rootRef.current = [];
+    }
     try {
       // Collect which paths were expanded before refresh
       const expandedPaths = new Set<string>();
-      const collectExpanded = (ns: Node[]) => {
-        for (const n of ns) {
-          if (n.expanded) expandedPaths.add(n.path);
-          if (n.children) collectExpanded(n.children);
-        }
-      };
-      collectExpanded(rootRef.current);
+      if (!isWorkspaceSwitch) {
+        const collectExpanded = (ns: Node[]) => {
+          for (const n of ns) {
+            if (n.expanded) expandedPaths.add(n.path);
+            if (n.children) collectExpanded(n.children);
+          }
+        };
+        collectExpanded(rootRef.current);
+      }
 
       // Recursively load a directory and its expanded children
       async function loadDir(dirPath: string): Promise<Node[]> {
@@ -196,13 +210,14 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onRevealInTe
 
       const newRoot = await loadDir(".");
       setRoot(newRoot);
+      loadedWorkspaceRef.current = workspace;
     } catch (err) {
       setError((err as Error).message);
     } finally {
       loadingRef.current = false;
       setBusy(false);
     }
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
 
@@ -655,7 +670,14 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onRevealInTe
         className="tree"
         onContextMenu={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, node: null }); } }}
       >
-        {render(root, setRoot)}
+        {busy && root.length === 0 ? (
+          <div className="tree-loading">
+            <span className="explorer-spinner" aria-hidden />
+            <span>Loading workspace…</span>
+          </div>
+        ) : (
+          render(root, setRoot)
+        )}
       </div>
       {ctx && (
         <ContextMenu

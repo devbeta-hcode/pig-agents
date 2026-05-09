@@ -26,7 +26,14 @@ export interface FileEntry {
 
 export async function listFiles(rel: string = "."): Promise<FileEntry[]> {
   const abs = safeJoin(rel);
-  const dirents = await fs.readdir(abs, { withFileTypes: true });
+  let dirents: import("fs").Dirent[];
+  try {
+    dirents = await fs.readdir(abs, { withFileTypes: true });
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw err;
+  }
   const entries: FileEntry[] = [];
   for (const d of dirents) {
     const full = path.join(abs, d.name);

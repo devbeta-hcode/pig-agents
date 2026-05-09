@@ -1964,6 +1964,7 @@ a:hover { text-decoration: underline; }
   background: var(--bg);
   border-left: 1px solid var(--border-subtle);
   width: 100%; height: 100%; overflow: hidden;
+  position: relative;
 }
 .chat-toolbar {
   display: flex; align-items: center; gap: 6px;
@@ -2150,9 +2151,29 @@ a:hover { text-decoration: underline; }
   font-size: 13px;
   display: flex;
   flex-direction: column;
-  scroll-behavior: smooth;
+  /* No smooth-scroll: Cursor/Copilot use native scrolling so user wheel /
+     trackpad input never fights an in-flight CSS animation. snapToBottom()
+     in JS sets scrollTop synchronously — instant, no animation conflict. */
+  scroll-behavior: auto;
+  /* Hint the browser to keep the viewport pinned to the bottom while content
+     grows from streaming — reduces jank vs. JS-only follow. */
+  overflow-anchor: auto;
+  /* Subtle, near-invisible scrollbar like Cursor/Copilot. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
   position: relative;
 }
+.chat-log::-webkit-scrollbar { width: 10px; }
+.chat-log::-webkit-scrollbar-track { background: transparent; }
+.chat-log::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 120ms ease;
+}
+.chat-log:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); background-clip: padding-box; }
+.chat-log::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); background-clip: padding-box; }
 .chat-empty {
   color: var(--fg-dim);
   padding: 56px 20px;
@@ -2369,68 +2390,180 @@ a:hover { text-decoration: underline; }
   padding-bottom: 2px;
 }
 
-/* ---- Agent timeline: collapsible ACTION rows + live Thought stream ---- */
-.assistant-action-fold {
-  border-radius: 7px;
-  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
-  background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
-  overflow: hidden;
+/* ---- Agent trace: Copilot-style flat grouped action rows ---- */
+
+/* Main trace wrapper */
+.agent-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border-subtle);
+  margin: 4px 0 6px;
   min-width: 0;
-  transition: border-color var(--transition-fast);
 }
-.assistant-action-fold:hover {
-  border-color: color-mix(in srgb, var(--border) 85%, transparent);
+
+/* Group container */
+.agent-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
-.assistant-action-fold-sum {
-  list-style: none;
-  cursor: pointer;
+
+/* Group header: flat, no box */
+.agent-group-row {
+  all: unset;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 600;
+  gap: 8px;
+  padding: 2px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
   color: var(--fg);
+  width: 100%;
+  box-sizing: border-box;
   user-select: none;
 }
-.assistant-action-fold-sum.tool-header {
-  gap: 4px;
-  padding: 5px 10px 5px 4px;
-  font-weight: normal;
+.agent-group--single .agent-group-row {
+  cursor: default;
 }
-.assistant-action-fold-sum::-webkit-details-marker {
-  display: none;
+.agent-group-row:hover {
+  color: var(--fg);
 }
-.assistant-action-fold-chev,
-.assistant-thought-fold-chev {
+
+.agent-group-icon {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
   flex-shrink: 0;
-  width: 20px;
+  width: 14px;
   color: color-mix(in srgb, var(--fg-dim) 65%, transparent);
-  opacity: 0.9;
-  transition: color 0.15s ease, opacity 0.15s ease;
 }
-.assistant-action-fold-chev svg,
-.assistant-thought-fold-chev svg {
-  display: block;
+.agent-group-row:hover .agent-group-icon { color: var(--fg-dim); }
+
+.agent-group-label {
+  flex-shrink: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.9);
 }
-.assistant-action-fold-sum:hover .assistant-action-fold-chev,
-.assistant-live-thought.trace-reasoning > .assistant-live-thought-summary:hover .assistant-thought-fold-chev {
-  color: var(--accent-2);
-  opacity: 1;
+
+.agent-group-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-dim);
+  overflow: hidden;
 }
-.assistant-action-fold-sum:hover {
-  background: var(--hover);
+.agent-group-meta-sep {
+  color: var(--fg-muted);
 }
-.assistant-action-fold-body {
-  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-  padding: 0;
-  background: color-mix(in srgb, var(--bg) 25%, transparent);
+.agent-group-meta-text {
+  white-space: nowrap;
 }
-.assistant-action-fold-body .trace-tool-output {
-  margin: 0;
+
+.agent-group-dots {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.agent-group-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.agent-group-check {
+  display: inline-flex;
+  align-items: center;
+  color: color-mix(in srgb, var(--good) 65%, transparent);
+}
+
+.agent-group-chev {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+
+/* Expanded body */
+.agent-group-body {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0 8px 16px;
+  min-width: 0;
+}
+
+/* One target item */
+.agent-target-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Target path row */
+.agent-target-path {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 4px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  min-width: 0;
+}
+.agent-target-path span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.agent-target-path-label { flex: 1; min-width: 0; }
+.agent-target-path-more { flex-shrink: 0; font-size: 10.5px; color: var(--fg-muted); }
+.agent-target-chev { flex-shrink: 0; display: inline-flex; color: color-mix(in srgb, var(--fg-dim) 45%, transparent); }
+.agent-target-diff-stats { flex-shrink: 0; display: inline-flex; gap: 4px; font-size: 10.5px; font-family: var(--font-mono); }
+.diff-stat-add { color: var(--good); }
+.diff-stat-del { color: var(--bad); }
+
+/* When target-path is a button (has toggle) */
+.agent-target-path--btn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 4px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+  border-radius: 3px;
+  user-select: none;
+}
+.agent-target-path--btn:hover { background: var(--hover); color: var(--fg-dim); }
+.agent-target-path--no-toggle { cursor: default; }
+.agent-target-path--no-toggle:hover { background: none; color: var(--fg-muted); }
+
+/* Output body below target (command stdout, read content, etc.) */
+.agent-target-output {
+  margin: 2px 0 6px;
+  min-width: 0;
+}
+.agent-target-output .tool-output { padding: 0; }
+
+/* Legacy action fold classes — keep minimal stubs for any lingering refs */
+.assistant-action-fold { min-width: 0; overflow: hidden; }
+.assistant-action-fold-chev,
+.assistant-thought-fold-chev {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; width: 18px;
+  color: color-mix(in srgb, var(--fg-dim) 50%, transparent);
 }
 
 .assistant-stream-thought.trace-reasoning {
@@ -2451,6 +2584,14 @@ a:hover { text-decoration: underline; }
   font-size: 12.5px;
   line-height: 1.62;
   color: color-mix(in srgb, var(--fg) 88%, var(--fg-dim));
+  /* Hide scrollbar chrome but keep wheel/auto-scroll behavior. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.assistant-stream-thought-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 .assistant-stream-thought-md p {
   margin: 0 0 0.5em;
@@ -2464,23 +2605,8 @@ a:hover { text-decoration: underline; }
   font-style: italic;
 }
 
-/* ---- Agent activity log: Copilot-style timeline ---- */
-.agent-log-container.agent-log-timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-left: 0;
-  margin-left: 0;
-  min-width: 0;
-  --assistant-timeline-summary-pad-left: 4px;
-  --assistant-timeline-chevron-slot: 20px;
-  --assistant-timeline-after-chevron-gap: 4px;
-  --assistant-timeline-content-inset: calc(
-    var(--assistant-timeline-summary-pad-left) +
-      var(--assistant-timeline-chevron-slot) +
-      var(--assistant-timeline-after-chevron-gap)
-  );
-}
+/* ---- Agent activity log: thought fold + log rows inside .agent-trace ---- */
+/* .agent-trace already defined above; this section styles its children */
 .assistant-live-thought-summary {
   justify-content: flex-start;
   gap: 6px;
@@ -2513,11 +2639,12 @@ a:hover { text-decoration: underline; }
   border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
 }
-.thought-step-archive.assistant-thought-box.thought-section {
-  border-radius: 7px;
-  border-bottom: none;
-  background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
-  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+.thought-step-archive.thought-section {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
 }
 .thought-step-archive-sum-left {
   display: inline-flex;
@@ -2530,6 +2657,60 @@ a:hover { text-decoration: underline; }
   color: color-mix(in srgb, var(--fg) 88%, var(--fg-dim));
   font-size: 12.5px;
   line-height: 1.6;
+}
+
+/* ---- Combined thought fold — ONE block at top of step list (Copilot style) ---- */
+.thought-combined-fold {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0 0 4px 0;
+}
+.thought-combined-summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px 3px 2px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 4px;
+  user-select: none;
+}
+.thought-combined-summary::-webkit-details-marker { display: none; }
+.thought-combined-summary:hover { background: var(--hover); }
+.thought-combined-chev {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  color: var(--fg-dim);
+}
+.thought-combined-label {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.thought-combined-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--fg-muted, var(--fg-dim));
+  margin-left: 4px;
+}
+.thought-combined-body {
+  padding: 6px 8px 10px 28px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: color-mix(in srgb, var(--fg) 82%, var(--fg-dim));
+}
+/* Separator between thought iterations inside the combined body */
+.thought-combined-body hr {
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  margin: 8px 0;
 }
 
 /* Tool type accent — left border + very subtle tint, Copilot-style minimal */
@@ -2636,6 +2817,107 @@ a:hover { text-decoration: underline; }
   border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   overflow: hidden;
   background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
+}
+
+/* Agent THOUGHT as plain flowing prose */
+.agent-thought-prose {
+  padding: 2px 0 6px 0;
+  color: var(--fg);
+  font-size: 13.5px;
+  line-height: 1.68;
+}
+.agent-thought-prose p { margin: 0 0 0.5em; }
+.agent-thought-prose p:last-child { margin-bottom: 0; }
+.agent-thought-prose hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.agent-thought-prose .md {
+  color: inherit;
+}
+.agent-thought-prose code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--bg-3) 80%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.agent-thought-prose-dots {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: baseline;
+}
+
+/* ── Live "Thinking" stream for in-flight iteration (minimal: text only) ── */
+.thinking-box {
+  margin: 4px 0 6px 0;
+}
+.thinking-box-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 4px 0;
+}
+.thinking-box.is-collapsed .thinking-box-header {
+  border-bottom: none;
+}
+.thinking-box-header--button {
+  background: transparent;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.thinking-box-header--button:hover {
+  background: var(--hover);
+}
+.thinking-box-chev {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.thinking-box-icon {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--accent-2) 65%, var(--fg-dim));
+  opacity: 0.85;
+}
+.thinking-box-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  flex: 1;
+}
+.thinking-box-dots {
+  flex-shrink: 0;
+}
+.thinking-box-body {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: color-mix(in srgb, var(--fg) 88%, var(--fg-dim));
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+.thinking-box-body::-webkit-scrollbar { width: 6px; }
+.thinking-box-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+.thinking-box-body p { margin: 0 0 0.5em; }
+.thinking-box-body p:last-child { margin-bottom: 0; }
+.thinking-box-body code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: color-mix(in srgb, var(--bg-3) 70%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.thinking-box-placeholder {
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  font-style: italic;
 }
 .msg-assistant .msg-text {
   color: var(--fg);
@@ -2948,11 +3230,10 @@ a:hover { text-decoration: underline; }
 }
 .thought-step-archive-title {
   flex-shrink: 0;
-  color: var(--fg);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  font-size: 10px;
-  font-weight: 700;
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 500;
+  font-style: italic;
 }
 .thought-step-archive-preview {
   flex: 1;
@@ -3396,14 +3677,25 @@ a:hover { text-decoration: underline; }
 
 /* ----- scroll-to-bottom button ----- */
 .scroll-bottom {
-  position: sticky; bottom: 4px; align-self: center;
-  background: var(--accent); color: white;
-  border: none; border-radius: 14px;
-  padding: 4px 14px; font-size: 11px; cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-  animation: ui-float-gentle 2.8s ease-in-out infinite;
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--accent);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  transition: background 140ms ease, box-shadow 140ms ease;
 }
 .scroll-bottom:hover { background: var(--accent-2); }
+.scroll-bottom:active { opacity: 0.85; }
 
 .thinking-dots { display: inline-flex; gap: 3px; }
 .thinking-dots span {
@@ -4875,6 +5167,23 @@ kbd {
   padding-left: 8px;
 }
 
+/* Failed read_file: render the error + hint as plain pre so the agent's
+   suggested-paths list is readable (no syntax highlight, no Show-more). */
+.tool-error-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  border-radius: 6px;
+  color: #f0a0a0;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
 .tool-toggle {
   display: inline-flex;
   align-items: center;
@@ -5659,4 +5968,542 @@ kbd {
   z-index: 9;
   box-shadow: 0 0 0 1px rgba(79, 195, 247, 0.3);
   transition: left 60ms ease, top 60ms ease, width 60ms ease, height 60ms ease;
+}
+
+/* =============================================================
+   Copilot Chat redesign — flat, quiet, single-line tool rows
+   Appended last so it cleanly overrides earlier rules without
+   needing edits scattered across the file.
+   ============================================================= */
+
+/* Turn spacing: replace harsh divider with breathing room. */
+.chat-turn {
+  padding: 14px 0 6px;
+}
+.chat-turn + .chat-turn {
+  border-top: none;
+  margin-top: 4px;
+}
+.chat-turn + .chat-turn::before {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 0 16px 10px;
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+}
+
+/* User message — subtle, less colorful (Copilot uses muted bg, not accent). */
+.msg-user {
+  align-items: flex-end;
+  padding: 4px 16px 8px;
+}
+.msg-user .msg-bubble {
+  background: color-mix(in srgb, var(--bg-3) 88%, var(--accent) 4%);
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 88%;
+  box-shadow: none;
+  animation: none;
+}
+
+/* Assistant — drop the gradient avatar + label row; full-width content only. */
+.msg-assistant .msg-avatar-row {
+  display: none;
+}
+.msg-assistant .msg-content {
+  padding: 0 16px 4px;
+  gap: 1px;
+}
+.assistant-answer.msg-text {
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.assistant-step-list + .assistant-answer {
+  border-top: none;
+  padding-top: 6px;
+}
+
+/* Step list density — tighter so a 5-tool run isn't a wall. */
+.assistant-step-list {
+  gap: 1px;
+}
+.assistant-step-list .trace-step--flat {
+  padding: 0;
+  margin: 0;
+}
+
+/* Action fold — flat, borderless, single-line.
+   Only show border on hover/open so the timeline reads like a clean list. */
+.assistant-action-fold {
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 5px;
+  margin: 0;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.assistant-action-fold:hover {
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
+}
+.assistant-action-fold[open] {
+  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+  border-color: color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+.assistant-action-fold-sum,
+.assistant-action-fold-sum.tool-header {
+  padding: 4px 8px 4px 4px;
+  gap: 6px;
+  min-height: 26px;
+  font-weight: normal;
+  font-size: 12px;
+}
+
+/* Chevron — match Copilot's understated arrow. */
+.assistant-action-fold-chev,
+.assistant-thought-fold-chev {
+  width: 16px;
+  color: color-mix(in srgb, var(--fg-dim) 55%, transparent);
+}
+.assistant-action-fold-sum:hover .assistant-action-fold-chev {
+  color: var(--fg);
+  opacity: 1;
+}
+
+/* Inside-summary tool header — single row. */
+.assistant-action-fold-sum .tool-icon {
+  width: 14px;
+  height: 14px;
+  color: color-mix(in srgb, var(--fg-dim) 90%, transparent);
+}
+.assistant-action-fold-sum .tool-icon--edit { color: #d8a05a; }
+.assistant-action-fold-sum .tool-icon--terminal { color: #7fc996; }
+.assistant-action-fold-sum .tool-icon--search { color: #b89cd6; }
+.assistant-action-fold-sum .tool-icon--folder { color: #d4b870; }
+.assistant-action-fold-sum .tool-icon--map { color: #7fb8d8; }
+
+.assistant-action-fold-sum .tool-action {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+}
+
+/* ---- Flat completed tool line (ToolDoneLine) ---- */
+.tool-done-line .tool-icon { color: color-mix(in srgb, var(--fg-dim) 70%, transparent); }
+.tool-done-line .tool-icon--edit { color: #c4924c; opacity: 0.75; }
+.tool-done-line .tool-icon--terminal { color: #6aad83; opacity: 0.75; }
+.tool-done-line .tool-icon--search { color: #9a80c0; opacity: 0.75; }
+.tool-done-line .tool-icon--folder { color: #c0a456; opacity: 0.75; }
+.tool-done-line .tool-action {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-dim);
+}
+.tool-done-line .tool-target,
+.tool-done-line .tool-files {
+  flex: 1;
+  min-width: 0;
+}
+.tool-done-line .tool-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: color-mix(in srgb, var(--fg) 65%, var(--fg-dim));
+  background: transparent;
+  padding: 0;
+}
+.tool-done-line .tool-cmd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: color-mix(in srgb, var(--fg) 65%, var(--fg-dim));
+  background: transparent;
+  padding: 0;
+}
+.tool-done-line .tool-file-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: transparent;
+  padding: 0;
+  color: color-mix(in srgb, var(--fg) 65%, var(--fg-dim));
+}
+.tool-done-line .tool-status--ok {
+  color: rgba(100, 190, 120, 0.8);
+  font-size: 10.5px;
+  margin-left: auto;
+}
+.tool-done-line .tool-status--ok svg { display: none; } /* text label only */
+.tool-done-line .tool-status--fail {
+  color: rgba(220, 100, 100, 0.8);
+  font-size: 10.5px;
+  margin-left: auto;
+}
+.tool-done-line .tool-status--fail svg { display: none; }
+.tool-done-line .tool-status--streaming {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  margin-left: auto;
+}
+.tool-done-line .tool-hit-count,
+.tool-done-line .tool-file-count {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  margin-left: auto;
+}
+
+/* ---- In-progress tool line ---- */
+.tool-inflight-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  padding: 2px 0;
+}
+.tool-inflight-line .tool-icon { color: color-mix(in srgb, var(--fg-dim) 70%, transparent); }
+.tool-inflight-line .tool-icon--edit { color: #c4924c; opacity: 0.75; }
+.tool-inflight-line .tool-icon--terminal { color: #6aad83; opacity: 0.75; }
+.tool-inflight-line .tool-icon--search { color: #9a80c0; opacity: 0.75; }
+.tool-inflight-line .tool-action {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.tool-inflight-line .tool-path,
+.tool-inflight-line .tool-cmd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: transparent;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-inflight-line .tool-target,
+.tool-inflight-line .tool-files { flex: 1; min-width: 0; }
+.tool-inflight-line .tool-status--streaming {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  margin-left: auto;
+  font-style: italic;
+}
+.tool-inflight-line .tool-file-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: transparent;
+  padding: 0;
+  color: var(--fg-dim);
+}
+
+.assistant-action-fold-sum .tool-target {
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+
+.assistant-action-fold-sum .tool-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: transparent;
+  padding: 0;
+}
+
+/* Status text — muted by default, tiny accent for state.
+   Copilot uses small text, not pills. */
+.assistant-action-fold-sum .tool-status {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  letter-spacing: 0.01em;
+  margin-left: 4px;
+}
+.assistant-action-fold-sum .tool-status--ok {
+  color: color-mix(in srgb, var(--green, #78c88c) 85%, var(--fg-dim));
+}
+.assistant-action-fold-sum .tool-status--fail {
+  color: color-mix(in srgb, #ff8888 80%, var(--fg-dim));
+}
+
+/* Body — tighter, no inner border (parent already shows open state). */
+.assistant-action-fold-body {
+  border-top: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  background: transparent;
+  padding: 6px 10px 8px 28px;
+}
+
+/* Thought stream — quieter, no card chrome. Matches Copilot's "Thought for Xs". */
+.assistant-stream-thought.trace-reasoning,
+.thought-step-archive {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+}
+.assistant-stream-thought .assistant-stream-thought-sum,
+.thought-step-archive-summary,
+.assistant-live-thought-summary {
+  padding: 3px 8px 3px 4px;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--fg-dim);
+  border-radius: 4px;
+  font-style: italic;
+}
+.assistant-stream-thought .assistant-stream-thought-sum:hover,
+.thought-step-archive-summary:hover,
+.assistant-live-thought-summary:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+.assistant-stream-thought-scroll {
+  border-top: none;
+  padding: 4px 8px 8px 28px;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--fg) 78%, var(--fg-dim));
+  font-style: normal;
+  background: transparent;
+}
+.thought-step-archive-preview {
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-style: normal;
+  margin-left: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Flat trace step (observation rows after non-action events) — quieter. */
+.trace-step--flat {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+}
+.trace-step-flat-head {
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 3px 8px 3px 28px;
+  font-weight: 400;
+}
+.trace-tool-row {
+  padding: 0;
+  margin: 0;
+}
+
+/* Tool body code blocks — remove inner backgrounds since fold already framed. */
+.tool-output {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+.tool-details {
+  padding: 0;
+}
+.tool-code-block pre {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  border-radius: 5px;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.tool-code-block code {
+  font-family: var(--font-mono);
+  background: transparent;
+  padding: 0;
+}
+.tool-code-expand {
+  margin-top: 6px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.tool-code-expand:hover {
+  color: var(--fg);
+  border-color: var(--accent-2);
+}
+
+/* Streaming dot — replace gradient pulse with a quieter inline dot. */
+.assistant-action-fold-sum .tool-status--streaming {
+  font-size: 10.5px;
+  color: var(--accent-2);
+  opacity: 0.9;
+}
+
+/* Run command card — flatten so it lives within the fold body, not as another card. */
+.tool-command-stream {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+/* Empty state polish — match the new flat aesthetic. */
+.chat-empty {
+  padding: 64px 24px;
+}
+.chat-empty-title {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Scroll-to-bottom: integrate visually with the new flat surface. */
+.scroll-bottom {
+  background: color-mix(in srgb, var(--bg-3) 95%, var(--accent) 8%);
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  color: var(--fg);
+  font-weight: 500;
+}
+.scroll-bottom:hover {
+  background: var(--bg-3);
+  border-color: var(--accent-2);
+}
+
+/* Explorer loading state on workspace switch — quiet centered spinner. */
+.tree-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 12px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.tree-loading .explorer-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+/* Wrapper that lets the scroll-to-bottom pill anchor above the composer
+   without being inside the scrollable .chat-log (avoids overlapping streamed
+   text and getting repainted on every token). */
+.chat-log-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.chat-log-wrap > .chat-log {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Copilot-style per-file diff viewer for write_patch results. */
+.tool-patch-diffs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.tool-diff-block {
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-2) 70%, var(--bg-3));
+  overflow: hidden;
+}
+.tool-diff-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+  background: color-mix(in srgb, var(--bg-3) 85%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  user-select: none;
+}
+.tool-diff-summary::-webkit-details-marker { display: none; }
+.tool-diff-block:not([open]) .tool-diff-summary { border-bottom: none; }
+.tool-diff-chev {
+  width: 12px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.tool-diff-path {
+  font-family: var(--font-mono);
+  color: var(--fg);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-diff-body {
+  margin: 0;
+  padding: 6px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  font-family: var(--font-mono);
+  background: var(--bg);
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+}
+.tool-diff-body code { display: block; }
+
+/* +/- summary stats (Copilot-style green/red counters). */
+.tool-patch-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.tool-patch-stats-add { color: #4ade80; }
+.tool-patch-stats-del { color: #f87171; }
+
+/* Make +/- markers in the diff body more legible — Copilot keeps them
+   separated from content by a faint gutter color. */
+.tool-diff-body .tool-patch-stream-line {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.tool-diff-body .tool-patch-line-add {
+  background: color-mix(in srgb, #16a34a 22%, transparent);
+  border-left: 2px solid #22c55e;
+  padding-left: 4px;
+}
+.tool-diff-body .tool-patch-line-del {
+  background: color-mix(in srgb, #dc2626 20%, transparent);
+  border-left: 2px solid #ef4444;
+  padding-left: 4px;
+}
+.tool-diff-body .tool-patch-line-hunk {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, #93c5fd 95%, transparent);
+}
+.tool-diff-body .tool-patch-line-meta {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* Tail-follow sentinel — invisible 1px element at the bottom of .chat-log
+   used by IntersectionObserver to detect "user is reading the tail". */
+.chat-log-sentinel {
+  height: 1px;
+  width: 100%;
+  flex-shrink: 0;
+  pointer-events: none;
 }

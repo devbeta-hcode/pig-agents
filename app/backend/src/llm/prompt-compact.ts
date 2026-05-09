@@ -49,13 +49,16 @@ export function activeUserTaskSlice(task: string): string {
 /** Detect consultation/feasibility questions */
 export function taskSignalsConsultationFirst(task: string): boolean {
   const t = activeUserTaskSlice(task);
-  if (t.length < 8) return false;
+  if (t.length < 4) return false;
   // Plan/consult patterns (EN + VI)
-  if (/\b(plan\s+first|before\s+you\s+(start|do)|discuss\s+first|get\s+approval|what\s+do\s+you\s+think|which\s+approach)\b/i.test(t)) return true;
-  if (/(lên\s*kế\s*hoạch|hỏi\s*ý\s*kiến|tham\s*khảo|chưa\s*làm)/i.test(t)) return true;
+  if (/\b(plan\s+first|before\s+you\s+(start|do)|discuss\s+first|get\s+approval|what\s+do\s+you\s+think|which\s+approach|any\s+(suggestions?|ideas?)|do\s+you\s+(have|recommend|suggest))\b/i.test(t)) return true;
+  if (/(lên\s*kế\s*hoạch|hỏi\s*ý\s*kiến|tham\s*khảo|chưa\s*làm|gợi\s*ý|đề\s*(xuất|cập)|ý\s*tưởng|nên\s*(làm|dùng|chọn))/i.test(t)) return true;
   // Feasibility questions
-  if (/có\s+thể[\s\S]{0,300}(không|k)\s*[?.!]?\s*$/im.test(t)) return true;
+  if (/có\s+thể[\s\S]{0,300}(không|k|ko)\s*[?.!]?\s*$/im.test(t)) return true;
+  if (/\bcó\s+(gì|ý|cách|đề\s*(xuất|cập)|gợi\s*ý|ý\s*tưởng)\b[\s\S]{0,300}(không|k|ko)?\s*[?.!]?\s*$/im.test(t)) return true;
   if (/\b(can|could)\s+you\b[\s\S]{0,300}\?\s*$/im.test(t)) return true;
+  // VI informal yes/no ending in bare "k/ko/kh/hông"
+  if (/(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t)) return true;
   return false;
 }
 
@@ -66,9 +69,11 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
   // How-to patterns
   if (/^(làm\s*sao|cách\s*(nào|để)|how\s+(do|can|to)\s+|what('s|\s+is)\s+the\s+(way|method)\s+to)/i.test(t)) return true;
   // Explanation patterns
-  if (/^(what\s+(is|are|does)|why\s+(is|does)|explain|tại\s*sao|vì\s*sao)/i.test(t)) return true;
+  if (/^(what\s+(is|are|does)|why\s+(is|does)|explain|describe|tại\s*sao|vì\s*sao|tìm\s*hiểu|cho\s*biết|nói\s*(về|cho|thêm)|phân\s*tích|đánh\s*giá|tóm\s*tắt|review|mô\s*tả)/i.test(t)) return true;
   // Short questions
   if (t.length < 80 && /\?\s*$/.test(t)) return true;
+  // VI informal yes/no on short messages
+  if (t.length < 120 && /(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t)) return true;
   return false;
 }
 
@@ -194,14 +199,12 @@ export function buildContextMessageCompact(
     })
     .join("\n\n");
 
-  // Only add hints on first turn
+  // Inject hint on every turn (classifier reads CURRENT TASK slice = latest user message).
   let hint = "";
-  if (history.length === 0) {
-    if (taskSignalsConsultationFirst(task)) {
-      hint = "\n[hint: plan/feasibility question → FINAL only, no tools]";
-    } else if (taskIsExplanatoryQuestion(task)) {
-      hint = "\n[hint: how-to question → answer directly in FINAL]";
-    }
+  if (taskSignalsConsultationFirst(task)) {
+    hint = "\n[hint: plan/feasibility/suggestion question — FINAL only, NO tools]";
+  } else if (taskIsExplanatoryQuestion(task)) {
+    hint = "\n[hint: how-to/explain question — answer in FINAL, at most ONE read_file]";
   }
 
   const workspaceSection = tree ? `\nWORKSPACE:\n${tree}\n` : "";

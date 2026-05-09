@@ -160,8 +160,15 @@ function ReadFileOutput({
   const path = String(input.path || "");
   const fileName = path.split("/").pop() || path;
 
-  // Extract file content from observation summary
-  const content = observation?.summary?.replace(/^read_file .+\n/, "") || "";
+  // The executor returns one of:
+  //   "<path> (<N>c[, cached]):\n<file content>"  — success
+  //   "read_file error: <msg>\n[!] hint…"         — failure
+  // Strip the path-header line for success; show error+hint as-is for failure.
+  const rawSummary = observation?.summary ?? "";
+  const isError = !observation?.ok;
+  const content = isError
+    ? rawSummary
+    : rawSummary.replace(/^[^\n]*\(\d+c[^)]*\):\s*\n?/, "");
 
   return (
     <div className="tool-output tool-read-file">
@@ -181,9 +188,13 @@ function ReadFileOutput({
       </div>
       )}
       {observation && content && (
-        <div className="tool-details tool-inline-body-read">
+        <div className={`tool-details ${isError ? "tool-inline-body-read tool-inline-body-read--error" : "tool-inline-body-read"}`}>
           {/* Outer timeline accordion handles collapse — no nested Show/Hide row. */}
-          <CodeBlock content={content} language={guessLanguage(fileName)} />
+          {isError ? (
+            <pre className="tool-error-pre">{content}</pre>
+          ) : (
+            <CodeBlock content={content} language={guessLanguage(fileName)} />
+          )}
         </div>
       )}
     </div>
@@ -310,6 +321,62 @@ function CreateFileOutput({
   );
 }
 
+/** Count +/- lines in a unified diff body (skips file headers and hunk markers). */
+function countDiffStats(diff: string | undefined): { add: number; del: number } | null {
+  if (!diff) return null;
+  let add = 0, del = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) add++;
+    else if (line.startsWith("-")) del++;
+  }
+  if (add === 0 && del === 0) return null;
+  return { add, del };
+}
+
+/** Copilot-style collapsible per-file diff viewer with +/- gutter + colored hunks. */
+function PatchDiffList({ diffs }: { diffs: string[] }) {
+  return (
+    <div className="tool-patch-diffs">
+      {diffs.map((d, i) => (
+        <PatchDiffBlock key={i} diff={d} />
+      ))}
+    </div>
+  );
+}
+
+function PatchDiffBlock({ diff }: { diff: string }) {
+  const [open, setOpen] = useState(true);
+  const lines = diff.split("\n");
+  // Extract file path from "+++ b/<path>" header for the summary label.
+  let path = "";
+  for (const ln of lines) {
+    if (ln.startsWith("+++ b/")) { path = ln.slice(6).trim(); break; }
+    if (ln.startsWith("+++ ")) { path = ln.slice(4).trim(); break; }
+  }
+  const stats = countDiffStats(diff);
+  return (
+    <details className="tool-diff-block" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="tool-diff-summary">
+        <span className="tool-diff-chev" aria-hidden>{open ? "▾" : "▸"}</span>
+        {path && <FileIcon name={path.split("/").pop() || path} size={12} />}
+        <span className="tool-diff-path">{path || "diff"}</span>
+        {stats && (
+          <span className="tool-patch-stats">
+            <span className="tool-patch-stats-add">+{stats.add}</span>
+            <span className="tool-patch-stats-del">−{stats.del}</span>
+          </span>
+        )}
+      </summary>
+      <pre className="tool-diff-body language-diff">
+        <code>
+          <PatchStreamHighlighted text={diff} />
+        </code>
+      </pre>
+    </details>
+  );
+}
+
 // Renders write_patch — live stream in <pre.tool-patch-stream> (streamingArgPreview → full patches) until observation.
 function WritePatchOutput({
   input,
@@ -395,6 +462,16 @@ function WritePatchOutput({
                 <span className="tool-patch-status">{icons.check}</span>
                 <FileIcon name={f.split("/").pop() || ""} size={12} />
                 <span>{f}</span>
+                {(() => {
+                  const stats = countDiffStats(observation.diffs?.[i]);
+                  if (!stats) return null;
+                  return (
+                    <span className="tool-patch-stats">
+                      <span className="tool-patch-stats-add">+{stats.add}</span>
+                      <span className="tool-patch-stats-del">−{stats.del}</span>
+                    </span>
+                  );
+                })()}
               </div>
             ))}
             {failFiles.map((f, i) => (
@@ -404,6 +481,9 @@ function WritePatchOutput({
                 <span>{f}</span>
               </div>
             ))}
+            {observation.diffs && observation.diffs.length > 0 && (
+              <PatchDiffList diffs={observation.diffs} />
+            )}
             {observation.summary?.includes("Validation:") && (
               <div className="tool-validation">
                 <CodeBlock
@@ -541,8 +621,11 @@ function ListFilesOutput({
 }) {
   const dir = String(input.dir || ".");
 
-  // Parse file count
-  const content = observation?.summary?.replace(/^list_files [^\n]+:\n/, "") || "";
+  // Backend format: `"${dir}/:\n- file\nd subdir\n..."`. Strip the header line
+  // (anything ending in `/:`) so the first entry isn't echoed as a phantom item,
+  // and parse the `[d|-] path` prefix to detect directories.
+  const rawSummary = observation?.summary || "";
+  const content = rawSummary.replace(/^[^\n]+\/:\n?/, "");
   const lines = content.split("\n").filter(Boolean);
   const fileCount = lines.length;
 
@@ -564,8 +647,10 @@ function ListFilesOutput({
         <div className="tool-details tool-inline-body-list">
           <div className="tool-file-list">
             {lines.slice(0, 30).map((line, i) => {
-              const isDir = line.includes("[D]");
-              const name = line.replace(/^\s*\[D\]\s*/, "").replace(/^\s+/, "").trim();
+              const m = /^([d-])\s+(.*)$/.exec(line);
+              const isDir = m ? m[1] === "d" : false;
+              const name = (m ? m[2] : line).trim();
+              if (!name) return null;
               return (
                 <div key={i} className="tool-file-item">
                   {isDir ? icons.folder : <FileIcon name={name} size={14} />}
@@ -766,7 +851,8 @@ export function ToolAccordionHeader({
 
   if (t === "list_files") {
     const dir = String(input.dir || ".");
-    const content = observation?.summary?.replace(/^list_files [^\n]+:\n/, "") || "";
+    const rawSummary = observation?.summary || "";
+    const content = rawSummary.replace(/^[^\n]+\/:\n?/, "");
     const fileCount = content.split("\n").filter(Boolean).length;
     return (
       <>

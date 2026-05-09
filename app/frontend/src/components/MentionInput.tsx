@@ -10,6 +10,8 @@ interface SlashCommand {
 
 interface Props {
   value: string;
+  /** Bumped by parent on every external value change so the sync effect fires even when `value` string is unchanged (e.g. clear-after-send when state was already ""). */
+  valueVersion?: number;
   onChange: (v: string) => void;
   onSubmit: () => void;
   disabled?: boolean;
@@ -33,7 +35,7 @@ async function flatten(dir: string, depth: number, out: FlatItem[]) {
 }
 
 export function MentionInput({
-  value, onChange, onSubmit, disabled, placeholder, refreshKey,
+  value, valueVersion, onChange, onSubmit, disabled, placeholder, refreshKey,
   slashCommands, onSlashCommand,
 }: Props) {
   const [files, setFiles] = useState<FlatItem[]>([]);
@@ -45,6 +47,35 @@ export function MentionInput({
   const [slashActive, setSlashActive] = useState(0);
   const [loading, setLoading] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onSubmitRef = useRef(onSubmit);
+  onSubmitRef.current = onSubmit;
+
+  // Auto-grow helper — operates on DOM directly, no state needed.
+  function autoGrow(ta: HTMLTextAreaElement) {
+    const max = 220;
+    ta.style.height = "auto";
+    const next = Math.min(max, ta.scrollHeight);
+    ta.style.height = `${next}px`;
+    ta.style.overflowY = next >= max ? "auto" : "hidden";
+  }
+
+  // Sync from parent only when value changes externally (injection / clear / slash).
+  // We compare against the live DOM value (not a cached prevValueRef) because Chat
+  // intentionally does NOT call setTask() on every keystroke (perf): the parent's
+  // `value` prop stays stale while the user types, so a prevValueRef-based diff
+  // would mistakenly skip the clear after send (parent: "" → "", DOM: "abc").
+  const prevValueRef = useRef(value);
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    if (ta.value === value) return;
+    prevValueRef.current = value;
+    ta.value = value;
+    autoGrow(ta);
+  }, [value, valueVersion]);
+
   // Track if we've loaded files to avoid redundant fetches
   const filesLoadedRef = useRef(false);
   const loadingRef = useRef(false);
@@ -91,9 +122,12 @@ export function MentionInput({
   }, [slashCommands, slashQuery]);
 
   function handleChange(v: string) {
-    onChange(v);
+    prevValueRef.current = v;
+    onChangeRef.current(v);
     const ta = taRef.current;
     if (!ta) return;
+    // Auto-grow without state — direct DOM mutation.
+    autoGrow(ta);
     const pos = ta.selectionStart;
     const before = v.slice(0, pos);
     // Slash commands only when the input STARTS with "/" and there's no space yet.
@@ -121,12 +155,16 @@ export function MentionInput({
   function pickSlash(cmd: SlashCommand) {
     setSlashOpen(false);
     const handled = onSlashCommand?.(cmd.name);
-    // Contract:
-    //   true  → command was instant; clear input
-    //   false → caller wants the literal `/cmd ` left as a prefix
-    //   undefined / void → caller manipulated the input itself; leave it
-    if (handled === true) onChange("");
-    else if (handled === false) onChange(`/${cmd.name} `);
+    if (handled === true) {
+      if (taRef.current) { taRef.current.value = ""; autoGrow(taRef.current); }
+      onChangeRef.current("");
+      prevValueRef.current = "";
+    } else if (handled === false) {
+      const v = `/${cmd.name} `;
+      if (taRef.current) { taRef.current.value = v; autoGrow(taRef.current); }
+      onChangeRef.current(v);
+      prevValueRef.current = v;
+    }
     requestAnimationFrame(() => taRef.current?.focus());
   }
 
@@ -134,13 +172,18 @@ export function MentionInput({
     const ta = taRef.current;
     if (!ta) return;
     const pos = ta.selectionStart;
-    const before = value.slice(0, pos);
-    const after = value.slice(pos);
+    const cur = ta.value;
+    const before = cur.slice(0, pos);
+    const after = cur.slice(pos);
     const replaced = before.replace(/(?:^|\s)@([\w/.\-]*)$/, (m) => {
       const lead = m.startsWith("@") ? "" : m[0];
       return `${lead}@${item.path} `;
     });
-    onChange(replaced + after);
+    const next = replaced + after;
+    ta.value = next;
+    autoGrow(ta);
+    onChangeRef.current(next);
+    prevValueRef.current = next;
     setOpen(false);
     requestAnimationFrame(() => {
       ta.focus();
@@ -156,7 +199,7 @@ export function MentionInput({
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSlash(slashMatches[slashActive]); return; }
       if (e.key === "Escape") { setSlashOpen(false); return; }
     }
-    if (open && matches.length > 0) {
+    if (!open && matches.length > 0) {
       if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => (a + 1) % matches.length); return; }
       if (e.key === "ArrowUp")   { e.preventDefault(); setActive((a) => (a - 1 + matches.length) % matches.length); return; }
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(matches[active]); return; }
@@ -165,21 +208,16 @@ export function MentionInput({
     const composing = (e.nativeEvent as { isComposing?: boolean })?.isComposing;
     if (e.key === "Enter" && !e.shiftKey && !composing) {
       e.preventDefault();
-      if (!disabled) onSubmit();
+      if (!disabled) onSubmitRef.current();
     }
   }
 
-  // auto-grow textarea — keep overflow hidden until max height so empty input
-  // does not show a bogus inner scrollbar (scrollHeight vs clientHeight rounding).
+  // auto-grow textarea
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
-    const max = 220;
-    ta.style.height = "auto";
-    const next = Math.min(max, ta.scrollHeight);
-    ta.style.height = `${next}px`;
-    ta.style.overflowY = next >= max ? "auto" : "hidden";
-  }, [value]);
+    autoGrow(ta);
+  }, []); // only on mount for initial sizing
 
   return (
     <>
@@ -224,7 +262,7 @@ export function MentionInput({
       )}
       <textarea
         ref={taRef}
-        value={value}
+        defaultValue=""
         disabled={disabled}
         rows={1}
         placeholder={placeholder ?? "Describe a coding task… use @ to reference files"}
