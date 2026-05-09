@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { getWorkspace } from "../utils/workspace.js";
+import { childSpawnEnv } from "./smartCommand.js";
 
 function yieldEventLoop(): Promise<void> {
   return new Promise((r) => setImmediate(r));
@@ -52,13 +53,12 @@ export async function runCommand(cmd: string, opts?: { cwd?: string; timeoutMs?:
       // stdin must not be a pipe: commands that read from tty/stdin would
       // block forever (looks like a frozen backend until timeout).
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
+      env: childSpawnEnv({
         NO_COLOR: "1",
         FORCE_COLOR: "0",
         GIT_PAGER: "cat",
         PAGER: "cat",
-      },
+      }),
       ...(killAsGroup ? { detached: true } : {}),
     });
     let outBuf = "";

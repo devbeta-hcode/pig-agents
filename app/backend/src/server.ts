@@ -64,7 +64,17 @@ if (fs.existsSync(publicDir)) {
   });
 }
 
-const PORT = Number(process.env.PORT || 8787);
+// Pick the agent's own listen port from a dedicated env var so it doesn't
+// collide with `PORT` — that variable is conventionally consumed by user
+// dev servers (Express/Next/Vite/etc.) and would otherwise leak into every
+// child process the agent spawns, hijacking their default port. Order:
+//   BACKEND_PORT > AGENT_PORT > PORT (legacy) > 8787
+const PORT = Number(
+  process.env.BACKEND_PORT || process.env.AGENT_PORT || process.env.PORT || 8787,
+);
+// Once we've decided our own port, scrub PORT from the agent process env so
+// nothing we spawn (run_command, terminals, smart commands) inherits it.
+delete process.env.PORT;
 const server = http.createServer(app);
 // Don't let stale keep-alives outlive the process during dev reloads.
 server.keepAliveTimeout = 1000;

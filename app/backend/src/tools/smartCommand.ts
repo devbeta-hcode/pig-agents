@@ -1,6 +1,21 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { getWorkspace } from "../utils/workspace.js";
 
+/**
+ * Build the env object passed to spawned child processes. We strip the agent
+ * server's own port-related vars so a `node`/`next`/`nest`/`vite` invocation
+ * inside a workspace defaults to its own port (e.g. `process.env.PORT || 3001`)
+ * instead of inheriting the agent's listen port — that bug had user dev
+ * servers booting on the agent's port and stealing all HTTP traffic.
+ */
+export function childSpawnEnv(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  delete env.PORT;
+  delete env.BACKEND_PORT;
+  delete env.AGENT_PORT;
+  return env;
+}
+
 /** Lets other HTTP handlers / timers run — avoids starving the event loop on huge stdout/stderr. */
 function yieldEventLoop(): Promise<void> {
   return new Promise((r) => setImmediate(r));
@@ -239,13 +254,12 @@ export async function runSmartCommand(
     const child = spawn("bash", ["-lc", trimmed], {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
+      env: childSpawnEnv({
         NO_COLOR: "1",
         FORCE_COLOR: "0",
         GIT_PAGER: "cat",
         PAGER: "cat",
-      },
+      }),
       ...(killAsGroup ? { detached: true } : {}),
     });
 

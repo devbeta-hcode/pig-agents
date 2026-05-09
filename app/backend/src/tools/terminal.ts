@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { getWorkspace } from "../utils/workspace.js";
 import { logger } from "../utils/logger.js";
+import { childSpawnEnv } from "./smartCommand.js";
 
 export interface PtyLike {
   write(data: string): void;
@@ -25,7 +26,7 @@ export async function createPty(opts: { cols?: number; rows?: number; cwd?: stri
       cols,
       rows,
       cwd,
-      env: process.env as Record<string, string>,
+      env: childSpawnEnv() as Record<string, string>,
     });
     const dataHandlers: ((c: string) => void)[] = [];
     const exitHandlers: ((info: { exitCode: number }) => void)[] = [];
@@ -70,7 +71,7 @@ function hasScriptCommand(): boolean {
 function createScriptPty(cwd: string, cols: number, rows: number): PtyLike {
   const shell = process.env.SHELL || "/bin/bash";
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...(childSpawnEnv() as Record<string, string>),
     TERM: "xterm-256color",
     COLUMNS: String(cols),
     LINES: String(rows),
@@ -117,7 +118,7 @@ function createScriptPty(cwd: string, cols: number, rows: number): PtyLike {
 function createDumbShell(cwd: string): PtyLike {
   const child: ChildProcessWithoutNullStreams = spawn("bash", ["-i"], {
     cwd,
-    env: { ...process.env, TERM: "dumb" },
+    env: { ...childSpawnEnv(), TERM: "dumb" },
   });
   const dataHandlers: ((c: string) => void)[] = [];
   const exitHandlers: ((info: { exitCode: number }) => void)[] = [];

@@ -127,6 +127,26 @@ The dev server URLs:
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
 
+### Last session (2026-05-12) — env leak: PORT bleeding into spawned children
+
+- Symptom: agent's HTTP server reads `process.env.PORT` to pick its own
+  listen port. Every child process spawned by the agent inherited that
+  PORT, so a user dev server with `const PORT = process.env.PORT || 3001;`
+  would boot on the agent's port (8787) instead of 3001 — looks like a
+  port-conflict ghost bug from inside the workspace.
+- `app/backend/src/server.ts`: prefer `BACKEND_PORT` > `AGENT_PORT` >
+  `PORT` (legacy) > 8787, then `delete process.env.PORT` after we've
+  decided so nothing we spawn can re-read it.
+- `app/backend/src/tools/smartCommand.ts`: new exported helper
+  `childSpawnEnv(extra)` returns `{ ...process.env, ...extra }` minus
+  `PORT`, `BACKEND_PORT`, `AGENT_PORT`. Used by the smart `run_command`
+  spawn here.
+- `app/backend/src/tools/command.ts`: legacy `run_command` spawn now uses
+  `childSpawnEnv()` instead of inlining `...process.env`.
+- `app/backend/src/tools/terminal.ts`: PTY env (node-pty path, `script`
+  fallback, dumb child fallback) all switched to `childSpawnEnv()`. User
+  PTY shells therefore also get a clean PORT.
+
 ### Last session (2026-05-12) — diff streaming + chat memory caps
 
 - `app/backend/src/agent/runner.ts`: `EarlyToolExec` now carries a
