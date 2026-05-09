@@ -34,28 +34,38 @@ export async function listFiles(rel: string = "."): Promise<FileEntry[]> {
     if (code === "ENOENT" || code === "ENOTDIR") return [];
     throw err;
   }
-  const entries: FileEntry[] = [];
-  for (const d of dirents) {
-    const full = path.join(abs, d.name);
-    let stat: fssync.Stats | undefined;
-    try {
-      stat = await fs.stat(full);
-    } catch {
-      continue;
-    }
-    entries.push({
-      name: d.name,
-      path: toRel(full),
-      isDir: d.isDirectory(),
-      size: d.isFile() ? stat.size : undefined,
-      mtimeMs: stat.mtimeMs,
-    });
-  }
-  entries.sort((a, b) => {
+  // Fan out stat() calls in parallel so a folder with hundreds of children
+  // resolves in roughly one round-trip instead of N sequential awaits. The
+  // dirent already tells us isDir/isFile, so stat is only needed for size +
+  // mtime; failures degrade to "no stat info" instead of dropping the entry.
+  const entries: (FileEntry | null)[] = await Promise.all(
+    dirents.map(async (d) => {
+      const isDir = d.isDirectory();
+      const full = path.join(abs, d.name);
+      let size: number | undefined;
+      let mtimeMs: number | undefined;
+      try {
+        const stat = await fs.stat(full);
+        if (!isDir) size = stat.size;
+        mtimeMs = stat.mtimeMs;
+      } catch {
+        // Symlink to nowhere / EACCES — keep the entry visible without stat.
+      }
+      return {
+        name: d.name,
+        path: toRel(full),
+        isDir,
+        size,
+        mtimeMs,
+      };
+    }),
+  );
+  const out = entries.filter((e): e is FileEntry => e !== null);
+  out.sort((a, b) => {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
-  return entries;
+  return out;
 }
 
 export async function readFile(rel: string): Promise<string> {

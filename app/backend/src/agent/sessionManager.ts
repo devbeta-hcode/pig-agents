@@ -238,7 +238,11 @@ export function subscribeToSession(
   // Replay existing events in chunks so a huge buffer never blocks the event loop
   // (same tick as other API routes / agent ticks).
   if (replay && state.session.events.length > 0) {
-    const snapshot = state.session.events.slice();
+    // Strip transient `token` events from replay — they're raw LLM stream
+    // deltas useful only while the iteration is in flight. After F5, replaying
+    // them dumps the entire buffer into the client's `thinkingRef` and `iter_start`
+    // would persist garbage as a malformed thought event.
+    const snapshot = state.session.events.filter((e) => e.type !== "token");
     const CHUNK = 200;
     let i = 0;
     const pump = () => {

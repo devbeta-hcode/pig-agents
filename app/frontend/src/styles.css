@@ -525,6 +525,13 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--border); padding: 5px 8px; border-radius: 3px;
   font-family: var(--font-mono); font-size: 12px; margin-top: 8px;
 }
+.fp-loading-overlay {
+  position: absolute; inset: 0;
+  background: rgba(15, 15, 18, 0.45);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 18px; pointer-events: none;
+  border-radius: 4px;
+}
 
 /* settings modal */
 .settings-row {
@@ -2155,8 +2162,9 @@ a:hover { text-decoration: underline; }
      trackpad input never fights an in-flight CSS animation. snapToBottom()
      in JS sets scrollTop synchronously — instant, no animation conflict. */
   scroll-behavior: auto;
-  /* Hint the browser to keep the viewport pinned to the bottom while content
-     grows from streaming — reduces jank vs. JS-only follow. */
+  /* Browser scroll anchoring keeps the viewport stable when content above
+     the user's view collapses/expands (e.g. toggling a step) — without this
+     the scrollbar position drifts and "scroll to bottom" becomes unreachable. */
   overflow-anchor: auto;
   /* Subtle, near-invisible scrollbar like Cursor/Copilot. */
   scrollbar-width: thin;
@@ -2390,180 +2398,167 @@ a:hover { text-decoration: underline; }
   padding-bottom: 2px;
 }
 
-/* ---- Agent trace: Copilot-style flat grouped action rows ---- */
-
-/* Main trace wrapper */
-.agent-trace {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-left: 12px;
-  border-left: 1px solid var(--border-subtle);
-  margin: 4px 0 6px;
-  min-width: 0;
-}
-
-/* Group container */
-.agent-group {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-/* Group header: flat, no box */
-.agent-group-row {
-  all: unset;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 0;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--fg);
-  width: 100%;
-  box-sizing: border-box;
-  user-select: none;
-}
-.agent-group--single .agent-group-row {
-  cursor: default;
-}
-.agent-group-row:hover {
-  color: var(--fg);
-}
-
-.agent-group-icon {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  width: 14px;
-  color: color-mix(in srgb, var(--fg-dim) 65%, transparent);
-}
-.agent-group-row:hover .agent-group-icon { color: var(--fg-dim); }
-
-.agent-group-label {
-  flex-shrink: 0;
-  max-width: 60%;
+/* ---- Agent timeline: collapsible ACTION rows + live Thought stream ---- */
+.assistant-action-fold {
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(255, 255, 255, 0.9);
+  min-width: 0;
+  transition: border-color var(--transition-fast);
 }
-
-.agent-group-meta {
-  display: inline-flex;
+.assistant-action-fold:hover {
+  border-color: color-mix(in srgb, var(--border) 85%, transparent);
+}
+.assistant-action-fold-sum {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
-  min-width: 0;
+  padding: 5px 10px;
   font-size: 12px;
-  color: var(--fg-dim);
-  overflow: hidden;
-}
-.agent-group-meta-sep {
-  color: var(--fg-muted);
-}
-.agent-group-meta-text {
-  white-space: nowrap;
-}
-
-.agent-group-dots {
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.agent-group-end {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.agent-group-check {
-  display: inline-flex;
-  align-items: center;
-  color: color-mix(in srgb, var(--good) 65%, transparent);
-}
-
-.agent-group-chev {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  color: var(--fg-dim);
-}
-
-/* Expanded body */
-.agent-group-body {
-  display: flex;
-  flex-direction: column;
-  padding: 6px 0 8px 16px;
-  min-width: 0;
-}
-
-/* One target item */
-.agent-target-item {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-/* Target path row */
-.agent-target-path {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 4px;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  min-width: 0;
-}
-.agent-target-path span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.agent-target-path-label { flex: 1; min-width: 0; }
-.agent-target-path-more { flex-shrink: 0; font-size: 10.5px; color: var(--fg-muted); }
-.agent-target-chev { flex-shrink: 0; display: inline-flex; color: color-mix(in srgb, var(--fg-dim) 45%, transparent); }
-.agent-target-diff-stats { flex-shrink: 0; display: inline-flex; gap: 4px; font-size: 10.5px; font-family: var(--font-mono); }
-.diff-stat-add { color: var(--good); }
-.diff-stat-del { color: var(--bad); }
-
-/* When target-path is a button (has toggle) */
-.agent-target-path--btn {
-  all: unset;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 4px;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
-  cursor: pointer;
-  border-radius: 3px;
+  font-weight: 600;
+  color: var(--fg);
   user-select: none;
 }
-.agent-target-path--btn:hover { background: var(--hover); color: var(--fg-dim); }
-.agent-target-path--no-toggle { cursor: default; }
-.agent-target-path--no-toggle:hover { background: none; color: var(--fg-muted); }
-
-/* Output body below target (command stdout, read content, etc.) */
-.agent-target-output {
-  margin: 2px 0 6px;
-  min-width: 0;
+.assistant-action-fold-sum.tool-header {
+  gap: 4px;
+  padding: 5px 10px 5px 4px;
+  font-weight: normal;
 }
-.agent-target-output .tool-output { padding: 0; }
-
-/* Legacy action fold classes — keep minimal stubs for any lingering refs */
-.assistant-action-fold { min-width: 0; overflow: hidden; }
+.assistant-action-fold-sum::-webkit-details-marker {
+  display: none;
+}
+/* +/- toggle badge used on action fold headers instead of chevron arrow */
+.fold-pm-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--fg-dim);
+  margin-right: 2px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.assistant-action-fold-sum:hover .fold-pm-badge {
+  color: var(--fg);
+  border-color: var(--border);
+}
 .assistant-action-fold-chev,
 .assistant-thought-fold-chev {
-  display: inline-flex; align-items: center; justify-content: center;
-  flex-shrink: 0; width: 18px;
-  color: color-mix(in srgb, var(--fg-dim) 50%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  color: color-mix(in srgb, var(--fg-dim) 65%, transparent);
+  opacity: 0.9;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+.assistant-action-fold-chev svg,
+.assistant-thought-fold-chev svg {
+  display: block;
+}
+.assistant-action-fold-sum:hover .assistant-action-fold-chev,
+.assistant-live-thought.trace-reasoning > .assistant-live-thought-summary:hover .assistant-thought-fold-chev {
+  color: var(--accent-2);
+  opacity: 1;
+}
+.assistant-action-fold-sum:hover {
+  background: var(--hover);
+}
+.assistant-action-fold-body {
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  padding: 0;
+  background: color-mix(in srgb, var(--bg) 25%, transparent);
+}
+.assistant-action-fold-body .trace-tool-output {
+  margin: 0;
+}
+
+/* Group wrapper for consecutive ACTIONs of the same tool/iteration. */
+.assistant-action-group {
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+.assistant-action-group-sum {
+  /* Inherits .assistant-action-fold-sum.tool-header look so it matches single ACTION rows. */
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.assistant-action-group-sum::-webkit-details-marker { display: none; }
+.assistant-action-group-count {
+  color: var(--fg-muted);
+  font-size: 11px;
+  margin-left: 4px;
+}
+.assistant-action-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 0 4px 0;
+  margin-left: calc(var(--assistant-timeline-summary-pad-left, 4px) + 7px);
+  position: relative;
+}
+/* Vertical connector line aligned with inner chevron icons */
+.assistant-action-group-body::before {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 0;
+  bottom: 4px;
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  pointer-events: none;
+}
+/* Flatten inner action accordions — no border/box/bg/accent */
+.assistant-action-group-body .assistant-action-fold {
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+/* Inside a group the header already shows tool icon + verb — don't repeat them per row. */
+.assistant-action-group-body .assistant-action-fold-sum > .tool-icon,
+.assistant-action-group-body .assistant-action-fold-sum > .tool-action {
+  display: none;
+}
+.assistant-action-group-body .assistant-action-fold-sum {
+  padding-left: 0;
+  min-height: 24px;
+}
+/* Hide per-item +/- inside group body — group header is the single toggle. */
+.assistant-action-group-body .assistant-action-fold-sum .fold-pm-badge {
+  display: none;
+}
+
+/* Inline THOUGHT body — quiet markdown line with a subtle left rail. */
+.thought-step-inline {
+  margin: 6px 0 8px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent-2, var(--accent)) 35%, transparent);
+  color: color-mix(in srgb, var(--fg) 82%, var(--fg-dim));
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.thought-step-inline > :first-child { margin-top: 0; }
+.thought-step-inline > :last-child { margin-bottom: 0; }
+.thought-step-inline p { margin: 4px 0; }
+.thought-step-inline code {
+  font-size: 0.9em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg-3) 80%, transparent);
 }
 
 .assistant-stream-thought.trace-reasoning {
@@ -2576,14 +2571,17 @@ a:hover { text-decoration: underline; }
   font-size: 11px;
 }
 .assistant-stream-thought-scroll {
-  max-height: min(280px, 42vh);
+  max-height: 200px;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 6px 12px 10px 12px;
   border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
   font-size: 12.5px;
   line-height: 1.62;
-  color: color-mix(in srgb, var(--fg) 88%, var(--fg-dim));
+  color: color-mix(in srgb, var(--fg-dim) 80%, transparent);
+  /* Fade text at the bottom to indicate scrollable content. */
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
   /* Hide scrollbar chrome but keep wheel/auto-scroll behavior. */
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -2605,8 +2603,23 @@ a:hover { text-decoration: underline; }
   font-style: italic;
 }
 
-/* ---- Agent activity log: thought fold + log rows inside .agent-trace ---- */
-/* .agent-trace already defined above; this section styles its children */
+/* ---- Agent activity log: Copilot-style timeline ---- */
+.agent-log-container.agent-log-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 0;
+  margin-left: 0;
+  min-width: 0;
+  --assistant-timeline-summary-pad-left: 4px;
+  --assistant-timeline-chevron-slot: 20px;
+  --assistant-timeline-after-chevron-gap: 4px;
+  --assistant-timeline-content-inset: calc(
+    var(--assistant-timeline-summary-pad-left) +
+      var(--assistant-timeline-chevron-slot) +
+      var(--assistant-timeline-after-chevron-gap)
+  );
+}
 .assistant-live-thought-summary {
   justify-content: flex-start;
   gap: 6px;
@@ -2639,12 +2652,11 @@ a:hover { text-decoration: underline; }
   border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
 }
-.thought-step-archive.thought-section {
-  border: none;
-  background: transparent;
-  border-radius: 0;
-  padding: 0;
-  margin: 0;
+.thought-step-archive.assistant-thought-box.thought-section {
+  border-radius: 7px;
+  border-bottom: none;
+  background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
 .thought-step-archive-sum-left {
   display: inline-flex;
@@ -2654,85 +2666,26 @@ a:hover { text-decoration: underline; }
   padding-right: 10px;
 }
 .assistant-thought-content.trace-thought-body {
-  color: color-mix(in srgb, var(--fg) 88%, var(--fg-dim));
+  color: color-mix(in srgb, var(--fg-dim) 80%, transparent);
   font-size: 12.5px;
   line-height: 1.6;
 }
 
-/* ---- Combined thought fold — ONE block at top of step list (Copilot style) ---- */
-.thought-combined-fold {
-  border: none;
-  background: transparent;
-  padding: 0;
-  margin: 0 0 4px 0;
-}
-.thought-combined-summary {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 4px 3px 2px;
-  cursor: pointer;
-  list-style: none;
-  border-radius: 4px;
-  user-select: none;
-}
-.thought-combined-summary::-webkit-details-marker { display: none; }
-.thought-combined-summary:hover { background: var(--hover); }
-.thought-combined-chev {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  color: var(--fg-dim);
-}
-.thought-combined-label {
-  font-size: 12px;
-  font-style: italic;
-  color: var(--fg-dim);
-  flex-shrink: 0;
-}
-.thought-combined-preview {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11.5px;
-  color: var(--fg-muted, var(--fg-dim));
-  margin-left: 4px;
-}
-.thought-combined-body {
-  padding: 6px 8px 10px 28px;
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: color-mix(in srgb, var(--fg) 82%, var(--fg-dim));
-}
-/* Separator between thought iterations inside the combined body */
-.thought-combined-body hr {
-  border: none;
-  border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
-  margin: 8px 0;
-}
-
-/* Tool type accent — left border + very subtle tint, Copilot-style minimal */
+/* Tool type accent — left border only, no tint */
 .assistant-action-accent--mutate-fs {
   border-left: 2px solid color-mix(in srgb, #a78bfa 60%, transparent);
-  background: color-mix(in srgb, #a78bfa 6%, var(--bg-2));
 }
 .assistant-action-accent--read-fs {
   border-left: 2px solid color-mix(in srgb, #38bdf8 55%, transparent);
-  background: color-mix(in srgb, #38bdf8 5%, var(--bg-2));
 }
 .assistant-action-accent--terminal {
   border-left: 2px solid color-mix(in srgb, #34d399 52%, transparent);
-  background: color-mix(in srgb, #34d399 4%, var(--bg-2));
 }
 .assistant-action-accent--search {
   border-left: 2px solid color-mix(in srgb, #fbbf24 50%, transparent);
-  background: color-mix(in srgb, #fbbf24 4%, var(--bg-2));
 }
 .assistant-action-accent--map {
   border-left: 2px solid color-mix(in srgb, #f472b6 50%, transparent);
-  background: color-mix(in srgb, #f472b6 5%, var(--bg-2));
 }
 .assistant-action-accent--generic {
   border-left: 2px solid color-mix(in srgb, var(--fg-dim) 35%, transparent);
@@ -2817,107 +2770,6 @@ a:hover { text-decoration: underline; }
   border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   overflow: hidden;
   background: color-mix(in srgb, var(--bg-2) 65%, var(--bg-3));
-}
-
-/* Agent THOUGHT as plain flowing prose */
-.agent-thought-prose {
-  padding: 2px 0 6px 0;
-  color: var(--fg);
-  font-size: 13.5px;
-  line-height: 1.68;
-}
-.agent-thought-prose p { margin: 0 0 0.5em; }
-.agent-thought-prose p:last-child { margin-bottom: 0; }
-.agent-thought-prose hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
-.agent-thought-prose .md {
-  color: inherit;
-}
-.agent-thought-prose code {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  background: color-mix(in srgb, var(--bg-3) 80%, transparent);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.agent-thought-prose-dots {
-  display: inline-flex;
-  margin-left: 6px;
-  vertical-align: baseline;
-}
-
-/* ── Live "Thinking" stream for in-flight iteration (minimal: text only) ── */
-.thinking-box {
-  margin: 4px 0 6px 0;
-}
-.thinking-box-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 0 4px 0;
-}
-.thinking-box.is-collapsed .thinking-box-header {
-  border-bottom: none;
-}
-.thinking-box-header--button {
-  background: transparent;
-  border: 0;
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  color: inherit;
-  font: inherit;
-}
-.thinking-box-header--button:hover {
-  background: var(--hover);
-}
-.thinking-box-chev {
-  flex-shrink: 0;
-  color: var(--fg-dim);
-}
-.thinking-box-icon {
-  flex-shrink: 0;
-  color: color-mix(in srgb, var(--accent-2) 65%, var(--fg-dim));
-  opacity: 0.85;
-}
-.thinking-box-label {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-  flex: 1;
-}
-.thinking-box-dots {
-  flex-shrink: 0;
-}
-.thinking-box-body {
-  max-height: 200px;
-  overflow-y: auto;
-  padding: 0;
-  font-size: 13px;
-  line-height: 1.65;
-  color: color-mix(in srgb, var(--fg) 88%, var(--fg-dim));
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
-}
-.thinking-box-body::-webkit-scrollbar { width: 6px; }
-.thinking-box-body::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-}
-.thinking-box-body p { margin: 0 0 0.5em; }
-.thinking-box-body p:last-child { margin-bottom: 0; }
-.thinking-box-body code {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  background: color-mix(in srgb, var(--bg-3) 70%, transparent);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.thinking-box-placeholder {
-  font-size: 11.5px;
-  color: var(--fg-dim);
-  font-style: italic;
 }
 .msg-assistant .msg-text {
   color: var(--fg);
@@ -3230,10 +3082,11 @@ a:hover { text-decoration: underline; }
 }
 .thought-step-archive-title {
   flex-shrink: 0;
-  color: var(--fg-dim);
-  font-size: 12px;
-  font-weight: 500;
-  font-style: italic;
+  color: var(--fg);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
 }
 .thought-step-archive-preview {
   flex: 1;
@@ -5171,11 +5024,11 @@ kbd {
    suggested-paths list is readable (no syntax highlight, no Show-more). */
 .tool-error-pre {
   margin: 6px 0 0;
-  padding: 8px 10px;
-  background: rgba(239, 68, 68, 0.06);
-  border: 1px solid rgba(239, 68, 68, 0.18);
-  border-radius: 6px;
-  color: #f0a0a0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--bad);
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
   line-height: 1.5;
@@ -6049,8 +5902,8 @@ kbd {
   border-color: color-mix(in srgb, var(--border) 50%, transparent);
 }
 .assistant-action-fold[open] {
-  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
-  border-color: color-mix(in srgb, var(--border) 65%, transparent);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--border) 50%, transparent);
 }
 
 .assistant-action-fold-sum,
@@ -6092,114 +5945,6 @@ kbd {
   letter-spacing: -0.01em;
 }
 
-/* ---- Flat completed tool line (ToolDoneLine) ---- */
-.tool-done-line .tool-icon { color: color-mix(in srgb, var(--fg-dim) 70%, transparent); }
-.tool-done-line .tool-icon--edit { color: #c4924c; opacity: 0.75; }
-.tool-done-line .tool-icon--terminal { color: #6aad83; opacity: 0.75; }
-.tool-done-line .tool-icon--search { color: #9a80c0; opacity: 0.75; }
-.tool-done-line .tool-icon--folder { color: #c0a456; opacity: 0.75; }
-.tool-done-line .tool-action {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg-dim);
-}
-.tool-done-line .tool-target,
-.tool-done-line .tool-files {
-  flex: 1;
-  min-width: 0;
-}
-.tool-done-line .tool-path {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: color-mix(in srgb, var(--fg) 65%, var(--fg-dim));
-  background: transparent;
-  padding: 0;
-}
-.tool-done-line .tool-cmd {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: color-mix(in srgb, var(--fg) 65%, var(--fg-dim));
-  background: transparent;
-  padding: 0;
-}
-.tool-done-line .tool-file-chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  background: transparent;
-  padding: 0;
-  color: color-mix(in srgb, var(--fg) 65%, var(--fg-dim));
-}
-.tool-done-line .tool-status--ok {
-  color: rgba(100, 190, 120, 0.8);
-  font-size: 10.5px;
-  margin-left: auto;
-}
-.tool-done-line .tool-status--ok svg { display: none; } /* text label only */
-.tool-done-line .tool-status--fail {
-  color: rgba(220, 100, 100, 0.8);
-  font-size: 10.5px;
-  margin-left: auto;
-}
-.tool-done-line .tool-status--fail svg { display: none; }
-.tool-done-line .tool-status--streaming {
-  font-size: 10.5px;
-  color: var(--fg-dim);
-  margin-left: auto;
-}
-.tool-done-line .tool-hit-count,
-.tool-done-line .tool-file-count {
-  font-size: 10.5px;
-  color: var(--fg-dim);
-  margin-left: auto;
-}
-
-/* ---- In-progress tool line ---- */
-.tool-inflight-header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--fg-dim);
-  padding: 2px 0;
-}
-.tool-inflight-line .tool-icon { color: color-mix(in srgb, var(--fg-dim) 70%, transparent); }
-.tool-inflight-line .tool-icon--edit { color: #c4924c; opacity: 0.75; }
-.tool-inflight-line .tool-icon--terminal { color: #6aad83; opacity: 0.75; }
-.tool-inflight-line .tool-icon--search { color: #9a80c0; opacity: 0.75; }
-.tool-inflight-line .tool-action {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg);
-}
-.tool-inflight-line .tool-path,
-.tool-inflight-line .tool-cmd {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--fg-dim);
-  background: transparent;
-  padding: 0;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-inflight-line .tool-target,
-.tool-inflight-line .tool-files { flex: 1; min-width: 0; }
-.tool-inflight-line .tool-status--streaming {
-  font-size: 10.5px;
-  color: var(--fg-dim);
-  margin-left: auto;
-  font-style: italic;
-}
-.tool-inflight-line .tool-file-chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  background: transparent;
-  padding: 0;
-  color: var(--fg-dim);
-}
-
 .assistant-action-fold-sum .tool-target {
   flex: 1;
   min-width: 0;
@@ -6224,10 +5969,19 @@ kbd {
   margin-left: 4px;
 }
 .assistant-action-fold-sum .tool-status--ok {
-  color: color-mix(in srgb, var(--green, #78c88c) 85%, var(--fg-dim));
+  color: color-mix(in srgb, var(--fg-dim) 80%, transparent);
+}
+.assistant-action-fold-sum .tool-status--ok::before {
+  content: "✓ ";
+  color: rgba(120, 200, 140, 0.85);
+  margin-right: 2px;
 }
 .assistant-action-fold-sum .tool-status--fail {
   color: color-mix(in srgb, #ff8888 80%, var(--fg-dim));
+}
+.assistant-action-fold-sum .tool-status--fail::before {
+  content: "✕ ";
+  margin-right: 2px;
 }
 
 /* Body — tighter, no inner border (parent already shows open state). */
@@ -6316,6 +6070,9 @@ kbd {
   padding: 8px 10px;
   font-size: 11.5px;
   line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: auto;
 }
 .tool-code-block code {
   font-family: var(--font-mono);

@@ -5,11 +5,27 @@
 
 export type StreamingPeekTool = "write_patch" | "create_file";
 
+/**
+ * Some models stream `<thought>…</thought><action>{…}</action>` instead of
+ * the canonical `THOUGHT:` / `ACTION:` markers. Normalize so peek + count
+ * helpers see the expected shape.
+ */
+function normalizeXmlMarkers(buf: string): string {
+  let out = buf;
+  out = out.replace(/<\s*thought\s*>\s*/gi, "\nTHOUGHT: ");
+  out = out.replace(/<\s*\/\s*thought\s*>\s*/gi, "\n");
+  out = out.replace(/<\s*action\s*>\s*/gi, "\nACTION: ");
+  out = out.replace(/<\s*\/\s*action\s*>\s*/gi, "\n");
+  out = out.replace(/<\s*final\s*>\s*/gi, "\nFINAL: ");
+  out = out.replace(/<\s*\/\s*final\s*>\s*/gi, "\n");
+  return out;
+}
+
 /** Count ACTION: markers in streamed assistant buffer (each starts a logical tool call). */
 export function actionMarkerCount(buf: string): number {
   const re = /(?:^|\r?\n)ACTION:\s*/gi;
   let c = 0;
-  while (re.exec(buf) !== null) c++;
+  while (re.exec(normalizeXmlMarkers(buf)) !== null) c++;
   return c;
 }
 
@@ -18,12 +34,13 @@ export function actionMarkerCount(buf: string): number {
  * header (exclusive). Undefined when nth is missing (buffer not arrived yet).
  */
 export function nthActionBlobAfterMarker(buf: string, n: number): string | undefined {
+  const norm = normalizeXmlMarkers(buf);
   const re = /(?:^|\r?\n)ACTION:\s*/gi;
   let m: RegExpExecArray | null;
   const starts: number[] = [];
-  while ((m = re.exec(buf)) !== null) starts.push(m.index + m[0].length);
+  while ((m = re.exec(norm)) !== null) starts.push(m.index + m[0].length);
   if (n < 0 || n >= starts.length) return undefined;
-  const tail = buf.slice(starts[n]);
+  const tail = norm.slice(starts[n]);
   const next = /\r?\nACTION:\s*/i.exec(tail);
   const cut = next ? next.index : tail.length;
   return tail.slice(0, cut);
@@ -159,7 +176,22 @@ export function splitWritePatchByFileSections(patchBlob: string): string[] {
   if (cur?.length) chunks.push(cur);
   if (chunks.length === 0) return patchBlob.trim() ? [patchBlob] : [""];
   if (chunks.length === 1) return [chunks[0].join("\n")];
-  return chunks.map((c) => c.join("\n"));
+
+  // Merge FILE sections that share the same filename into one slice so the
+  // same file doesn't appear as N duplicate accordion rows.
+  const fileNameOf = (c: string[]): string => {
+    const m = c[0]?.match(/^\s*FILE:\s*(.+)/i);
+    return m?.[1]?.trim() ?? "";
+  };
+  const merged = new Map<string, string[]>();
+  const order: string[] = [];
+  for (const chunk of chunks) {
+    const name = fileNameOf(chunk);
+    if (!name) continue;
+    if (!merged.has(name)) { merged.set(name, []); order.push(name); }
+    merged.get(name)!.push(...chunk);
+  }
+  return order.map((name) => merged.get(name)!.join("\n"));
 }
 
 /** Prefer live streamed patch text over partial JSON patches while observation is pending. */
@@ -195,8 +227,9 @@ export function peekWritePatchSection(streamingPartial: string, sliceIndex: numb
 
 /** Raw tail from ACTION: onward (for tool_payload_streaming when peek is empty). */
 export function peekActionJsonTail(buf: string, maxChars = 8000): string {
-  const m = /(?:^|\n)ACTION:\s*/i.exec(buf);
-  const slice = m ? buf.slice(m.index) : buf.slice(-maxChars);
+  const norm = normalizeXmlMarkers(buf);
+  const m = /(?:^|\n)ACTION:\s*/i.exec(norm);
+  const slice = m ? norm.slice(m.index) : norm.slice(-maxChars);
   if (slice.length <= maxChars) return slice;
   return `${slice.slice(0, maxChars)}\n…`;
 }

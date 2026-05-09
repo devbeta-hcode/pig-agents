@@ -84,13 +84,15 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
  */
 export const SYSTEM_PROMPT_COMPACT = `You are an autonomous coding agent. Respond in ReAct format.
 
-FORMAT:
-THOUGHT: <what you know, what to do next>
+FORMAT (THOUGHT is MANDATORY — every response must start with THOUGHT:):
+THOUGHT: <what you know, what to do next — required before any ACTION or FINAL>
 ACTION: {"type":"<tool>","input":{...}}
 
 OR when done:
-THOUGHT: <summary>
+THOUGHT: <brief summary of what was done>
 FINAL: <answer to user>
+
+WARNING: Responses without THOUGHT: will be rejected. Always begin with THOUGHT:.
 
 TOOLS:
 - codebase_map: {"type":"codebase_map","input":{"max_depth":3}} — full tree + manifest excerpts. SKIP if WORKSPACE already in context (it is by default); only call for deeper exploration.
@@ -130,11 +132,12 @@ RULES:
 5. Match user's language in FINAL`;
 
 /** Even more compact for simple tasks */
-export const SYSTEM_PROMPT_MINIMAL = `Coding agent. Format:
+export const SYSTEM_PROMPT_MINIMAL = `Coding agent. Format (THOUGHT is required every time):
 
-THOUGHT: <reasoning>
+THOUGHT: <reasoning — mandatory>
 ACTION: {"type":"tool","input":{...}}
 OR
+THOUGHT: <done>
 FINAL: <answer>
 
 Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file

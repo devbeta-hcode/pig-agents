@@ -4,6 +4,23 @@ export type AgentStep =
   | { kind: "final"; thought: string; result: string }
   | { kind: "error"; raw: string; error: string };
 
+/**
+ * Some models (DeepSeek, Qwen variants) emit XML-style tags instead of the
+ * ReAct `THOUGHT:` / `ACTION:` / `FINAL:` markers. Normalize those upfront so
+ * the rest of the parser keeps working — without this we'd silently drop every
+ * `<action>` after the first and the whole blob lands in the THOUGHT body.
+ */
+function normalizeXmlTags(text: string): string {
+  let out = text;
+  out = out.replace(/<\s*thought\s*>\s*/gi, "\nTHOUGHT: ");
+  out = out.replace(/<\s*\/\s*thought\s*>\s*/gi, "\n");
+  out = out.replace(/<\s*action\s*>\s*/gi, "\nACTION: ");
+  out = out.replace(/<\s*\/\s*action\s*>\s*/gi, "\n");
+  out = out.replace(/<\s*final\s*>\s*/gi, "\nFINAL: ");
+  out = out.replace(/<\s*\/\s*final\s*>\s*/gi, "\n");
+  return out;
+}
+
 function extractBlock(text: string, label: string): string | null {
   // Accept both "LABEL:\ncontent" and "LABEL: content" (some models emit either form).
   const re = new RegExp(`(?:^|\\n)${label}:[ \\t]*\\n?([\\s\\S]*?)(?=\\n(?:THOUGHT|ACTION|FINAL):|$)`, "i");
@@ -203,10 +220,11 @@ export function extractAllActions(
   text: string,
 ): Array<{ type: string; input: Record<string, unknown> }> {
   const actions: Array<{ type: string; input: Record<string, unknown> }> = [];
+  const normalized = normalizeXmlTags(text);
   const markerRe = /(?:^|\n)ACTION:\s*/gi;
   let m: RegExpExecArray | null;
-  while ((m = markerRe.exec(text)) !== null) {
-    const afterMarker = text.slice(m.index + m[0].length).trimStart();
+  while ((m = markerRe.exec(normalized)) !== null) {
+    const afterMarker = normalized.slice(m.index + m[0].length).trimStart();
     // Strip optional markdown fence
     const stripped = /^```(?:json)?\s*\n?/.test(afterMarker)
       ? afterMarker.replace(/^```(?:json)?\s*\n?/, "")
@@ -239,7 +257,7 @@ export function extractAllActions(
 }
 
 export function parseAgentResponse(raw: string): AgentStep {
-  const text = raw.replace(/\r\n/g, "\n").trim();
+  const text = normalizeXmlTags(raw.replace(/\r\n/g, "\n")).trim();
   const thought = extractBlock(text, "THOUGHT") ?? "";
 
   // 1. First try strict FINAL tag

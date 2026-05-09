@@ -15,15 +15,19 @@ export function FolderPicker({ initialPath, onClose, onSelect }: Props) {
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualPath, setManualPath] = useState("");
+  const [loading, setLoading] = useState(false);
 
   async function load(p: string) {
     setError(null);
+    setLoading(true);
     try {
       const r = await api.fsBrowse(p, showHidden);
       setData(r);
       setManualPath(r.path);
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -71,12 +75,24 @@ export function FolderPicker({ initialPath, onClose, onSelect }: Props) {
               {i < data.crumbs.length - 1 && <span className="sep">/</span>}
             </span>
           ))}
+          {loading && <span className="explorer-spinner" style={{ marginLeft: "auto" }} aria-label="Loading" />}
         </div>
       )}
 
       {error && <div style={{ color: "var(--bad)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
-      <div className="fp-list">
+      <div className="fp-list" style={{ position: "relative" }}>
+        {!data && loading && (
+          <div className="tree-loading" style={{ padding: 16 }}>
+            <span className="explorer-spinner" aria-hidden />
+            <span>Loading…</span>
+          </div>
+        )}
+        {data && loading && (
+          <div className="fp-loading-overlay" aria-hidden>
+            <span className="explorer-spinner" />
+          </div>
+        )}
         {data?.parent && (
           <div className="fp-row up" onClick={() => load(data.parent!)}>
             <span>↑</span><span>..</span>

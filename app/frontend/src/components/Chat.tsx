@@ -1,4 +1,5 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Steps } from "antd";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
 import { ChatsList } from "./ChatsList";
 import { Markdown } from "./Markdown";
@@ -42,6 +43,7 @@ interface UIEvent extends AgentEvent {
   /** run_command live stream */
   stream?: "stdout" | "stderr";
   text?: string;
+  reasoning?: string;
   thought?: string;
   tool?: string;
   input?: Record<string, unknown>;
@@ -240,28 +242,46 @@ function writePatchAccordionSlug(patchSection: string, fi: number): string {
   return leaf.replace(/\W+/g, "-").slice(0, 56) || `f${fi}`;
 }
 
+/** Content BEFORE THOUGHT: — the raw reasoning trace shown in the streaming box. */
+function streamingReasoningExtract(buf: string): string {
+  const norm = normalizeStreamXmlMarkers(buf);
+  const idx = norm.search(/\bTHOUGHT\s*:/i);
+  if (idx === -1) return norm.trim(); // THOUGHT: not yet appeared — show everything
+  return norm.slice(0, idx).trim();
+}
+
+/** Content AFTER THOUGHT: — shown as plain text log once THOUGHT: appears. */
 function streamingThoughtExtract(buf: string): string {
-  const thoughtMatch = buf.match(/THOUGHT:\s*([\s\S]*?)(?=\n+ACTION:|\n+FINAL:|$)/i);
-  let t = thoughtMatch?.[1]?.trim() || "";
-  if (!t) {
-    t = buf
-      .replace(/\n+ACTION:[\s\S]*$/i, "")
-      .replace(/\n+FINAL:[\s\S]*$/i, "")
-      .replace(/\{[\s\S]*"type"\s*:\s*"[^"]+"/i, "")
-      .trim();
-  }
-  return t;
+  const norm = normalizeStreamXmlMarkers(buf);
+  const m = norm.match(/\bTHOUGHT\s*:\s*([\s\S]*?)(?=\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,20}"type"\s*:|$)/i);
+  if (!m) return "";
+  return m[1]
+    .replace(/\bACTION\s*:[\s\S]*$/i, "")
+    .replace(/\bFINAL\s*:[\s\S]*$/i, "")
+    .trim();
 }
 
 /** Extract the FINAL: body from a streaming buffer so we can render token-by-token
  *  before the `final` SSE event arrives. Tolerates any trailing garbage. */
 function streamingFinalExtract(buf: string): string {
-  const m = buf.match(/(?:^|\n)\s*FINAL:\s*([\s\S]*)$/i);
+  const m = normalizeStreamXmlMarkers(buf).match(/(?:^|\n)\s*FINAL:\s*([\s\S]*)$/i);
   if (!m) return "";
   // Strip a trailing partial THOUGHT/ACTION header if model started another block (rare).
   return m[1]
     .replace(/\n+(THOUGHT|ACTION)\s*:[\s\S]*$/i, "")
     .trimEnd();
+}
+
+/** Mirror of backend `normalizeXmlTags` so XML-emitting models render correctly mid-stream. */
+function normalizeStreamXmlMarkers(buf: string): string {
+  let out = buf;
+  out = out.replace(/<\s*thought\s*>\s*/gi, "\nTHOUGHT: ");
+  out = out.replace(/<\s*\/\s*thought\s*>\s*/gi, "\n");
+  out = out.replace(/<\s*action\s*>\s*/gi, "\nACTION: ");
+  out = out.replace(/<\s*\/\s*action\s*>\s*/gi, "\n");
+  out = out.replace(/<\s*final\s*>\s*/gi, "\nFINAL: ");
+  out = out.replace(/<\s*\/\s*final\s*>\s*/gi, "\n");
+  return out;
 }
 
 function firstObservationAfter(
@@ -328,11 +348,6 @@ function UserMessage({
             ))}
           </div>
         )}
-        {mode && (
-          <div className={`msg-mode-badge mode-${mode}`}>
-        {mode === "ask" ? <><IconMessageSquare size={13} style={{ marginRight: 4 }} />Ask</> : <><IconBot size={13} style={{ marginRight: 4 }} />Agent</>}
-          </div>
-        )}
       </div>
       <div className="msg-actions">
         <button onClick={onCopy} title="Copy"><IconCopy size={13} /></button>
@@ -350,50 +365,15 @@ function isTraceLogLike(e: UIEvent): boolean {
   return false;
 }
 
-/** Renders one compact INF / policy row inside a grouped activity block. */
-function TraceLogRow({ e }: { e: UIEvent }) {
-  if (e.type === "log") {
-    const lvl = e.level === "error" ? "ERR" : e.level === "warn" ? "WRN" : "INF";
-    return (
-      <div className="trace-log-flat agent-log-line">
-        <span className={`trace-log-lvl trace-log-lvl--${e.level || "info"}`}>{lvl}</span>
-        <span>{String(e.message ?? "")}</span>
-      </div>
-    );
-  }
-  if (e.type === "policy_decision") {
-    if (e.decision === "deny") {
-      return (
-        <div className="trace-log-flat trace-log-flat--deny agent-log-line">
-          <span className="trace-log-lvl trace-log-lvl--error">BLK</span>
-          <span>{(e.cmd ?? "").slice(0, 120)}{(e.cmd ?? "").length > 120 ? "…" : ""}</span>
-        </div>
-      );
-    }
-    if (e.decision === "allow_always") {
-      return (
-        <div className="trace-log-flat agent-log-line">
-          <span className="trace-log-lvl trace-log-lvl--ok">OK</span>
-          <span>{(e.cmd ?? "").slice(0, 120)}</span>
-        </div>
-      );
-    }
-  }
-  return null;
+function thoughtCollapsedPreview(raw: string, maxChars = 100): string {
+  const flat = raw
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .replace(/\n+/g, " ")
+    .replace(/\*{1,2}/g, "");
+  if (flat.length <= maxChars) return flat;
+  return `${flat.slice(0, maxChars - 1)}…`;
 }
-
-function TraceLogGroup({ items }: { items: UIEvent[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div className="agent-log-group" role="log" aria-label="Agent activity">
-      {items.map((ev, idx) => (
-        <TraceLogRow key={`${idx}-${ev.type}`} e={ev} />
-      ))}
-    </div>
-  );
-}
-
-
 
 function uiObservationToToolObservation(o?: UIEvent) {
   if (!o || o.type !== "observation") return undefined;
@@ -432,6 +412,95 @@ function toolAccordionAccent(tool?: string): string {
   if (x === "search_code") return "search";
   if (x === "codebase_map") return "map";
   return "generic";
+}
+
+function traceToolStepIcon(tool?: string): ReactNode {
+  const toolName = String(tool || "").toLowerCase();
+  const fileSvg = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M2 1.75C2 .784 2.784 0 3.75 0h5.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 8.75 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z" opacity="0.85" />
+    </svg>
+  );
+  const editSvg = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M13.23 1h-1.46L3.52 9.25l-.16.22L1 13.59 2.41 15l4.12-2.36.22-.16L15 4.23V2.77L13.23 1zM2.41 13.59l1.51-3 1.45 1.45-2.96 1.55zm3.83-2.06L4.47 9.76l8-8 1.77 1.77-8 8z" />
+    </svg>
+  );
+  const termSvg = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M0 2.75C0 1.784.784 1 1.75 1h12.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75zm1.75-.25a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25H1.75zM7.25 8a.75.75 0 0 1-.22.53l-2.25 2.25a.75.75 0 1 1-1.06-1.06L5.44 8 3.72 6.28a.75.75 0 1 1 1.06-1.06l2.25 2.25c.141.14.22.331.22.53zm1.5 1.5a.75.75 0 0 1 0-1.5h3.5a.75.75 0 0 1 0 1.5h-3.5z" />
+    </svg>
+  );
+  const searchSvg = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+    </svg>
+  );
+  const folderSvg = (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M.54 3.87.5 14a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1V4.5a1 1 0 0 0-1-1H6.414l-.914-.914A2 2 0 0 0 4.086 2H1.5a1 1 0 0 0-1 1v.87z" />
+    </svg>
+  );
+  if (toolName === "write_patch" || toolName === "create_file") return editSvg;
+  if (toolName === "run_command") return termSvg;
+  if (toolName === "search_code") return searchSvg;
+  if (toolName === "list_files") return folderSvg;
+  return fileSvg;
+}
+
+function traceThoughtStepIcon(): ReactNode {
+  return <IconBrain size={14} strokeWidth={1.7} aria-hidden />;
+}
+
+/** Wraps consecutive ACTIONs that share the same tool/iteration into a single fold. */
+function ActionGroupFold({
+  tool,
+  count,
+  isActive,
+  children,
+}: {
+  tool: string;
+  count: number;
+  isActive?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(isActive ?? false);
+  useEffect(() => { setOpen(Boolean(isActive)); }, [isActive]);
+  const t = tool.toLowerCase();
+  const meta: { verb: string; noun: string; icon: ReactNode } = (() => {
+    const fileSvg = traceToolStepIcon("read_file");
+    const editSvg = traceToolStepIcon("write_patch");
+    const termSvg = traceToolStepIcon("run_command");
+    const searchSvg = traceToolStepIcon("search_code");
+    const folderSvg = traceToolStepIcon("list_files");
+    if (t === "read_file") return { verb: "Read", noun: count > 1 ? "files" : "file", icon: fileSvg };
+    if (t === "list_files") return { verb: "List", noun: count > 1 ? "directories" : "directory", icon: folderSvg };
+    if (t === "create_file") return { verb: "Create", noun: count > 1 ? "files" : "file", icon: editSvg };
+    if (t === "write_patch") return { verb: "Edit", noun: count > 1 ? "files" : "file", icon: editSvg };
+    if (t === "run_command") return { verb: "Run", noun: count > 1 ? "commands" : "command", icon: termSvg };
+    if (t === "search_code") return { verb: "Search", noun: count > 1 ? "queries" : "query", icon: searchSvg };
+    return { verb: tool, noun: count > 1 ? "calls" : "call", icon: fileSvg };
+  })();
+  return (
+    <details
+      className="assistant-action-group"
+      open={open}
+      onToggle={(ev) => {
+        if (ev.currentTarget !== ev.target) return;
+        setOpen((ev.currentTarget as HTMLDetailsElement).open);
+      }}
+    >
+      <summary className="assistant-action-fold-sum tool-header assistant-action-group-sum">
+        <span className="assistant-action-fold-chev" aria-hidden>
+          <ChevronExpand expanded={open} size={15} />
+        </span>
+        <span className="tool-icon">{meta.icon}</span>
+        <span className="tool-action">{meta.verb}</span>
+        <span className="assistant-action-group-count">{count} {meta.noun}</span>
+      </summary>
+      <div className="assistant-action-group-body">{children}</div>
+    </details>
+  );
 }
 
 function ActionAccordionFold({
@@ -487,7 +556,11 @@ function ActionAccordionFold({
     <details
       className={`assistant-action-fold assistant-action-accent--${accent}`}
       open={foldOpen}
-      onToggle={(e) => setFoldOpen((e.target as HTMLDetailsElement).open)}
+      onToggle={(ev) => {
+        ev.stopPropagation();
+        if (ev.currentTarget !== ev.target) return;
+        setFoldOpen((ev.currentTarget as HTMLDetailsElement).open);
+      }}
     >
       <summary className="assistant-action-fold-sum tool-header">
         <span className="assistant-action-fold-chev" aria-hidden>
@@ -520,40 +593,43 @@ function LiveThoughtStreamFold({
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const autoOpenedRef = useRef(false);
-  /** Default collapsed until first reasoning text lands (respects Cursor-style skim). */
-  const [open, setOpen] = useState(false);
-  /** Once ACTIONS begin we tuck this fold away — summary must not resemble an active stream (dots + ticking timer). */
+  // While streaming, never go blank: if markdown momentarily empties (e.g. at the
+  // THOUGHT: keyword boundary before thought text arrives) keep the last non-empty value.
+  // useMemo over a render-time mutation so the ref is reset whenever the parent stops
+  // streaming (otherwise stale text could leak across turns sharing the same component instance).
+  const lastNonEmptyRef = useRef("");
+  if (markdown.trim()) lastNonEmptyRef.current = markdown;
+  else if (!isStreamingAssistant) lastNonEmptyRef.current = "";
+  const displayMarkdown = markdown.trim()
+    ? markdown
+    : isStreamingAssistant
+      ? lastNonEmptyRef.current
+      : markdown;
+  const [open, setOpen] = useState(() => Boolean(isStreamingAssistant && !collapseWhenToolsVisible && displayMarkdown.trim()));
   const streamingChrome = Boolean(isStreamingAssistant && !collapseWhenToolsVisible);
   useEffect(() => {
-    if (collapseWhenToolsVisible) {
-      setOpen(false);
-      return;
-    }
-    if (!streamingChrome || !markdown.trim()) return;
+    if (collapseWhenToolsVisible) { setOpen(false); return; }
+    if (!streamingChrome || !displayMarkdown.trim()) return;
     if (autoOpenedRef.current) return;
     autoOpenedRef.current = true;
     setOpen(true);
-  }, [collapseWhenToolsVisible, streamingChrome, markdown]);
+  }, [collapseWhenToolsVisible, streamingChrome, displayMarkdown]);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [markdown, open]);
+  }, [displayMarkdown, open]);
 
-  const elapsed =
-    streamingChrome && startedAt ? formatDuration(Date.now() - startedAt) : null;
-  const hasMd = markdown.trim().length > 0;
+  const elapsed = streamingChrome && startedAt ? formatDuration(Date.now() - startedAt) : null;
+  const hasMd = displayMarkdown.trim().length > 0;
 
-  const summaryPrimary =
-    !streamingChrome
-      ? "Thought"
-      : hasMd && elapsed
-        ? `Thinking · ${elapsed}`
-        : hasMd
-          ? "Thinking…"
-          : elapsed
-            ? `Analyzing · ${elapsed}`
-            : "Analyzing…";
+  if (!hasMd && collapseWhenToolsVisible) return null;
+
+  const summaryPrimary = !streamingChrome
+    ? "Thinking"
+    : hasMd && elapsed
+      ? `Thinking · ${elapsed}`
+      : hasMd ? "Thinking…" : elapsed ? `Analyzing · ${elapsed}` : "Analyzing…";
 
   return (
     <details
@@ -574,7 +650,7 @@ function LiveThoughtStreamFold({
       <div ref={scrollRef} className="assistant-stream-thought-scroll assistant-thought-content">
         {hasMd ? (
           <div className="assistant-stream-thought-md">
-            <Markdown>{markdown}</Markdown>
+            <Markdown>{displayMarkdown}</Markdown>
           </div>
         ) : (
           <div className="assistant-stream-thought-placeholder">Analyzing…</div>
@@ -586,11 +662,30 @@ function LiveThoughtStreamFold({
 
 function ThoughtStepArchive({ e }: { e: UIEvent }) {
   const body = (e.thought || "").trim();
+  return <ThoughtLog body={body} />;
+}
+
+function ThoughtLog({ body }: { body: string }) {
+  body = body.trim();
   if (!body) return null;
+  const [open, setOpen] = useState(true);
   return (
-    <div className="thought-step-inline trace-md">
-      <Markdown>{body}</Markdown>
-    </div>
+    <details
+      className="thought-step-archive-plain"
+      open={open}
+      onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="thought-step-archive-row">
+        <IconBrain size={13} strokeWidth={1.6} className="thought-step-archive-rowicon" aria-hidden />
+        <span className="thought-step-archive-label">Thought</span>
+        <span className="assistant-action-fold-chev thought-log-chev" aria-hidden>
+          <ChevronExpand expanded={open} size={13} />
+        </span>
+      </summary>
+      <div className="thought-step-archive-body">
+        <Markdown>{body}</Markdown>
+      </div>
+    </details>
   );
 }
 
@@ -623,6 +718,19 @@ function TraceStep({
   streamingActionOrdinal?: number;
   suppressWritePatchObservationFollowup?: boolean;
 }) {
+  if (e.type === "reasoning") {
+    const body = String(e.reasoning ?? "").trim();
+    if (!body) return null;
+    return (
+      <LiveThoughtStreamFold
+        isStreamingAssistant={false}
+        markdown={body}
+        startedAt={undefined}
+        collapseWhenToolsVisible={false}
+      />
+    );
+  }
+
   if (e.type === "thought") {
     if (!e.thought?.trim()) return null;
     return <ThoughtStepArchive e={e} />;
@@ -670,11 +778,11 @@ function TraceStep({
   }
 
   if (e.type === "log") {
-    return <TraceLogRow e={e} />;
+    return null;
   }
 
   if (e.type === "policy_decision") {
-    return <TraceLogRow e={e} />;
+    return null;
   }
 
   if (e.type === "observation") {
@@ -704,6 +812,8 @@ function AssistantMessage({
   onRetry,
   canRegenerate,
   onRestore,
+  settledReasoningMap,
+  settledThoughtMap,
 }: {
   turn: ChatTurn;
   isStreaming: boolean;
@@ -716,6 +826,10 @@ function AssistantMessage({
   onRetry: () => void;
   canRegenerate: boolean;
   onRestore: (cp: Checkpoint) => void;
+  /** Reasoning trace tokens saved per iteration before THOUGHT:. */
+  settledReasoningMap?: Map<number, string>;
+  /** THOUGHT: tokens saved per iteration when the parsed event has not rendered before ACTION. */
+  settledThoughtMap?: Map<number, string>;
 }) {
   const events = turn.events as UIEvent[];
   const finalEv = [...events].reverse().find((e) => e.type === "final");
@@ -727,6 +841,7 @@ function AssistantMessage({
     .filter(
       (e) =>
         e.type === "thought" ||
+        e.type === "reasoning" ||
         e.type === "action" ||
         e.type === "observation" ||
         e.type === "command_chunk" ||
@@ -738,7 +853,25 @@ function AssistantMessage({
   .sort((a, b) => {
     const ta = (a as UIEvent).ts ?? 0;
     const tb = (b as UIEvent).ts ?? 0;
-    // Only sort when both have timestamps; otherwise preserve insertion order.
+    const ia = Number((a as UIEvent).iteration) || 1;
+    const ib = Number((b as UIEvent).iteration) || 1;
+    // Different iterations: sort by timestamp when both are available.
+    if (ia !== ib) {
+      if (!ta || !tb) return 0;
+      return ta - tb;
+    }
+    // Same iteration: thought always before action/observation, regardless of timestamp
+    // (backend emits action mid-stream, thought only after parse — timestamps are reversed).
+    const typeRank = (e: { type: string }): number => {
+      if (e.type === "reasoning") return 0;
+      if (e.type === "thought") return 1;
+      if (e.type === "action") return 2;
+      if (e.type === "observation") return 3;
+      return 2;
+    };
+    const ra = typeRank(a as UIEvent);
+    const rb = typeRank(b as UIEvent);
+    if (ra !== rb) return ra - rb;
     if (!ta || !tb) return 0;
     return ta - tb;
   });
@@ -767,6 +900,11 @@ function AssistantMessage({
   const duration = turn.endedAt && turn.startedAt ? formatDuration(turn.endedAt - turn.startedAt) : null;
   const streamingThoughtMarkdown = useMemo(
     () => (isStreaming && streamingText.trim() ? streamingThoughtExtract(streamingText) : ""),
+    [isStreaming, streamingText],
+  );
+  // Reasoning trace = text BEFORE THOUGHT: — shown in the live streaming box
+  const streamingReasoningMarkdown = useMemo(
+    () => (isStreaming && streamingText.trim() ? streamingReasoningExtract(streamingText) : ""),
     [isStreaming, streamingText],
   );
 
@@ -815,8 +953,26 @@ function AssistantMessage({
       <div className="agent-log-container agent-log-timeline">
       {(() => {
         const rendered: React.ReactNode[] = [];
+        const groupKeys: (string | undefined)[] = [];
+        const iterKeys: (number | undefined)[] = [];
+        const pendingGroupKeys = new Set<string>();
+        const stepIcons: React.ReactNode[] = [];
+        const pushNode = (node: React.ReactNode, groupKey?: string, iterKey?: number, stepIcon?: React.ReactNode): void => {
+          rendered.push(node);
+          groupKeys.push(groupKey);
+          iterKeys.push(iterKey);
+          stepIcons.push(stepIcon ?? null);
+        };
         const skipIndices = new Set<number>();
         let liveFoldInjected = false;
+
+        const thoughtIndexByIter = new Map<number, number>();
+        traceSteps.forEach((step, idx) => {
+          if (step.type !== "thought") return;
+          if (!(step.thought ?? "").trim()) return;
+          const iter = Number(step.iteration) || 1;
+          if (!thoughtIndexByIter.has(iter)) thoughtIndexByIter.set(iter, idx);
+        });
 
         const wantLiveThoughtPanel =
           turnMode === "agent" &&
@@ -836,31 +992,71 @@ function AssistantMessage({
         function pushLiveThoughtIfNeeded(marker: string) {
           void marker;
           if (liveFoldInjected || !wantLiveThoughtPanel) return;
-          rendered.push(
+          // Once THOUGHT: appears in the stream, show the thought tokens (they keep arriving live).
+          // Before THOUGHT: appears, reasoning text is the only thing available — show that.
+          // streamingReasoningMarkdown stays non-empty after THOUGHT: (it's the text BEFORE THOUGHT:),
+          // so a simple `reasoning || thought` fallback would never switch — must prefer thought when present.
+          const liveMarkdown = streamingThoughtMarkdown.trim()
+            ? streamingThoughtMarkdown
+            : streamingReasoningMarkdown;
+          pushNode(
             <LiveThoughtStreamFold
               key={`live-th-${turn.id}-${streamThoughtIter}`}
               isStreamingAssistant={Boolean(isStreaming)}
-              markdown={streamingThoughtMarkdown}
+              markdown={liveMarkdown}
               startedAt={turn.startedAt}
               collapseWhenToolsVisible={thoughtCollapseForTools}
             />,
+            undefined,
+            streamThoughtIter,
+            traceThoughtStepIcon(),
           );
           liveFoldInjected = true;
         }
+
+        /** Iterations for which we've already rendered THOUGHT text. */
+        const thoughtInjected = new Set<number>();
+        /** Iterations for which we've already rendered the Reasoning Trace box. */
+        const reasoningInjected = new Set<number>();
 
         traceSteps.forEach((e, i) => {
           if (skipIndices.has(i)) return;
           if (e.type === "command_chunk") return;
 
           if (e.type === "thought") {
-            rendered.push(
+            const thoughtIter = Number((e as UIEvent).iteration) || 1;
+            if (thoughtInjected.has(thoughtIter)) return;
+            thoughtInjected.add(thoughtIter);
+            pushNode(
               <TraceStep
-                key={`th-${Number((e as UIEvent).iteration) || 1}-${i}`}
+                key={`th-${thoughtIter}-${i}`}
                 e={e as UIEvent}
                 allEvents={events as UIEvent[]}
                 streamingPartial={streamingText}
                 isStreamingTurn={isStreaming}
               />,
+              undefined,
+              thoughtIter,
+              traceThoughtStepIcon(),
+            );
+            return;
+          }
+
+          if (e.type === "reasoning") {
+            const reasoningIter = Number((e as UIEvent).iteration) || 1;
+            if (reasoningInjected.has(reasoningIter)) return;
+            reasoningInjected.add(reasoningIter);
+            pushNode(
+              <TraceStep
+                key={`reasoning-${reasoningIter}-${i}`}
+                e={e as UIEvent}
+                allEvents={events as UIEvent[]}
+                streamingPartial={streamingText}
+                isStreamingTurn={isStreaming}
+              />,
+              undefined,
+              reasoningIter,
+              traceThoughtStepIcon(),
             );
             return;
           }
@@ -869,8 +1065,68 @@ function AssistantMessage({
             const ev = e as UIEvent;
             const streamOrd = streamedActionOrdinalAtStep(traceSteps as UIEvent[], i);
             const actIter = Number(ev.iteration) || 1;
+            if (!reasoningInjected.has(actIter) && settledReasoningMap?.has(actIter)) {
+              const savedReasoning = settledReasoningMap.get(actIter)!;
+              if (savedReasoning.trim()) {
+                reasoningInjected.add(actIter);
+                pushNode(
+                  <LiveThoughtStreamFold
+                    key={`settled-reasoning-${turn.id}-${actIter}`}
+                    isStreamingAssistant={false}
+                    markdown={savedReasoning}
+                    startedAt={undefined}
+                    collapseWhenToolsVisible={false}
+                  />,
+                  undefined,
+                  actIter,
+                  traceThoughtStepIcon(),
+                );
+              }
+            }
+
             if (!liveFoldInjected && actIter === streamThoughtIter) {
-              pushLiveThoughtIfNeeded("before_action");
+              const hasThoughtText =
+                thoughtIndexByIter.has(actIter) ||
+                Boolean(settledThoughtMap?.get(actIter)) ||
+                Boolean(streamingThoughtMarkdown.trim());
+              const hasReasoning = Boolean(streamingReasoningMarkdown.trim());
+              if (hasReasoning || !hasThoughtText) {
+                // Show the live fold: either reasoning to display, or thought not yet available.
+                pushLiveThoughtIfNeeded("before_action");
+              } else {
+                // Thought text is ready but no reasoning — ThoughtLog below handles display;
+                // suppress the empty collapsed "Thinking" box.
+                liveFoldInjected = true;
+              }
+              if (streamingReasoningMarkdown.trim()) reasoningInjected.add(actIter);
+            }
+
+            if (!thoughtInjected.has(actIter)) {
+              const thoughtIdx = thoughtIndexByIter.get(actIter);
+              if (thoughtIdx != null) {
+                thoughtInjected.add(actIter);
+                skipIndices.add(thoughtIdx);
+                pushNode(
+                  <TraceStep
+                    key={`th-before-action-${actIter}-${thoughtIdx}`}
+                    e={traceSteps[thoughtIdx] as UIEvent}
+                    allEvents={events as UIEvent[]}
+                    streamingPartial={streamingText}
+                    isStreamingTurn={isStreaming}
+                  />,
+                  undefined,
+                  actIter,
+                  traceThoughtStepIcon(),
+                );
+              } else {
+                const savedThought = settledThoughtMap?.get(actIter);
+                const liveThought = actIter === streamThoughtIter ? streamingThoughtMarkdown : "";
+                const thoughtText = (savedThought || liveThought).trim();
+                if (thoughtText) {
+                  thoughtInjected.add(actIter);
+                  pushNode(<ThoughtLog key={`thought-log-${turn.id}-${actIter}`} body={thoughtText} />, undefined, actIter, traceThoughtStepIcon());
+                }
+              }
             }
 
             let j = i + 1;
@@ -926,8 +1182,12 @@ function AssistantMessage({
                 />
               );
 
+            const groupKey = `${(ev.tool || "tool").toLowerCase()}#${actIter}`;
+            if (!paired && isStreaming) pendingGroupKeys.add(groupKey);
+
             if (!patchSlices) {
-              rendered.push(
+              pushNode(
+                (
                 <ActionAccordionFold
                   key={`acc-act-${actIter}-${i}-${ev.tool ?? "tool"}`}
                   ev={ev}
@@ -939,7 +1199,11 @@ function AssistantMessage({
                   priorWriteCollapsedBySuccessor={collapsePriorBecauseSuccessor}
                 >
                   {renderBodySingle()}
-                </ActionAccordionFold>,
+                </ActionAccordionFold>
+                ),
+                groupKey,
+                actIter,
+                traceToolStepIcon(ev.tool),
               );
             } else {
               patchSlices.forEach((slice, fi) => {
@@ -977,7 +1241,8 @@ function AssistantMessage({
                   />
                 );
 
-                rendered.push(
+                pushNode(
+                  (
                   <ActionAccordionFold
                     key={`acc-act-${actIter}-${i}-wp-${fi}-${slug}`}
                     ev={sliceEv}
@@ -990,7 +1255,11 @@ function AssistantMessage({
                     writePatchHeaderPreview={peekWritePatchSectionNth(streamingText, streamOrd, fi) ?? slice}
                   >
                     {body}
-                  </ActionAccordionFold>,
+                  </ActionAccordionFold>
+                  ),
+                  groupKey,
+                  actIter,
+                  traceToolStepIcon(ev.tool),
                 );
               });
             }
@@ -1001,22 +1270,10 @@ function AssistantMessage({
 
           const ev = e as UIEvent;
           if (isTraceLogLike(ev)) {
-            if (i > 0 && isTraceLogLike(traceSteps[i - 1] as UIEvent)) return;
-            const group: UIEvent[] = [];
-            let j = i;
-            while (j < traceSteps.length && !skipIndices.has(j)) {
-              const x = traceSteps[j] as UIEvent;
-              if (!isTraceLogLike(x)) break;
-              group.push(x);
-              j++;
-            }
-            if (group.length > 0) {
-              rendered.push(<TraceLogGroup key={`loggrp-${i}`} items={group} />);
-            }
             return;
           }
 
-          rendered.push(
+          pushNode(
             <TraceStep
               key={`misc-${i}`}
               e={ev}
@@ -1024,15 +1281,38 @@ function AssistantMessage({
               streamingPartial={streamingText}
               isStreamingTurn={isStreaming}
             />,
+            undefined,
+            Number(ev.iteration) || undefined,
+            ev.type === "thought" || ev.type === "reasoning" ? traceThoughtStepIcon() : undefined,
           );
         });
 
+        let activeGroupKey: string | undefined;
         if (streamPeekAction) {
           const peekIt = Number(streamPeekAction.iteration) || 1;
           /** Synthetic peek row aligns with buffered ACTION blobs not yet flushed as SSE `action` events. */
           const peekStreamOrd = streamedActionCountForIteration(traceSteps as UIEvent[], peekIt);
           if (!liveFoldInjected && peekIt === streamThoughtIter) {
-            pushLiveThoughtIfNeeded("before_peek");
+            const hasThoughtText =
+              thoughtIndexByIter.has(peekIt) ||
+              Boolean(settledThoughtMap?.get(peekIt)) ||
+              Boolean(streamingThoughtMarkdown.trim());
+            const hasReasoning = Boolean(streamingReasoningMarkdown.trim());
+            if (hasReasoning || !hasThoughtText) {
+              pushLiveThoughtIfNeeded("before_peek");
+            } else {
+              // Suppress empty fold but show live thought text as ThoughtLog inline.
+              liveFoldInjected = true;
+              if (!thoughtInjected.has(peekIt) && streamingThoughtMarkdown.trim()) {
+                thoughtInjected.add(peekIt);
+                pushNode(
+                  <ThoughtLog key={`live-thought-peek-${turn.id}-${peekIt}`} body={streamingThoughtMarkdown} />,
+                  undefined,
+                  peekIt,
+                  traceThoughtStepIcon(),
+                );
+              }
+            }
           }
           const peekInRaw = streamPeekAction.input ?? {};
           const basePeekInp =
@@ -1046,8 +1326,11 @@ function AssistantMessage({
             if (ps.length > 1) peekSlices = ps;
           }
 
+          const peekGroupKey = `${(streamPeekAction.tool || "tool").toLowerCase()}#${peekIt}`;
+          activeGroupKey = peekGroupKey;
           const pushPeekSingle = (): void => {
-            rendered.push(
+            pushNode(
+              (
               <ActionAccordionFold
                 key={`acc-peek-${streamPeekAction.iteration}-${streamPeekAction.tool}-${String(streamPeekAction.input?.path ?? "patch")}`}
                 ev={streamPeekAction}
@@ -1066,7 +1349,11 @@ function AssistantMessage({
                   streamingActionOrdinal={peekStreamOrd}
                   suppressToolHeader
                 />
-              </ActionAccordionFold>,
+              </ActionAccordionFold>
+              ),
+              peekGroupKey,
+              peekIt,
+              traceToolStepIcon(streamPeekAction.tool),
             );
           };
 
@@ -1079,7 +1366,8 @@ function AssistantMessage({
                 ...streamPeekAction,
                 input: { ...basePeekInp, patches: slice },
               } as UIEvent;
-              rendered.push(
+              pushNode(
+                (
                 <ActionAccordionFold
                   key={`acc-peek-${streamPeekAction.iteration}-wp-${fi}-${slug}`}
                   ev={sliceEv}
@@ -1101,7 +1389,11 @@ function AssistantMessage({
                     suppressToolHeader
                     suppressWritePatchObservationFollowup={fi !== 0}
                   />
-                </ActionAccordionFold>,
+                </ActionAccordionFold>
+                ),
+                peekGroupKey,
+                peekIt,
+                traceToolStepIcon(streamPeekAction.tool),
               );
             });
           }
@@ -1111,7 +1403,56 @@ function AssistantMessage({
           pushLiveThoughtIfNeeded("eof_tail");
         }
 
-        return rendered;
+        const finalRendered: React.ReactNode[] = [];
+        const finalIterKeys: (number | undefined)[] = [];
+        const finalStepIcons: React.ReactNode[] = [];
+        for (let p = 0; p < rendered.length; ) {
+          const k = groupKeys[p];
+          if (!k) { finalRendered.push(rendered[p]); finalIterKeys.push(iterKeys[p]); finalStepIcons.push(stepIcons[p]); p++; continue; }
+          let q = p + 1;
+          while (q < rendered.length && groupKeys[q] === k) q++;
+          const len = q - p;
+          const iter = iterKeys[p];
+          const tool = k.split("#")[0] ?? "tool";
+          finalRendered.push(
+            <ActionGroupFold key={`grp-${k}-${p}`} tool={tool} count={len} isActive={isStreaming && (k === activeGroupKey || pendingGroupKeys.has(k))}>  
+              {rendered.slice(p, q)}
+            </ActionGroupFold>,
+          );
+          finalIterKeys.push(iter);
+          finalStepIcons.push(traceToolStepIcon(tool));
+          p = q;
+        }
+        const groupedByIteration: React.ReactNode[] = [];
+        for (let p = 0; p < finalRendered.length; ) {
+          const iter = finalIterKeys[p];
+          if (iter == null) { groupedByIteration.push(finalRendered[p]); p++; continue; }
+          let q = p + 1;
+          while (q < finalRendered.length && finalIterKeys[q] === iter) q++;
+          const items = finalRendered.slice(p, q);
+          if (items.length === 1) {
+            groupedByIteration.push(items[0]);
+          } else {
+            groupedByIteration.push(
+              <div key={`trace-iter-${turn.id}-${iter}-${p}`} className="trace-iteration-group">
+                <Steps
+                  className="trace-iteration-steps"
+                  direction="vertical"
+                  size="small"
+                  current={items.length - 1}
+                  items={items.map((item, idx) => ({
+                    key: `${iter}-${idx}`,
+                    icon: <span className="trace-step-ant-icon">{finalStepIcons[p + idx] ?? null}</span>,
+                    title: null,
+                    description: <div className="trace-iteration-step">{item}</div>,
+                  }))}
+                />
+              </div>,
+            );
+          }
+          p = q;
+        }
+        return groupedByIteration;
       })()}
       </div>
     </div>
@@ -1140,10 +1481,6 @@ function AssistantMessage({
             </div>
             <div className="msg-error-body">{errorText}</div>
           </div>
-        )}
-
-        {turn.status === "stopped" && !displayedFinalText && (
-          <div className="msg-stopped"><IconSquareFill size={10} />Stopped by user</div>
         )}
 
         {!isStreaming && (finalText || errorText || turn.status === "stopped") && (
@@ -1251,6 +1588,11 @@ export function Chat({
   /** True after Stop/Esc until the run finishes cleanup (SSE close + abort acknowledged). */
   const [awaitingStop, setAwaitingStop] = useState(false);
   const [thinking, setThinking] = useState<{ iteration: number; partial: string } | null>(null);
+  const thinkingRef = useRef<{ iteration: number; partial: string } | null>(null);
+  /** Reasoning Trace content saved per iteration when iter_start resets the live buffer. */
+  const [settledReasoning, setSettledReasoning] = useState<Map<string, Map<number, string>>>(new Map());
+  /** THOUGHT content saved per iteration independently from Reasoning Trace. */
+  const [settledThoughts, setSettledThoughts] = useState<Map<string, Map<number, string>>>(new Map());
   /** Sticky-tail state for "↓ Latest" affordance — ref is authoritative to avoid stale effect reads while streaming replays batches. */
   const [autoScroll, setAutoScroll] = useState(true);
   /** Whether the chat log actually has scrollable overflow — pill only renders when true to avoid the "fake Latest" affordance on short logs. */
@@ -1302,10 +1644,13 @@ export function Chat({
     if (!add) return;
     tokenPendingRef.current = "";
     const it = tokenIterRef.current;
-    setThinking((cur) => ({
+    const cur = thinkingRef.current;
+    const next = {
       iteration: it ?? cur?.iteration ?? 1,
       partial: (cur?.partial ?? "") + add,
-    }));
+    };
+    thinkingRef.current = next;
+    setThinking(next);
   }, []);
 
   const scheduleTokenRaf = useCallback(() => {
@@ -1327,10 +1672,13 @@ export function Chat({
     if (!add) return;
     tokenPendingRef.current = "";
     const it = tokenIterRef.current;
-    setThinking((cur) => ({
+    const cur = thinkingRef.current;
+    const next = {
       iteration: it ?? cur?.iteration ?? 1,
       partial: (cur?.partial ?? "") + add,
-    }));
+    };
+    thinkingRef.current = next;
+    setThinking(next);
   }, [cancelTokenRaf]);
 
   // ---- Reconnect to running backend session after F5/reload ----
@@ -1347,23 +1695,89 @@ export function Chat({
 
     flushPendingTokensNow();
 
+    const appendTurnEvent = (event: UIEvent, uniqueKey?: (x: UIEvent) => boolean): void => {
+      const stamped: UIEvent = event.ts ? event : { ...event, ts: Date.now() };
+      patchSession((s) => {
+        const turns = s.turns.slice();
+        const idx = turns.findIndex((x) => x.id === turnId);
+        if (idx === -1) return s;
+        const existing = turns[idx].events as UIEvent[];
+        if (uniqueKey && existing.some(uniqueKey)) return s;
+        turns[idx] = { ...turns[idx], events: [...existing, stamped] };
+        return { ...s, turns, updatedAt: Date.now() };
+      });
+    };
+
+    const persistReasoningFromBuffer = (iteration: number, partial: string): void => {
+      const reasoning = streamingReasoningExtract(partial).trim();
+      if (!reasoning) return;
+      setSettledReasoning((m) => {
+        const next = new Map(m);
+        const byIter = new Map(next.get(turnId) ?? []);
+        if (!byIter.has(iteration)) {
+          byIter.set(iteration, reasoning);
+          next.set(turnId, byIter);
+        }
+        return next;
+      });
+      appendTurnEvent(
+        { type: "reasoning", iteration, reasoning } as UIEvent,
+        (x) => x.type === "reasoning" && Number(x.iteration) === iteration,
+      );
+    };
+
+    const persistThoughtFromBuffer = (iteration: number, partial: string): void => {
+      const thought = streamingThoughtExtract(partial).trim();
+      if (!thought) return;
+      setSettledThoughts((m) => {
+        const next = new Map(m);
+        const byIter = new Map(next.get(turnId) ?? []);
+        if (!byIter.has(iteration)) {
+          byIter.set(iteration, thought);
+          next.set(turnId, byIter);
+        }
+        return next;
+      });
+      appendTurnEvent(
+        { type: "thought", iteration, thought } as UIEvent,
+        (x) => x.type === "thought" && Number(x.iteration) === iteration,
+      );
+    };
+
     // Parsed THOUGHT lands after token stream for this iteration ends; wipe the duplicate
     // live buffer so the archived row replaces the expandable stream panel.
     if (ev.type === "thought") {
-      setThinking((cur) => {
-        if (!cur) return cur;
+      const cur = thinkingRef.current;
+      if (cur) {
         const ti = ev.iteration ?? cur.iteration;
-        if (cur.iteration !== ti) return cur;
-        return { iteration: cur.iteration, partial: "" };
-      });
+        if (cur.iteration === ti) persistReasoningFromBuffer(ti, cur.partial);
+        const next = { iteration: cur.iteration, partial: "" };
+        thinkingRef.current = next;
+        setThinking(next);
+      }
     }
 
     if (ev.type === "iter_start") {
+      // Save current thinking partial before reset — if no THOUGHT: event was emitted for
+      // this iteration, the tokens would be lost otherwise.
+      const cur = thinkingRef.current;
+      if (cur && cur.partial.trim()) {
+        persistReasoningFromBuffer(cur.iteration, cur.partial);
+        persistThoughtFromBuffer(cur.iteration, cur.partial);
+      }
+      const next = { iteration: ev.iteration ?? 1, partial: "" };
+      thinkingRef.current = next;
+      setThinking(next);
       tokenIterRef.current = ev.iteration ?? 1;
-      setThinking({ iteration: ev.iteration ?? 1, partial: "" });
       return;
     }
     if (ev.type === "final" || ev.type === "error" || ev.type === "aborted") {
+      const cur = thinkingRef.current;
+      if (cur?.partial.trim()) {
+        persistReasoningFromBuffer(cur.iteration, cur.partial);
+        persistThoughtFromBuffer(cur.iteration, cur.partial);
+      }
+      thinkingRef.current = null;
       setThinking(null);
     }
     if (ev.type === "policy_ask" && ev.askId && ev.cmd) {
@@ -1376,15 +1790,11 @@ export function Chat({
     }
     if (ev.type === "done" || ev.type === "run_started") return;
 
-    const stamped: UIEvent = ev.ts ? ev : { ...ev, ts: Date.now() };
     startTransition(() => {
-      patchSession((s) => {
-        const turns = s.turns.slice();
-        const idx = turns.findIndex((x) => x.id === turnId);
-        if (idx === -1) return s;
-        turns[idx] = { ...turns[idx], events: [...turns[idx].events, stamped] };
-        return { ...s, turns, updatedAt: Date.now() };
-      });
+      appendTurnEvent(
+        ev,
+        ev.type === "thought" ? (x) => x.type === "thought" && Number(x.iteration) === Number(ev.iteration ?? 1) : undefined,
+      );
       if (ev.type === "observation" && ev.diffs && ev.diffs.length) onDiffs(ev.diffs);
     });
   }, [onDiffs, flushPendingTokensNow, scheduleTokenRaf]);
@@ -1447,6 +1857,7 @@ export function Chat({
             });
             setRunning(false);
             setAwaitingStop(false);
+            thinkingRef.current = null;
             setThinking(null);
             if (workspace) {
               try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
@@ -1470,6 +1881,7 @@ export function Chat({
           });
           setRunning(false);
           setAwaitingStop(false);
+          thinkingRef.current = null;
           setThinking(null);
           if (workspace) {
             try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
@@ -1565,6 +1977,7 @@ export function Chat({
           
           setRunning(false);
           setAwaitingStop(false);
+          thinkingRef.current = null;
           setThinking(null);
           if (workspace) {
             try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
@@ -1685,14 +2098,16 @@ export function Chat({
             setAutoScroll(true);
           }
         } else {
-          // Sentinel out of view. Distinguish two causes:
-          //  - We are still in stick mode but new content just pushed it down
-          //    by 1 frame → snap back, do NOT mark as user break.
-          //  - We are not in stick mode (user scrolled up) → mark as broken
-          //    so the pill appears.
-          if (stickToBottomRef.current) {
+          // Sentinel out of view. Distinguish three causes:
+          //  - Streaming token just pushed it down by 1 frame → snap back.
+          //  - User toggled a step (expand/collapse) and stick was on but no
+          //    stream is active → keep position; don't yank them away from
+          //    the section they just opened.
+          //  - User scrolled up → mark as broken so the pill appears.
+          const isStreamingNow = thinkingRef.current != null;
+          if (stickToBottomRef.current && isStreamingNow) {
             snapToBottom();
-          } else if (!userBrokeStickRef.current) {
+          } else if (!userBrokeStickRef.current && !stickToBottomRef.current) {
             userBrokeStickRef.current = true;
             setAutoScroll(false);
           }
@@ -1701,11 +2116,13 @@ export function Chat({
       { root, threshold: 0, rootMargin: "0px 0px 32px 0px" },
     );
     io.observe(sentinel);
-    // Also keep ResizeObserver to refresh hasOverflow when content height changes.
+    // Refresh hasOverflow when content height changes. Do NOT auto-snap on every
+    // resize — toggling a step (expand/collapse) fires ResizeObserver and would
+    // yank the user's view to the bottom, making it impossible to read above.
+    // The streaming useLayoutEffect handles tail-following during token streams.
     const ro = new ResizeObserver(() => {
       const overflow = root.scrollHeight > root.clientHeight + 4;
       setHasOverflow((prev) => (prev === overflow ? prev : overflow));
-      if (stickToBottomRef.current) snapToBottom();
     });
     ro.observe(root);
     for (const child of Array.from(root.children)) ro.observe(child);
@@ -1798,7 +2215,8 @@ export function Chat({
     setAutoScroll(true);
     setAwaitingStop(false);
     stoppedRef.current = false;
-    setThinking({ iteration: 1, partial: "" });
+    thinkingRef.current = { iteration: 1, partial: "" };
+    setThinking(thinkingRef.current);
 
     try {
       // Start a background session - agent continues even if browser disconnects
@@ -1871,6 +2289,7 @@ export function Chat({
     } finally {
       setRunning(false);
       setAwaitingStop(false);
+      thinkingRef.current = null;
       setThinking(null);
       ctrlRef.current = null;
       // Clear stored session ID
@@ -2246,6 +2665,8 @@ export function Chat({
                 onRetry={() => regenerate(turn)}
                 canRegenerate={!running && isLast}
                 onRestore={restoreToCheckpoint}
+                settledReasoningMap={settledReasoning.get(turn.id)}
+                settledThoughtMap={settledThoughts.get(turn.id)}
               />
             </div>
           );

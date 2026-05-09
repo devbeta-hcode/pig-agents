@@ -180,31 +180,27 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onRevealInTe
         collectExpanded(rootRef.current);
       }
 
-      // Recursively load a directory and its expanded children
+      // Recursively load a directory and its expanded children. Children are
+      // fetched concurrently with `Promise.all` so a workspace with many
+      // expanded folders doesn't N+1-await its way through the tree.
       async function loadDir(dirPath: string): Promise<Node[]> {
         const r = await api.listFiles(dirPath);
-        const nodes: Node[] = [];
-        for (const it of r.items) {
-          const wasExpanded = expandedPaths.has(it.path);
-          let children: Node[] | undefined;
-          let loaded = !it.isDir;
-          if (it.isDir && wasExpanded) {
-            // Reload children of previously expanded folders
-            try {
-              children = await loadDir(it.path);
-              loaded = true;
-            } catch {
-              // If subfolder load fails, just mark as not loaded
-              loaded = false;
+        const nodes: Node[] = await Promise.all(
+          r.items.map(async (it) => {
+            const wasExpanded = expandedPaths.has(it.path);
+            let children: Node[] | undefined;
+            let loaded = !it.isDir;
+            if (it.isDir && wasExpanded) {
+              try {
+                children = await loadDir(it.path);
+                loaded = true;
+              } catch {
+                loaded = false;
+              }
             }
-          }
-          nodes.push({
-            ...it,
-            expanded: wasExpanded,
-            loaded,
-            children,
-          });
-        }
+            return { ...it, expanded: wasExpanded, loaded, children };
+          }),
+        );
         return nodes;
       }
 
@@ -659,7 +655,7 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onRevealInTe
       <div className="sidebar-header">
         <span>Explorer</span>
         <div className="sidebar-actions">
-          {operating && <span className="explorer-spinner" title="Working…" />}
+          {(operating || (busy && root.length > 0)) && <span className="explorer-spinner" title="Working…" />}
           <button title="New file (root)" onClick={() => void startNew("file", "")} disabled={operating}>＋</button>
           <button title="New folder (root)" onClick={() => void startNew("dir", "")} disabled={operating}><IconFolderOpen size={13} /></button>
           <button title="Refresh" onClick={load} disabled={busy || operating}><IconRefreshCw size={13} /></button>

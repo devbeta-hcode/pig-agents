@@ -155,7 +155,7 @@ function resolveUnifiedDiffOpts(opts: MakeUnifiedDiffOpts): { context: number; m
  * Pass `{ markCreatedFromAbsent: true }` when the patch created a file that
  * did not exist (so revert can remove the path instead of leaving an empty file).
  */
-function makeUnifiedDiff(filePath: string, before: string, after: string, opts: MakeUnifiedDiffOpts = 3): string {
+export function makeUnifiedDiff(filePath: string, before: string, after: string, opts: MakeUnifiedDiffOpts = 3): string {
   const { context, markCreatedFromAbsent } = resolveUnifiedDiffOpts(opts);
   if (before === after) return "";
 

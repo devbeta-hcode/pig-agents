@@ -117,6 +117,26 @@ export interface AgentRunResult {
  * phrasings count, so single-file requests like "fix this bug" or
  * "write a sort function in foo.py" don't get harassed by the guardrail.
  */
+/**
+ * True when the model's own FINAL response is asking the user questions or
+ * presenting options that need confirmation before proceeding.
+ * Used to skip all nudge guards so the agent doesn't override a legitimate
+ * consultation response and keep running autonomously.
+ */
+function finalContainsConsultation(result: string): boolean {
+  const r = result.trim();
+  const questionCount = (r.match(/\?/g) || []).length;
+  // Two or more question marks = clearly asking the user something.
+  if (questionCount >= 2) return true;
+  // Numbered list of items + at least one "?" — classic "here are my questions" format.
+  if (/^\s*\d+\./m.test(r) && questionCount >= 1) return true;
+  // Vietnamese explicit consultation signals.
+  if (/(xác\s*nhận|bạn\s+muốn|bạn\s+có\s+muốn|bạn\s+chọn|câu\s+hỏi|tôi\s+cần\s+biết|hỏi\s+bạn|cần\s+bạn\s+xác\s*nhận)/i.test(r)) return true;
+  // English confirmation/selection prompts.
+  if (/(please\s+(confirm|clarify|choose|select)|let\s+me\s+know\s+(which|if|whether)|which\s+(option|approach)\s+do\s+you|do\s+you\s+want\s+me\s+to)/i.test(r)) return true;
+  return false;
+}
+
 function looksLikeScaffoldTask(task: string): boolean {
   const t = task.toLowerCase();
   const verbs =
@@ -608,6 +628,16 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // Reset parse error counter on successful parse
     consecutiveParseErrors = 0;
 
+    // THOUGHT guard: if model emitted ACTION without THOUGHT, note it so we can
+    // append a nudge to the observation message for the next iteration. We do NOT
+    // cancel the early-scheduled tools or skip the observation — that would lose
+    // real tool results and leave the UI stuck on "reading…" forever.
+    const missingThought =
+      !step.thought.trim() && (step.kind === "action" || step.kind === "multi_action");
+    if (missingThought) {
+      emit({ type: "log", level: "warn", message: "Missing THOUGHT — nudging model to include reasoning in next turn." });
+    }
+
     if (step.thought) emit({ type: "thought", iteration: i, thought: step.thought });
 
     // Write tools finish on disk as soon as each ACTION JSON closes, but the model may
@@ -634,6 +664,24 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     }
 
     if (step.kind === "final") {
+      // If the model's FINAL is itself a consultation — asking the user questions /
+      // presenting options that need confirmation — accept it immediately without
+      // fighting it with premature / lazy / scaffold nudges.
+      if (finalContainsConsultation(step.result)) {
+        finalResult = sanitizeFinalOrKeep(step.result);
+        if (!iterationObservationEmitted && earlyScheduled.size > 0) {
+          const list = [...earlyScheduled.values()];
+          const allOk = list.every((e) => e.outcome?.ok !== false);
+          const summary = list.length === 1
+            ? list[0].outcome!.summary
+            : list.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
+          const ds = list.flatMap((e) => e.outcome?.diffs ?? []);
+          emit({ type: "observation", iteration: i, ok: allOk, summary, diffs: ds });
+        }
+        emit({ type: "final", result: finalResult });
+        return { result: finalResult, iterations: i, diffs, events, checkpoint: preRunCheckpoint ?? undefined };
+      }
+
       // Owner asked for a plan / discussion before work — accept FINAL without
       // tools on iteration 1 (do not fight with premature / lazy / scaffold nudges).
       if (
@@ -808,7 +856,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     }
 
     history.push({ role: "assistant", content: raw });
-    history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}` });
+    const thoughtNudge = missingThought
+      ? "\n\n⚠️ FORMAT: Your previous response was missing the required THOUGHT: block. " +
+        "Every response MUST start with THOUGHT: (1–6 sentences of reasoning) before ACTION: or FINAL:."
+      : "";
+    history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}${thoughtNudge}` });
 
     // No-progress nudge: if we've done 6+ iterations without writing anything, remind the agent
     if (!didWrite && i >= 6 && i % 3 === 0) {

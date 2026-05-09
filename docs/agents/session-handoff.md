@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-10
+Last updated: 2026-05-09
 
 ---
 
@@ -127,6 +127,18 @@ The dev server URLs:
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
 
+### Last session (2026-05-09) — chat trace separation invariant
+
+- `app/frontend/src/components/Chat.tsx`: chat trace rendering now treats the agent stream as three independent parts, always ordered as **Thinking** (collapsible box from text before `THOUGHT:`), **THOUGHT** (plain text log from text after `THOUGHT:`), then **ACTION** (tool rows). Added separate settled stores/props for reasoning and THOUGHT so ACTION rows no longer steal or reorder the thinking/thought content when SSE events arrive late.
+- Follow-up fix: `Thinking` is now persisted into chat turns as a synthetic `reasoning` event and `AgentEvent` includes the `reasoning` type, so reload/F5 can restore the pre-`THOUGHT:` box instead of losing it. `AssistantMessage` sorts each iteration with a hard rank: `reasoning -> thought -> action -> observation`, then groups same-iteration rows into `.trace-iteration-group` / `.trace-iteration-step` wrappers.
+- Follow-up UI correction: the first box must be labeled **Thinking** (not “Reasoning Trace”). Timeline connectors are tree-style branches around the same iteration (Thinking/THOUGHT/ACTION), not one continuous `.agent-log-container` rail; grouped action rows use one group-level vertical trunk plus per-row L branches, so expanding one file row does not break the connector line.
+- Correction after user feedback: ACTION owns its own group. `AssistantMessage` now wraps every ACTION run in `ActionGroupFold` (including single-item actions), and the rows/files/commands for that ACTION live inside that group instead of floating directly at the iteration level. The outer iteration connector is disabled around `.assistant-action-group` so the action header is not shifted by an extra timeline gutter.
+- `app/frontend/src/styles/overrides.css`: chat trace disclosure icons are intentionally right-aligned (`order: 10; margin-left: auto`) for Thinking, ACTION groups/items, trace rows, and inline tool diffs so the left side stays reserved for the timeline rail + row content.
+- `app/frontend/src/styles/chat.css`: inner ACTION group rows no longer draw the left vertical connector. Nested tool rows use `padding-left: 20px` (with no `margin-left`) so the child item starts under the parent ACTION header text column instead of the removed rail gutter.
+- `app/frontend/src/components/Chat.tsx`: nested ACTION item `<details>` must not close/open the parent ACTION group; `onToggle` handlers now ignore bubbled toggle events, and item folds stop propagation.
+- `app/frontend/src/components/Chat.tsx`: loose flat trace logs such as `INF Project rules...` are skipped entirely; chat trace should show Thinking/Thought/ACTION/Observation content, not standalone `TraceLogGroup` rows.
+- `app/frontend/src/components/Chat.tsx` + `app/frontend/src/styles/chat.css`: grouped top-level trace rows now use Ant Design `Steps` (`direction="vertical"`, `size="small"`) for the connector instead of custom `.trace-iteration-step::before/::after` rails. Each step must pass a trace-specific `icon` (Brain/File/Edit/Terminal/Search) so antd does not render the default check icon; CSS hides duplicate row icons inside `Steps` and keeps the existing trace row content as the description.
+
 ### Last session (2026-05-08) — chat log CSS + runtime bugs
 
 - **Chat log UI redesigned to Copilot-style** (`styles.css` + `Chat.tsx`).
@@ -138,6 +150,17 @@ The dev server URLs:
   - Log groups: rounded pill border instead of flat bottom border.
   - `msg-actions-bottom`: opacity 0 → 1 on hover, icon-only with no border; "Restore" label shortened.
   - `trace-reasoning-summary`: removed legacy CSS triangle pseudo-element (ChevronExpand already handles this).
+
+### Last session (2026-05-11) — chat trace: inline THOUGHT + grouped ACTIONs
+
+- `app/frontend/src/components/Chat.tsx`:
+  - `ThoughtStepArchive` rewritten to render the THOUGHT body as plain inline markdown (`.thought-step-inline`) instead of a collapsible "Step N" box. The pre-THOUGHT live thinking stream (`LiveThoughtStreamFold`) is unchanged.
+  - Removed unused `thoughtCollapsedPreview`.
+  - Render loop in `AssistantMessage` now tracks per-node `groupKeys`; consecutive items pushed with the same key (`${tool}#${iter}` for ACTIONs incl. write_patch slices and the streaming peek) are wrapped in a new `ActionGroupFold` (collapsible accordion with tool name + count badge). Single ACTIONs stay standalone.
+  - `streamingThoughtExtract` / `streamingFinalExtract` now run buffer through `normalizeStreamXmlMarkers` so live previews work for XML-emitting models.
+- `app/frontend/src/styles.css`: Added `.assistant-action-group{,-sum,-tool,-badge,-body}` and styled `.thought-step-inline` (subtle accent-rail quote, slightly muted, smaller line-height).
+- `app/backend/src/agent/parser.ts`: New `normalizeXmlTags` converts `<thought>…</thought>`, `<action>{…}</action>`, `<final>…</final>` to canonical `THOUGHT:` / `ACTION:` / `FINAL:` markers before extraction. Without it, models like DeepSeek emit XML and only the first ACTION (via fallback) was parsed — the rest leaked into THOUGHT body and rendered as raw text. Applied in both `parseAgentResponse` and `extractAllActions`.
+- `app/frontend/src/lib/streamingToolPeek.ts`: Mirror of the same normalization so streaming peek/marker counters work for XML output.
 
 ### Last session (2026-05-10)
 

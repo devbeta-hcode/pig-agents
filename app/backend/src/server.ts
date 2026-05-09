@@ -66,6 +66,9 @@ if (fs.existsSync(publicDir)) {
 
 const PORT = Number(process.env.PORT || 8787);
 const server = http.createServer(app);
+// Don't let stale keep-alives outlive the process during dev reloads.
+server.keepAliveTimeout = 1000;
+server.headersTimeout = 2000;
 
 // ---------------------------------------------------------------------------
 // Filesystem watcher: a single recursive fs.watch on the active workspace,
@@ -177,6 +180,84 @@ wss.on("connection", async (ws, req) => {
   });
 });
 
-server.listen(PORT, () => {
-  logger.info(`backend listening on http://localhost:${PORT}`);
+function startListening(): void {
+  server.listen(PORT, () => {
+    logger.info(`backend listening on http://localhost:${PORT}`);
+  });
+}
+
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    // Most common cause: tsx watch reloaded before the previous process let
+    // go of the port (long-lived SSE / WS keep the socket alive). Retry a
+    // few times with exponential-ish backoff before giving up so the dev
+    // loop heals itself instead of forcing a manual `kill`.
+    const tries = (server as unknown as { _baTries?: number })._baTries ?? 0;
+    if (tries < 8) {
+      (server as unknown as { _baTries?: number })._baTries = tries + 1;
+      const delay = 150 + tries * 150;
+      logger.warn(`Port ${PORT} busy, retry ${tries + 1}/8 in ${delay}ms…`);
+      setTimeout(() => {
+        try { server.close(); } catch { /* noop */ }
+        server.listen(PORT);
+      }, delay);
+      return;
+    }
+    logger.error(
+      `Port ${PORT} still in use after retries. ` +
+      `Run: lsof -ti:${PORT} | xargs -r kill -9`,
+    );
+    process.exit(1);
+  }
+  throw err;
 });
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown — SIGTERM is what `tsx watch` sends when it restarts on
+// file change. Without this, persistent SSE responses and WS connections
+// keep the HTTP server alive past tsx's grace window, the new process tries
+// to listen() before the kernel releases the port, and we hit EADDRINUSE.
+// We close the listener, terminate every WS, destroy keep-alive sockets,
+// and force-exit after a short timeout if anything is still hanging.
+// ---------------------------------------------------------------------------
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals | "uncaught") {
+  if (shuttingDown) {
+    // Second signal: hard exit immediately.
+    process.exit(0);
+  }
+  shuttingDown = true;
+  logger.info(`Received ${signal}, shutting down...`);
+
+  for (const w of [fsWss, wss, browserWss]) {
+    for (const client of w.clients) {
+      try { client.terminate(); } catch { /* noop */ }
+    }
+    try { w.close(); } catch { /* noop */ }
+  }
+
+  // Node 18.2+: actively kill every open HTTP socket (SSE, keep-alive, …)
+  // so server.close() resolves instead of waiting for clients to disconnect.
+  try { server.closeAllConnections?.(); } catch { /* noop */ }
+
+  server.close(() => {
+    logger.info("backend closed cleanly");
+    process.exit(0);
+  });
+
+  // Belt-and-suspenders: tsx watch's grace window before SIGKILL is short,
+  // and we'd rather force-exit than miss it and hit EADDRINUSE on the next
+  // reload.
+  setTimeout(() => {
+    logger.warn("forced shutdown after 500ms");
+    process.exit(0);
+  }, 500).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+// tsx watch sends SIGUSR2 in some setups (nodemon-style restart).
+process.on("SIGUSR2", () => shutdown("SIGUSR2" as NodeJS.Signals));
+process.on("SIGHUP", () => shutdown("SIGHUP"));
+
+startListening();

@@ -1,0 +1,457 @@
+/* ===== diff viewer (Cursor-style: compact list with header actions) ====== */
+.diff-viewer {
+  width: 100%; max-height: 220px; overflow: auto;
+  font-family: var(--font-ui); font-size: 12px;
+  background: var(--bg-2);
+  border-top: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column;
+}
+.diff-empty { color: var(--fg-dim); padding: 28px; text-align: center; font-size: 11.5px; }
+
+.diff-viewer-head {
+  display: flex; align-items: center;
+  padding: 8px 12px;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-2);
+  position: sticky; top: 0; z-index: 3;
+  /* Prevent scrolled content bleeding through the sticky header */
+  isolation: isolate;
+}
+.diff-viewer-head .changes-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; color: var(--fg);
+  border: none; cursor: pointer;
+  font-size: 12px; font-weight: 500;
+  padding: 4px 6px; border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+.diff-viewer-head .changes-toggle:hover { background: var(--bg-3); }
+.diff-viewer-head .changes-toggle .chev {
+  width: 18px;
+  height: 18px;
+  color: var(--fg-dim);
+}
+.diff-viewer-head .changes-toggle:hover .chev { color: var(--fg); }
+.diff-viewer-head .spacer { flex: 1; }
+.diff-viewer-head .head-btn {
+  background: transparent; color: var(--fg-dim);
+  border: none; cursor: pointer;
+  font-size: 11.5px; padding: 4px 10px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  transition: all var(--transition-fast);
+}
+.diff-viewer-head .head-btn:hover:not(:disabled) {
+  color: var(--fg); background: var(--bg-3);
+}
+.diff-viewer-head .head-btn.primary {
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.diff-viewer-head .head-btn.primary:hover:not(:disabled) {
+  background: var(--accent); color: white; border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+.diff-viewer-head .head-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.diff-rows { display: flex; flex-direction: column; padding: 4px 0; }
+
+/* Collapsible file list — same accordion pattern as chat trace */
+.diff-rows-shell {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.4s var(--ease-out-expo);
+}
+.diff-viewer--expanded .diff-rows-shell {
+  grid-template-rows: 1fr;
+}
+.diff-rows-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+.diff-viewer-head .changes-toggle .chev.chevron-expand {
+  transition: transform 0.4s var(--ease-out-expo), color 0.12s ease;
+}
+
+.diff-row {
+  display: flex; align-items: center;
+  width: 100%; gap: 10px;
+  background: transparent; border: none;
+  padding: 6px 12px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit; color: var(--fg);
+  border-left: 2px solid transparent;
+  position: relative;
+  transition: all var(--transition-fast);
+}
+.diff-row:hover { background: var(--bg-3); }
+.diff-row:hover { border-left-color: var(--accent); }
+.diff-row.reverted { opacity: 0.55; }
+.diff-row.reverted .file-name { text-decoration: line-through; }
+
+.diff-row .file-icon {
+  color: var(--fg-dim); font-size: 13px; line-height: 1;
+  width: 16px; height: 16px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.diff-row .file-name {
+  color: var(--fg); font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; min-width: 0;
+}
+.diff-row .diff-stats {
+  display: inline-flex; gap: 6px;
+  font-family: var(--font-mono); font-size: 11px;
+  flex-shrink: 0;
+}
+.diff-row .diff-stats .add { color: var(--good); }
+.diff-row .diff-stats .del { color: var(--bad); }
+.diff-row .reverted-tag {
+  color: var(--fg-dim); font-size: 10px;
+  font-style: italic;
+  background: var(--bg-3); padding: 2px 8px; border-radius: var(--radius-lg);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+/* Per-row action cluster — hover-revealed ✕ / ✓ pair, mirroring the
+   global Undo All / Keep All buttons but scoped to one file. Layout: the
+   stats column collapses just enough to make room without reflowing the
+   filename. */
+.diff-row .row-actions {
+  display: inline-flex; align-items: center; gap: 4px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.diff-row:hover .row-actions,
+.diff-row:focus-within .row-actions { opacity: 1; }
+
+.diff-row .row-act {
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1;
+  color: var(--fg-dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+.diff-row .row-act:hover { background: var(--bg-3); color: var(--fg); }
+.diff-row .row-act:active { background: var(--bg-4); }
+
+.diff-row .row-reject:hover {
+  color: var(--bad);
+  background: rgba(248, 113, 113, 0.15);
+}
+.diff-row .row-accept:hover {
+  color: var(--good);
+  background: rgba(52, 211, 153, 0.15);
+}
+
+/* ===== Inline diff in the regular editor ================================= */
+.pending-diff-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px;
+  background: linear-gradient(0deg, rgba(74,158,255,0.06), rgba(74,158,255,0.10));
+  border-bottom: 1px solid rgba(74,158,255,0.25);
+  flex-shrink: 0;
+  font-size: 11.5px;
+}
+.pending-diff-bar .pdb-tag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--accent-2);
+  background: rgba(74,158,255,0.15);
+  border: 1px solid rgba(74,158,255,0.35);
+  border-radius: 3px; padding: 1px 6px;
+}
+.pending-diff-bar .pdb-msg { color: var(--fg); }
+.pending-diff-bar .pdb-stats {
+  display: inline-flex; gap: 6px;
+  font-family: var(--font-mono); font-size: 11px;
+}
+.pending-diff-bar .pdb-stats .add { color: var(--good); }
+.pending-diff-bar .pdb-stats .del { color: var(--bad); }
+.pending-diff-bar .spacer { flex: 1; }
+.pending-diff-bar .pdb-btn {
+  background: transparent; color: var(--fg-dim);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 2px 9px; font-size: 11px; cursor: pointer;
+  font-family: var(--font-ui);
+}
+.pending-diff-bar .pdb-btn:hover {
+  color: var(--fg); background: var(--bg-3); border-color: var(--accent-2);
+}
+.pending-diff-bar .pdb-btn.warn:hover {
+  color: var(--bad); border-color: rgba(244,135,113,0.6);
+  background: rgba(244,135,113,0.10);
+}
+
+/* Monaco line/gutter decorations applied via deltaDecorations */
+.monaco-editor .ba-line-added {
+  background: rgba(152,195,121,0.16) !important;
+}
+.monaco-editor .ba-margin-added,
+.monaco-editor .ba-gutter-added {
+  background: var(--good) !important;
+  width: 3px !important;
+}
+
+/* Per-hunk Keep / Undo action widget anchored above each changed region.
+   Rendered as a Monaco content widget; pointer events are enabled so the
+   user can click without losing editor focus. */
+.monaco-editor .ba-hunk-actions {
+  display: inline-flex; gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 3px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  z-index: 10;
+}
+.monaco-editor .ba-hunk-actions .bha-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+}
+.monaco-editor .ba-hunk-actions .bha-btn .bha-icon {
+  font-size: 11px; opacity: 0.85;
+}
+.monaco-editor .ba-hunk-actions .bha-keep:hover {
+  color: var(--good);
+  background: rgba(152,195,121,0.10);
+  border-color: rgba(152,195,121,0.45);
+}
+.monaco-editor .ba-hunk-actions .bha-undo:hover {
+  color: var(--bad);
+  background: rgba(244,135,113,0.10);
+  border-color: rgba(244,135,113,0.45);
+}
+
+/* Per-hunk Stage/Discard/Unstage toolbar shown on git diffs (DiffEditorView).
+   Same visual language as .ba-hunk-actions above, just wider so there's room
+   for a hunk-number label. */
+.monaco-editor .bha-git-widget {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px 2px 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  z-index: 10;
+}
+
+/* When the toolbar is injected as a Monaco VIEW ZONE (a strip that scrolls
+   with the editor), it is a full-width band. Render an inline toolbar pill
+   on the left so it reads like a section header above the hunk. */
+.monaco-editor .bha-git-zone {
+  display: flex; align-items: center;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 4px 0 4px 8px;
+  pointer-events: auto;
+  width: 100%;
+  height: 100%;
+}
+.monaco-editor .bha-git-zone > :first-child,
+.monaco-editor .bha-git-zone > * {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+.monaco-editor .bha-git-zone > .bha-hunk-label {
+  background: transparent;
+  border: none;
+  padding-right: 8px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--fg-dim);
+  opacity: 0.75;
+}
+.monaco-editor .bha-git-zone > .bha-btn {
+  margin-right: 4px;
+}
+.monaco-editor .bha-git-widget .bha-hunk-label {
+  color: var(--fg-dim); opacity: 0.7;
+  padding-right: 4px; margin-right: 2px;
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+.monaco-editor .bha-git-widget .bha-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+}
+.monaco-editor .bha-git-widget .bha-btn .bha-icon {
+  font-size: 11px; opacity: 0.85;
+}
+.monaco-editor .bha-git-widget .bha-btn[disabled] {
+  opacity: 0.45; cursor: progress;
+}
+.monaco-editor .bha-git-widget .bha-primary:hover {
+  color: var(--good);
+  background: rgba(152,195,121,0.10);
+  border-color: rgba(152,195,121,0.45);
+}
+.monaco-editor .bha-git-widget .bha-warn:hover {
+  color: var(--bad);
+  background: rgba(244,135,113,0.10);
+  border-color: rgba(244,135,113,0.45);
+}
+.monaco-editor .bha-git-widget .bha-neutral:hover {
+  color: var(--accent, #61afef);
+  background: rgba(97,175,239,0.10);
+  border-color: rgba(97,175,239,0.45);
+}
+
+/* Context badge in the diff header so the user knows which side of git
+   they're looking at (worktree vs index). */
+.diff-editor-ctx {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 2px;
+  text-transform: uppercase;
+}
+.diff-editor-ctx.ctx-unstaged {
+  color: #e5c07b;
+  background: rgba(229,192,123,0.12);
+  border: 1px solid rgba(229,192,123,0.35);
+}
+.diff-editor-ctx.ctx-staged {
+  color: #98c379;
+  background: rgba(152,195,121,0.12);
+  border: 1px solid rgba(152,195,121,0.35);
+}
+
+/* Removed-line view zones rendered inline as red strips */
+.monaco-editor .ba-removed-zone {
+  background: rgba(244,135,113,0.10);
+  border-left: 3px solid var(--bad);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+  overflow: hidden;
+  color: rgba(244,135,113,0.95);
+}
+.monaco-editor .ba-removed-line {
+  padding: 0 12px;
+  text-decoration: line-through;
+  text-decoration-color: rgba(244,135,113,0.6);
+}
+
+/* ===== Diff editor view (side-by-side, Cursor-style) ====================== */
+.diff-editor-view {
+  display: flex; flex-direction: column;
+  width: 100%; height: 100%; min-height: 0;
+  background: var(--bg);
+}
+.diff-editor-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.diff-editor-head .diff-editor-tag {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--accent-2);
+  background: rgba(74,158,255,0.12);
+  border: 1px solid rgba(74,158,255,0.3);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.diff-editor-head .diff-editor-path {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+}
+.diff-editor-head .diff-editor-stats {
+  display: inline-flex; gap: 6px;
+  font-family: var(--font-mono); font-size: 11px;
+  flex-shrink: 0;
+}
+.diff-editor-head .diff-editor-stats .add { color: var(--good); }
+.diff-editor-head .diff-editor-stats .del { color: var(--bad); }
+.diff-editor-head .diff-editor-reverted {
+  font-size: 10.5px; color: var(--fg-dim);
+  background: var(--bg-3); padding: 1px 6px; border-radius: 3px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.diff-editor-head .spacer { flex: 1; }
+.diff-editor-head .dev-btn {
+  background: transparent; color: var(--fg-dim);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 2px 9px; font-size: 11px; cursor: pointer;
+  font-family: var(--font-ui);
+}
+.diff-editor-head .dev-btn:hover {
+  color: var(--fg); background: var(--bg-3); border-color: var(--accent-2);
+}
+.diff-editor-head .dev-btn.warn:hover {
+  color: var(--bad); border-color: rgba(244,135,113,0.6);
+  background: rgba(244,135,113,0.08);
+}
+.diff-editor-body {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.diff-editor-fallback {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.diff-editor-fallback-msg {
+  padding: 6px 10px; font-size: 11.5px; color: var(--warn);
+  background: rgba(229,192,123,0.08); border-bottom: 1px solid var(--border);
+}
+
+/* Diff tab tag in the editor tab strip */
+.editor-tab.is-diff {
+  border-left: 2px solid var(--accent-2);
+}
+.editor-tab .tab-tag {
+  font-size: 9px; font-weight: 700;
+  color: var(--accent-2); background: rgba(74,158,255,0.15);
+  padding: 1px 4px; border-radius: 2px;
+  letter-spacing: 0.5px;
+}
+
+.diff-lines {
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  max-height: 320px; overflow: auto;
+  padding: 4px 0;
+}
+.diff-line { white-space: pre; padding: 0 10px; line-height: 1.5; }
+.diff-line.add { background: rgba(78, 201, 176, 0.12); color: var(--good); }
+.diff-line.del { background: rgba(244, 135, 113, 0.12); color: var(--bad); }
+.diff-line.ctx { color: var(--fg-dim); }
+.diff-line.meta { color: var(--fg-dim); opacity: 0.55; }
+.diff-line.hunk { background: var(--bg-3); color: var(--fg-dim); }
+

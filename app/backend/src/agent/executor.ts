@@ -1,6 +1,6 @@
 import { listFiles, readFile, writeFile, searchCode, buildCodebaseMapSummary, globFiles } from "../tools/file.js";
 import { runSmartCommand } from "../tools/smartCommand.js";
-import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, type PatchResult } from "../tools/patch.js";
+import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, makeUnifiedDiff, type PatchResult } from "../tools/patch.js";
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
 import { startAgentCommand } from "./commandLog.js";
 import { getWorkspace } from "../utils/workspace.js";
@@ -328,9 +328,18 @@ export async function executeTool(
         const p = String(input.path || "");
         const content = String(input.content ?? "");
         if (!p) return { ok: false, summary: "create_file: missing 'path'" };
+        // Capture pre-state so DiffViewer can render a row + revert can restore it.
+        // Treat unreadable / non-existent as an empty file (mark the patch as a
+        // create-from-absent so revert will delete the path instead of leaving
+        // an empty stub on disk).
+        let before = "";
+        let createdFromAbsent = false;
+        try { before = await readFile(p); } catch { createdFromAbsent = true; }
         await writeFile(p, content);
         ctx.readCache?.delete(p);
-        return { ok: true, summary: `Created ${p} (${content.length} chars)` };
+        const diff = makeUnifiedDiff(p, before, content, { markCreatedFromAbsent: createdFromAbsent });
+        const diffs = diff ? [diff] : [];
+        return { ok: true, summary: `Created ${p} (${content.length} chars)`, diffs };
       }
       case "glob": {
         const pattern = String(input.pattern || "");

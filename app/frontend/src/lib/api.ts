@@ -47,6 +47,7 @@ export interface AgentEvent {
     | "log"
     | "iter_start"
     | "token"
+    | "reasoning"
     | "thought"
     | "tool_payload_streaming"
     | "tool_disk_settled"
