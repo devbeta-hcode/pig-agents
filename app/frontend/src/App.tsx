@@ -23,6 +23,7 @@ import { api, getSessionWorkspace, setSessionWorkspace, type SettingsPayload, ty
 import { newSession, type ChatSession } from "./lib/sessions";
 import { pushRecent } from "./lib/recents";
 import { useFsWatcher } from "./lib/useFsWatcher";
+import { useVisibleInterval } from "./lib/useVisibleInterval";
 import { revertTargetFileMissing } from "./lib/diffErrors";
 import { diffPathFromUnified, mergeUnifiedDiffs, normalizeDiffPath } from "./lib/diffMerge";
 
@@ -240,22 +241,25 @@ export default function App() {
     }
   }, [settingsOpen]);
 
-  // Background poll of git status so the activity-bar Source Control badge
-  // stays roughly in sync (every 10s) without keeping the GitPanel mounted.
-  // GitPanel itself uses a faster cadence while it's visible.
-  useEffect(() => {
-    if (!workspace) { setGitChangeCount(0); return; }
-    let cancelled = false;
-    async function tick() {
-      try {
-        const s = await api.gitStatus();
-        if (cancelled) return;
+  // Background heartbeat for the activity-bar Source Control badge so it stays
+  // roughly in sync without keeping GitPanel mounted. The FS watcher already
+  // bumps `refreshKey` on disk activity — this 10s tick only catches things
+  // the watcher can't see (e.g. a `git commit` that doesn't touch the worktree).
+  // Visibility-gated so background tabs don't pile up requests.
+  useVisibleInterval(
+    () => {
+      if (!workspace) return;
+      void api.gitStatus().then((s) => {
         setGitChangeCount(s.ok && s.files ? s.files.length : 0);
-      } catch { /* offline or not a repo — leave count untouched */ }
-    }
-    void tick();
-    const id = window.setInterval(tick, 10000);
-    return () => { cancelled = true; window.clearInterval(id); };
+      }).catch(() => { /* offline / not a repo */ });
+    },
+    10000,
+    !!workspace,
+    true,
+  );
+
+  useEffect(() => {
+    if (!workspace) setGitChangeCount(0);
   }, [workspace, refreshKey]);
 
   // Live filesystem watch: bump `refreshKey` whenever the workspace tree
@@ -1179,9 +1183,22 @@ export default function App() {
                   modelLabel={settings?.MODEL || undefined}
                   llmSettings={settings}
                   onModelChange={async (model) => {
-                    await api.saveSettings({ MODEL: model });
-                    const fresh = await api.getSettings();
-                    setSettings(fresh);
+                    // Optimistic: paint the new label instantly so the menu
+                    // (which closes synchronously after this call) doesn't
+                    // hang for the duration of two network roundtrips. If the
+                    // server rejects we'll just re-paint with whatever it
+                    // returns; the worst case is a brief flicker, which is
+                    // far better than the UI freezing on every model switch.
+                    setSettings((cur) => (cur ? { ...cur, MODEL: model } : cur));
+                    try {
+                      await api.saveSettings({ MODEL: model });
+                      const fresh = await api.getSettings();
+                      setSettings(fresh);
+                    } catch (err) {
+                      // Re-fetch to recover the truth from the server.
+                      try { setSettings(await api.getSettings()); } catch { /* noop */ }
+                      console.warn("[App] saveSettings(MODEL) failed:", err);
+                    }
                   }}
                   onOpenSettings={() => setSettingsOpen(true)}
                   onNewChat={newChat}

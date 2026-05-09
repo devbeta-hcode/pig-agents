@@ -306,6 +306,39 @@ a:hover { text-decoration: underline; }
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
+/* Overlay shown over Monaco while a freshly-opened file is being read.
+ * Sits on top of the editor surface so the user never stares at an empty
+ * frame; semi-transparent so already-cached content (when present) stays
+ * visible underneath while we refresh. */
+.editor-loading-overlay {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px;
+  background: rgba(15, 15, 18, 0.55);
+  color: var(--text-muted, #9aa0a6);
+  font-size: 12px;
+  pointer-events: none;
+  z-index: 5;
+  backdrop-filter: blur(1px);
+}
+.editor-loading-overlay .editor-loading-text { letter-spacing: 0.2px; }
+/* Placeholder shown in place of Monaco while a freshly-opened file is still
+ * being read. Mounting Monaco with an empty value first caused a visible
+ * "blank file" flash; the placeholder eliminates that. */
+.editor-loading-placeholder {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px;
+  background: var(--editor-bg, #1e1e1e);
+  color: var(--text-muted, #9aa0a6);
+  font-size: 12px;
+  user-select: none;
+}
+.editor-loading-placeholder .editor-loading-text {
+  letter-spacing: 0.2px;
+  max-width: 60%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tree {
   flex: 1; overflow: auto; padding: 4px 0 16px;
   user-select: none;

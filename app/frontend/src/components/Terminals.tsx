@@ -89,17 +89,20 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
   }, []);
 
   // ---- live agent-command feed ---------------------------------------------
-  // SSE can stall (sleep, proxy, connection limits). Poll + focus refresh keep
-  // the sidebar in sync without requiring F5.
+  // SSE can stall (sleep, proxy, connection limits). A polite poll keeps the
+  // sidebar in sync without requiring F5. Slowed from 4s\u219210s and gated on
+  // visibility/focus so background tabs don't spam the API.
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       api.listAgentCommands()
         .then((r) => { if (!cancelled) setAgents(r.runs); })
         .catch(() => { /* noop */ });
     };
     refresh();
-    const poll = window.setInterval(refresh, 4000);
+    const poll = window.setInterval(refresh, 10000);
     const onBecameVisible = () => {
       if (document.visibilityState === "visible") refresh();
     };

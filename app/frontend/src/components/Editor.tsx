@@ -109,13 +109,30 @@ function langFor(path: string): string {
   return LANG_BY_EXT[ext] ?? "plaintext";
 }
 
+/**
+ * Tiny module-scoped cache of file contents keyed by absolute path. Lets us
+ * paint reopened files instantly instead of flashing an empty Monaco frame
+ * while `api.readFile` is in flight. Invalidated by `reloadKey` bumps and
+ * by successful saves.
+ */
+const fileContentCache = new Map<string, string>();
+export function invalidateEditorCache(path?: string): void {
+  if (path) fileContentCache.delete(path);
+  else fileContentCache.clear();
+}
+
 export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEditor(
   { path, gotoLine, onSaved, onDirtyChange, pendingDiff, pendingDiffId, reloadKey },
   ref,
 ) {
-  const [content, setContent] = useState<string>("");
-  const [original, setOriginal] = useState<string>("");
+  // Seed from cache so reopening a file paints instantly. The fetch below
+  // still runs to refresh content, but the user never sees the empty frame
+  // that used to flash for ~1s while readFile was in flight.
+  const cachedInitial = fileContentCache.get(path) ?? "";
+  const [content, setContent] = useState<string>(cachedInitial);
+  const [original, setOriginal] = useState<string>(cachedInitial);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(!fileContentCache.has(path));
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const decorationsRef = useRef<string[]>([]);
@@ -137,9 +154,34 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    // Hydrate synchronously from cache when switching files so we never show
+    // an empty Monaco for a file we've already loaded once. The network read
+    // still runs (so external edits are picked up).
+    const cached = fileContentCache.get(path);
+    if (cached !== undefined) {
+      setContent(cached);
+      setOriginal(cached);
+      setLoading(false);
+    } else {
+      // No cache yet for this path — clear stale state from the previous
+      // file and show the loading overlay instead of a misleading empty doc.
+      setContent("");
+      setOriginal("");
+      setLoading(true);
+    }
     api.readFile(path)
-      .then((r) => { if (!cancelled) { setContent(r.content); setOriginal(r.content); } })
-      .catch((err) => { if (!cancelled) setError((err as Error).message); });
+      .then((r) => {
+        if (cancelled) return;
+        fileContentCache.set(path, r.content);
+        setContent(r.content);
+        setOriginal(r.content);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError((err as Error).message);
+        setLoading(false);
+      });
     return () => { cancelled = true; };
   }, [path, reloadKey]);
 
@@ -161,6 +203,7 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
     try {
       const snapshot = contentRef.current;
       await api.writeFile(path, snapshot);
+      fileContentCache.set(path, snapshot);
       setOriginal(snapshot);
       onSavedRef.current?.();
     } catch (err) {
@@ -398,22 +441,35 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
 
   if (error) return <div className="editor-empty">Error: {error}</div>;
 
+  // Only mount Monaco once we actually have the file's contents (from cache
+  // or completed fetch). Mounting it earlier with an empty `value` causes a
+  // visible "blank file" flash before the real text shows up — Monaco paints
+  // the empty model immediately, then re-paints when `value` updates.
   return (
-    <Editor
-      height="100%"
-      theme="vs-dark"
-      path={path}
-      language={langFor(path)}
-      value={content}
-      onChange={(v) => setContent(v ?? "")}
-      onMount={onMount}
-      options={{
-        fontSize: 13,
-        minimap: { enabled: false },
-        automaticLayout: true,
-        scrollBeyondLastLine: false,
-        wordWrap: "off",
-      }}
-    />
+    <div className="editor-host" style={{ position: "relative", height: "100%", width: "100%" }}>
+      {!loading ? (
+        <Editor
+          height="100%"
+          theme="vs-dark"
+          path={path}
+          language={langFor(path)}
+          value={content}
+          onChange={(v) => setContent(v ?? "")}
+          onMount={onMount}
+          options={{
+            fontSize: 13,
+            minimap: { enabled: false },
+            automaticLayout: true,
+            scrollBeyondLastLine: false,
+            wordWrap: "off",
+          }}
+        />
+      ) : (
+        <div className="editor-loading-placeholder" aria-hidden="true">
+          <span className="explorer-spinner" />
+          <span className="editor-loading-text">Loading {path.split("/").pop() || path}…</span>
+        </div>
+      )}
+    </div>
   );
 });

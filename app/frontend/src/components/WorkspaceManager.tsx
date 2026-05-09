@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { api, type AgentSession } from "../lib/api";
 import { IconZap, IconFolderOpen, IconX } from "./Icons";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 
 interface WorkspaceManagerProps {
   currentWorkspace: string;
@@ -21,9 +22,10 @@ export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace }: Worksp
   const [runningSessions, setRunningSessions] = useState<AgentSession[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Poll for running sessions every 3 seconds
+  // Poll for running sessions — slowed from 3s→5s and paused when the tab
+  // is hidden so it doesn't cause a thundering herd of API calls (and React
+  // commits) the moment the user comes back to the window.
   const fetchRunningSessions = useCallback(async () => {
     try {
       const { running } = await api.getAllRunningSessions();
@@ -33,19 +35,7 @@ export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace }: Worksp
     }
   }, []);
 
-  useEffect(() => {
-    // Initial fetch
-    fetchRunningSessions();
-    
-    // Poll every 3 seconds
-    pollIntervalRef.current = setInterval(fetchRunningSessions, 3000);
-    
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
-  }, [fetchRunningSessions]);
+  useVisibleInterval(() => { void fetchRunningSessions(); }, 5000, true, true);
 
   // Close dropdown when clicking outside
   useEffect(() => {

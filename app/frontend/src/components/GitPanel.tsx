@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronExpand } from "./ChevronExpand";
 import { FileIcon } from "./FileIcon";
 import { api, type GitFileEntry, type GitLogEntry, type GitStatus } from "../lib/api";
@@ -61,7 +61,6 @@ export function GitPanel({ workspace, onOpenGitDiff, refreshKey }: Props) {
   const [message, setMessage] = useState("");
   const [committing, setCommitting] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  const pollRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     if (!workspace) return;
@@ -83,17 +82,11 @@ export function GitPanel({ workspace, onOpenGitDiff, refreshKey }: Props) {
 
   useEffect(() => { void refresh(); }, [refresh, refreshKey]);
 
-  // Lightweight background poll so external git activity (CLI commits,
-  // rebase, etc.) shows up without the user having to click refresh. 8s is
-  // a sensible cadence; if the panel isn't visible we still poll because
-  // React unmounts the component when the sidebar switches away.
-  useEffect(() => {
-    if (!workspace) return;
-    pollRef.current = window.setInterval(() => { void refresh(); }, 8000);
-    return () => {
-      if (pollRef.current !== null) window.clearInterval(pollRef.current);
-    };
-  }, [workspace, refresh]);
+  // Background polling intentionally NOT done here — App.tsx already heart-
+  // beats `gitStatus` every 10s for the activity-bar badge, and the FS
+  // watcher bumps `refreshKey` on disk changes (CLI commits, rebase, etc.)
+  // which feeds straight into the effect above. A second timer here was
+  // redundant load + extra commits that fought with chat streaming.
 
   const staged = useMemo(() => (status?.files ?? []).filter((f) => f.staged && !f.untracked), [status]);
   const unstaged = useMemo(

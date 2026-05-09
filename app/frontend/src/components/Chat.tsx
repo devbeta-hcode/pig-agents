@@ -887,7 +887,6 @@ function AssistantMessage({
 
   const turnMode = turn.mode ?? "agent";
 
-  const [streamPulse, setStreamPulse] = useState(0);
   const finalText = finalEv?.result ?? "";
   // While streaming, parse FINAL: out of the live token buffer so the answer
   // appears token-by-token instead of waiting for the SSE `final` event.
@@ -920,13 +919,10 @@ function AssistantMessage({
 
   const streamThoughtIter = streamingIteration ?? 1;
 
-  useEffect(() => {
-    if (!isStreaming) return;
-    const id = window.setInterval(() => setStreamPulse((n) => n + 1), 400);
-    return () => clearInterval(id);
-  }, [isStreaming]);
-
-  void streamPulse;
+  // (removed) streamPulse: previously forced a 400ms re-render of every
+  // MessageRow during streaming with NO consumer (the original elapsed-time
+  // counter that read it was deleted). Wasted ~2.5 renders/sec per row;
+  // dropping it noticeably reduces jank during long agent runs.
 
   const hasAssistantActivity =
     traceSteps.length > 0 || isStreaming || Boolean(streamPeekAction);
@@ -1993,10 +1989,15 @@ export function Chat({
     
     // Check immediately once
     checkSessionStatus();
-    
-    // Then check every 5 seconds
-    const interval = setInterval(checkSessionStatus, 5000);
-    return () => clearInterval(interval);
+
+    // Visibility-aware backup poll: SSE already drives the live updates,
+    // this 8s tick (paused while the tab is hidden) only catches the rare
+    // case where the SSE channel got closed without a `done` frame landing.
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      void checkSessionStatus();
+    }, 8000);
+    return () => window.clearInterval(interval);
   }, [running, activeSessionId, workspace]);
 
   const lastTurn = session.turns[session.turns.length - 1];
@@ -2950,6 +2951,27 @@ async function fetchModelListForSettings(s: SettingsPayload): Promise<string[]> 
   }
 }
 
+/**
+ * Tiny in-memory cache so reopening the model dropdown doesn't refetch the
+ * upstream `/v1/models` list on every click. Keyed by the inputs that affect
+ * the result (provider + base URL). Five-minute TTL is plenty for the rare
+ * case where the provider adds a new model mid-session.
+ */
+const MODEL_LIST_TTL_MS = 5 * 60_000;
+const modelListCache = new Map<string, { models: string[]; ts: number }>();
+function modelListCacheKey(s: SettingsPayload): string {
+  const base = (s.BASE_URL?.trim() || s.INTEGRATIONS?.[s.LLM_PROVIDER]?.defaultBaseUrl || "").trim();
+  return `${s.LLM_PROVIDER}::${base}`;
+}
+async function fetchModelListCached(s: SettingsPayload, force = false): Promise<string[]> {
+  const key = modelListCacheKey(s);
+  const hit = modelListCache.get(key);
+  if (!force && hit && Date.now() - hit.ts < MODEL_LIST_TTL_MS) return hit.models;
+  const models = await fetchModelListForSettings(s);
+  modelListCache.set(key, { models, ts: Date.now() });
+  return models;
+}
+
 function ComposerModelMenu({
   settings,
   currentLabel,
@@ -2999,8 +3021,17 @@ function ComposerModelMenu({
   useEffect(() => {
     if (!open || !settings) return;
     let cancelled = false;
+    // Serve cached results synchronously when fresh; only show the spinner
+    // when we genuinely have to hit the network. This keeps reopening the
+    // dropdown feeling instant.
+    const cached = modelListCache.get(modelListCacheKey(settings));
+    if (cached && Date.now() - cached.ts < MODEL_LIST_TTL_MS) {
+      setList(cached.models);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    void fetchModelListForSettings(settings).then((m) => {
+    void fetchModelListCached(settings).then((m) => {
       if (!cancelled) setList(m);
     }).finally(() => {
       if (!cancelled) setLoading(false);
@@ -3008,11 +3039,14 @@ function ComposerModelMenu({
     return () => { cancelled = true; };
   }, [open, settings]);
 
-  async function pick(m: string) {
+  function pick(m: string): void {
     if (!onModelChange) return;
-    await onModelChange(m);
+    // Close the menu immediately and fire-and-forget the change. Awaiting
+    // here used to block the click handler for two network roundtrips
+    // (save + reload settings), making the dropdown feel frozen.
     setOpen(false);
     setSearch("");
+    void Promise.resolve(onModelChange(m)).catch(() => { /* upstream surfaces errors */ });
   }
 
   const label = currentLabel || settings?.MODEL || "Model";
