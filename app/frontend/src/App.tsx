@@ -127,6 +127,13 @@ export default function App() {
   const sessionCacheRef = useRef<Map<string, ChatSession>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<ChatSession | null>(null);
+  // Coalesce parent re-renders during agent runs. SSE pushes many `action`
+  // events per second; calling `setActiveSession` (and resorting `chatList`)
+  // synchronously on every one of them re-renders the entire App tree
+  // (FileTree, Editor, Terminals, …) and freezes the UI. We accumulate the
+  // latest session into a ref and let rAF flush at most once per frame.
+  const pendingActiveSessionRef = useRef<ChatSession | null>(null);
+  const activeSessionRafRef = useRef<number | null>(null);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -499,18 +506,47 @@ export default function App() {
   function updateSession(updated: ChatSession) {
     const merged: ChatSession = { ...updated, pendingDiffs: diffsRef.current };
     sessionCacheRef.current.set(merged.id, merged);
-    setActiveSession(merged);
-    // Optimistically refresh the sidebar metadata without re-fetching.
-    setChatList((cur) => {
-      const meta = metaFromSession(merged);
-      const idx = cur.findIndex((m) => m.id === merged.id);
-      if (idx === -1) return [meta, ...cur];
-      const next = cur.slice();
-      next[idx] = meta;
-      // Keep most-recently-updated on top, createdAt as stable tiebreaker.
-      next.sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
-      return next;
-    });
+    // Save debouncing still uses the freshest payload and runs on its own
+    // timer — only React state updates are coalesced here. This keeps the
+    // sidebar metadata, header banners, etc. responsive without thrashing
+    // the React tree on every SSE event during a run.
+    pendingActiveSessionRef.current = merged;
+    if (activeSessionRafRef.current == null) {
+      activeSessionRafRef.current = requestAnimationFrame(() => {
+        activeSessionRafRef.current = null;
+        const latest = pendingActiveSessionRef.current;
+        pendingActiveSessionRef.current = null;
+        if (!latest) return;
+        // Guard against the user switching chats while a frame was pending —
+        // we'd otherwise clobber the freshly-loaded active session.
+        if (latest.id !== activeSessionId) return;
+        setActiveSession(latest);
+        // Only touch chatList when the metadata that's actually rendered in
+        // the sidebar changed — avoids a full re-sort + Chats re-render on
+        // every event-level updatedAt bump.
+        setChatList((cur) => {
+          const idx = cur.findIndex((m) => m.id === latest.id);
+          const meta = metaFromSession(latest);
+          if (idx === -1) {
+            const next = [meta, ...cur];
+            next.sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
+            return next;
+          }
+          const prev = cur[idx];
+          const sameMeta = prev.title === meta.title
+            && prev.turnCount === meta.turnCount
+            && prev.mode === meta.mode
+            // updatedAt always changes; tolerate sub-second drift so we don't
+            // re-sort the whole list mid-stream when nothing user-visible moved.
+            && Math.floor(prev.updatedAt / 1000) === Math.floor(meta.updatedAt / 1000);
+          if (sameMeta && idx === 0) return cur;
+          const next = cur.slice();
+          next[idx] = meta;
+          next.sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
+          return next;
+        });
+      });
+    }
     // Save more aggressively (~120ms) after a turn finishes; debounce more
     // (~600ms) while a turn is still streaming events. Force-save immediately
     // (0ms) when turn is fully done so index is fresh before any F5.
@@ -870,7 +906,6 @@ export default function App() {
             setSessionWorkspace(ws);
           }}
         />
-        <button title="Settings" onClick={() => setSettingsOpen(true)}><IconSettings size={13} style={{ marginRight: 5 }} />Settings</button>
       </div>
 
       <div className="workbench">

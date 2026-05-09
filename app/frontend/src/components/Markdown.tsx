@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { IconCheck, IconCopy } from "./Icons";
 
 interface ActiveEditorState { path: string | null; }
@@ -25,7 +25,7 @@ function dispatchEditorAction(kind: "insert" | "replace", text: string, target?:
   window.dispatchEvent(new CustomEvent("ba:editor-action", { detail: { kind, text, target: target ?? null } }));
 }
 
-function CodeBlock({ language, value }: { language: string; value: string }) {
+function CodeBlockBase({ language, value }: { language: string; value: string }) {
   const [copied, setCopied] = useState(false);
   const [acted, setActed] = useState<"insert" | "replace" | null>(null);
   const active = useActiveEditor();
@@ -87,7 +87,10 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
   );
 }
 
-export function Markdown({ children }: { children: string }) {
+// Memoized — same (language, value) skips the expensive Prism tokenization.
+const CodeBlock = memo(CodeBlockBase, (a, b) => a.language === b.language && a.value === b.value);
+
+function MarkdownBase({ children }: { children: string }) {
   return (
     <div className="md">
       <ReactMarkdown
@@ -111,3 +114,10 @@ export function Markdown({ children }: { children: string }) {
     </div>
   );
 }
+
+// Markdown rendering through react-markdown + prism is the single most
+// expensive widget in the chat view. Memoize on body identity so that
+// upstream re-renders (a sibling turn streaming, the sidebar updating,
+// chat list resorting, …) don't repeatedly re-parse markdown that hasn't
+// changed.
+export const Markdown = memo(MarkdownBase, (a, b) => a.children === b.children);

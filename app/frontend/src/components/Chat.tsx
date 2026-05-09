@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Steps } from "antd";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
 import { ChatsList } from "./ChatsList";
@@ -325,7 +325,7 @@ function MentionChips({ text }: { text: string }) {
   );
 }
 
-function UserMessage({
+function UserMessageBase({
   task, mode, images, onCopy, onRegenerate, canRegenerate,
 }: {
   task: string;
@@ -358,6 +358,15 @@ function UserMessage({
     </div>
   );
 }
+
+// Memoized — older user turns are immutable; ignore callback identity so
+// inline lambdas in the parent's `.map(...)` don't force re-renders.
+const UserMessage = memo(UserMessageBase, (a, b) =>
+  a.task === b.task &&
+  a.mode === b.mode &&
+  a.images === b.images &&
+  a.canRegenerate === b.canRegenerate,
+);
 
 function isTraceLogLike(e: UIEvent): boolean {
   if (e.type === "log" && !String(e.message || "").startsWith("Parse error:")) return true;
@@ -800,7 +809,7 @@ function TraceStep({
   return null;
 }
 
-function AssistantMessage({
+function AssistantMessageBase({
   turn,
   isStreaming,
   streamingText,
@@ -837,7 +846,11 @@ function AssistantMessage({
   const checkpointEv = events.find((e) => e.type === "checkpoint" && e.checkpoint);
   const checkpoint = checkpointEv?.checkpoint as Checkpoint | undefined;
   const policyDeniedCount = events.filter((e) => e.type === "policy_decision" && e.decision === "deny").length;
-  const traceSteps = events
+  // Recomputing traceSteps every render is the dominant cost during a long
+  // agent run (filter + sort over hundreds of events on each token tick).
+  // Memoize on the events array reference — patchSession produces a new
+  // events ref only for the turn it touched, so this gates correctly.
+  const traceSteps = useMemo(() => events
     .filter(
       (e) =>
         e.type === "thought" ||
@@ -874,7 +887,7 @@ function AssistantMessage({
     if (ra !== rb) return ra - rb;
     if (!ta || !tb) return 0;
     return ta - tb;
-  });
+  }), [events]);
   const currentIter =
     streamingIteration ??
     Math.max(1, ...traceSteps.map((e) => Number((e as UIEvent).iteration) || 0));
@@ -1508,6 +1521,25 @@ function AssistantMessage({
     </div>
   );
 }
+
+// Memoized — only re-render when the data the row actually displays moved.
+// Inline callbacks from the chat-turn `.map(...)` get a fresh identity on
+// every parent render; ignoring them lets old/inactive turns skip rendering
+// entirely while the active streaming turn keeps updating.
+const AssistantMessage = memo(AssistantMessageBase, (a, b) => {
+  if (a.turn !== b.turn) return false;
+  if (a.isStreaming !== b.isStreaming) return false;
+  if (a.canRegenerate !== b.canRegenerate) return false;
+  if (a.settledReasoningMap !== b.settledReasoningMap) return false;
+  if (a.settledThoughtMap !== b.settledThoughtMap) return false;
+  if (a.isStreaming) {
+    if (a.streamingText !== b.streamingText) return false;
+    if (a.streamingIteration !== b.streamingIteration) return false;
+    if (a.awaitingStop !== b.awaitingStop) return false;
+    if (a.sessionConnecting !== b.sessionConnecting) return false;
+  }
+  return true;
+});
 
 // ---------- main ----------
 

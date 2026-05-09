@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatSessionMeta } from "../lib/api";
 import { useDialogs } from "./DialogProvider";
 import { IconX } from "./Icons";
@@ -32,6 +32,30 @@ function ago(ts: number): string {
 }
 
 export function ChatsList({
+  sessions, activeId, workspace,
+  onSelect, onNew, onDelete, onRename, onExport, onImport,
+}: Props) {
+  return (
+    <ChatsListInner
+      sessions={sessions}
+      activeId={activeId}
+      workspace={workspace}
+      onSelect={onSelect}
+      onNew={onNew}
+      onDelete={onDelete}
+      onRename={onRename}
+      onExport={onExport}
+      onImport={onImport}
+    />
+  );
+}
+
+// Sidebar re-renders frequently because the parent's `activeSession` updates
+// on every agent event. Memoizing the inner body skips the whole list render
+// (and the `.map(...)` over potentially many chats) when only `activeId` or
+// `sessions` reference matters. Callbacks are ignored — they always close
+// over fresh state via the App-level handlers.
+const ChatsListInner = memo(function ChatsListInner({
   sessions, activeId, workspace,
   onSelect, onNew, onDelete, onRename, onExport, onImport,
 }: Props) {
@@ -174,4 +198,8 @@ export function ChatsList({
       </div>
     </>
   );
-}
+}, (a, b) =>
+  a.sessions === b.sessions
+  && a.activeId === b.activeId
+  && a.workspace === b.workspace,
+);
