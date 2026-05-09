@@ -492,7 +492,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     if (promptMode === "verbose") {
       systemPrompt = SYSTEM_PROMPT + projectRulesBlock;
-      userMsg = buildContextMessage(opts.task, relevant, history, compactTree);
+      userMsg = buildContextMessage(opts.task, relevant, history, compactTree, wsRoot);
     } else {
       let version: "minimal" | "compact";
       if (promptMode === "minimal" || promptMode === "economical") {
@@ -504,7 +504,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
       systemPrompt =
         (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) + projectRulesBlock;
-      userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree);
+      userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot);
     }
 
     const umBefore = userMsg.length;

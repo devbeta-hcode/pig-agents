@@ -127,6 +127,23 @@ The dev server URLs:
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
 
+### Last session (2026-05-12) — model hallucinated cwd (`cd /workspace`)
+
+- Symptom: every `run_command` action in chat trace showed
+  `cd /workspace && ...` or `cd /data/workspace && ...` followed by
+  `bash: line 1: cd: /workspace: No such file or directory`. The tool was
+  already running with `cwd = getWorkspace()` — the model just hallucinated
+  a canonical absolute path from training data.
+- `app/backend/src/llm/prompt.ts` and `app/backend/src/llm/prompt-compact.ts`:
+  the `run_command` tool description now spells out "cwd is already the
+  workspace root, do NOT prefix with `cd /workspace` / `cd /data/workspace`
+  / any imagined absolute path". Both `buildContextMessage` and
+  `buildContextMessageCompact` now accept an optional `workspacePath` and
+  inject a `WORKSPACE_PATH: <abs>` line into the per-turn user context, so
+  the model has the real absolute cwd in front of it.
+- `app/backend/src/agent/runner.ts`: passes `wsRoot` (already in scope) to
+  both context builders.
+
 ### Last session (2026-05-12) — env leak: PORT bleeding into spawned children
 
 - Symptom: agent's HTTP server reads `process.env.PORT` to pick its own

@@ -108,6 +108,7 @@ Available tools (set "type" to one of these):
 - "search_code"   input: { "query": "text" }
 - "glob"          input: { "pattern": "**/*.ts" }  — find files matching a glob pattern (** = any depth, * = within segment).
 - "run_command"   input: { "cmd": "shell command" }  — Executes shell commands. Long-running processes (servers, watchers, builds) auto-detect and return immediately when ready. See "Execution Intelligence" below.
+  - **Working directory is ALREADY the workspace root.** Every \`run_command\` runs with \`cwd\` set to the workspace path shown in the WORKSPACE section below. Do NOT prefix commands with \`cd /workspace\`, \`cd /data/workspace\`, \`cd ~/project\`, or any other absolute path you imagine — those paths do not exist and the command will fail with "No such file or directory". Use \`pwd\` if you need to verify. To run inside a sub-folder use \`cd ./subdir && ...\` with a *relative* path only.
 - "write_patch"   input: { "patches": "FILE: path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND\\n..." } — optional { "path": "rel/path", "patches": "SEARCH\\n..." } for single-file edits only (body must start with SEARCH).
 - "create_file"   input: { "path": "rel/path", "content": "full file content" }  — create or overwrite a file directly (simpler than write_patch for new files).
 
@@ -288,6 +289,7 @@ export function buildContextMessage(
   relevant: ScoredFile[],
   history: { role: "assistant" | "user" | "system"; content: string }[],
   tree?: string,
+  workspacePath?: string,
 ): string {
   const filesBlock = relevant.length === 0
     ? "(no relevant files matched)"
@@ -311,8 +313,15 @@ export function buildContextMessage(
     ? `\nWORKSPACE (depth \u2264 3, skips node_modules/dist/\u2026):\n${tree}\n`
     : "";
 
+  // Absolute cwd for run_command. Models tend to hallucinate `/workspace` or
+  // `/data/workspace` and prefix `cd` to commands; spelling the real path
+  // out here lets them either trust the implicit cwd or use it correctly.
+  const workspacePathLine = workspacePath
+    ? `\nWORKSPACE_PATH: ${workspacePath}\n(All run_command invocations execute with this as cwd. Don't \`cd\` to a different absolute path — it won't exist.)\n`
+    : "";
+
   return `TASK:
-${task}${consultHint}${workspaceSection}
+${task}${consultHint}${workspacePathLine}${workspaceSection}
 RELEVANT FILES (truncated previews):
 ${filesBlock}
 

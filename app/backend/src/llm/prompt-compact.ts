@@ -100,7 +100,7 @@ TOOLS:
 - list_files: {"type":"list_files","input":{"dir":"src"}}
 - search_code: {"type":"search_code","input":{"query":"function name"}}
 - glob: {"type":"glob","input":{"pattern":"**/*.ts"}}
-- run_command: {"type":"run_command","input":{"cmd":"npm test"}}
+- run_command: {"type":"run_command","input":{"cmd":"npm test"}} — runs with cwd = workspace root (see WORKSPACE_PATH below). Do NOT prefix with "cd /workspace", "cd /data/workspace", or any imagined absolute path — they don't exist; the command will fail with "No such file or directory". For sub-folders use relative "cd ./sub && ...".
 - write_patch: {"type":"write_patch","input":{"patches":"FILE:path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND"}} — after FILE: rel/path the next line must be SEARCH then REPLACE (never raw file body under FILE:); new file = SEARCH\\n\\nREPLACE\\n<content>\\nEND. Or {"path":"x.ts","patches":"SEARCH\\n..."} only.
 - create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}}
 
@@ -168,6 +168,7 @@ export function buildContextMessageCompact(
   history: { role: "assistant" | "user" | "system"; content: string }[],
   tier: ContextTier = 3,
   tree?: string,
+  workspacePath?: string,
 ): string {
   const tight = isTightContextBudget();
   const tm = tierMultiplier(tier);
@@ -211,8 +212,12 @@ export function buildContextMessageCompact(
   }
 
   const workspaceSection = tree ? `\nWORKSPACE:\n${tree}\n` : "";
+  // Absolute cwd — see buildContextMessage in prompt.ts for rationale.
+  const workspacePathLine = workspacePath
+    ? `\nWORKSPACE_PATH: ${workspacePath} (run_command cwd; do NOT cd to other absolute paths)\n`
+    : "";
 
-  return `TASK: ${task}${hint}${workspaceSection}
+  return `TASK: ${task}${hint}${workspacePathLine}${workspaceSection}
 
 FILES:
 ${filesBlock}
