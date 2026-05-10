@@ -275,6 +275,7 @@ export async function executeTool(
         try {
           r = await runSmartCommand(cmd, {
             cwd: getWorkspace(),
+            onChildSpawn: (pid) => cmdHandle.setPid(pid),
             onStreamChunk: (stream, text) => {
               if (stream === "out") qOut += text;
               else qErr += text;
@@ -298,6 +299,7 @@ export async function executeTool(
           stdout: r.stdout,
           stderr: r.stderr,
           truncated: r.truncated,
+          pid: r.pid,
         });
 
         // Build output summary based on result mode

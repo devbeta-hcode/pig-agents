@@ -152,6 +152,13 @@ export interface SmartCommandOptions {
    * Used to forward `command_chunk` to the UI without blocking the agent on a poll loop.
    */
   onStreamChunk?: (stream: "out" | "err", text: string) => void | Promise<void>;
+  /**
+   * Called immediately after the child process spawns with its PID.
+   * Lets callers register the pid for cleanup before the command resolves
+   * (important for long-running "background" commands where the promise may
+   * resolve early and the caller needs to be able to kill the process later).
+   */
+  onChildSpawn?: (pid: number) => void;
 }
 
 // Keep track of background processes so we can clean them up
@@ -226,6 +233,7 @@ export async function runSmartCommand(
   if (!trimmed) throw new Error("Empty command");
 
   const streamCb = opts.onStreamChunk;
+  const spawnCb = opts.onChildSpawn;
   const cwd = opts.cwd ?? getWorkspace();
   const maxBytes = opts.maxBytes ?? 256 * 1024;
   const isLongRunning = opts.forceLongRunning || isLongRunningCommand(trimmed);
@@ -262,6 +270,12 @@ export async function runSmartCommand(
       }),
       ...(killAsGroup ? { detached: true } : {}),
     });
+
+    // Notify caller of the PID as soon as the child is alive so they can
+    // register it for potential early-kill (e.g. user dismisses the run).
+    if (child.pid !== undefined && spawnCb) {
+      try { spawnCb(child.pid); } catch { /* caller must not throw */ }
+    }
 
     let outBuf = "";
     let errBuf = "";
