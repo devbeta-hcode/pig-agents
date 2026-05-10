@@ -55,7 +55,14 @@ export function MentionInput({
   // Auto-grow helper — operates on DOM directly, no state needed.
   function autoGrow(ta: HTMLTextAreaElement) {
     const max = 220;
-    ta.style.height = "auto";
+    // Fast path: single-line content never needs reflow measurement.
+    if (!ta.value.includes("\n")) {
+      ta.style.height = "36px";
+      ta.style.overflowY = "hidden";
+      return;
+    }
+    // Multi-line: measure scroll height (forced reflow, unavoidable).
+    ta.style.height = "0px";
     const next = Math.min(max, ta.scrollHeight);
     ta.style.height = `${next}px`;
     ta.style.overflowY = next >= max ? "auto" : "hidden";
@@ -136,10 +143,11 @@ export function MentionInput({
       setSlashQuery(slashMatch[1]);
       setSlashOpen(true);
       setSlashActive(0);
-      setOpen(false);
+      // Avoid setState when already false — prevents spurious re-renders on Chrome.
+      if (open) setOpen(false);
       return;
     }
-    setSlashOpen(false);
+    if (slashOpen) setSlashOpen(false);
     const m = /(?:^|\s)@([\w/.\-]*)$/.exec(before);
     if (m) {
       setQuery(m[1]);
@@ -148,7 +156,7 @@ export function MentionInput({
       // Load files lazily when user starts typing @mention
       loadFilesIfNeeded();
     } else {
-      setOpen(false);
+      if (open) setOpen(false);
     }
   }
 
@@ -199,7 +207,7 @@ export function MentionInput({
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickSlash(slashMatches[slashActive]); return; }
       if (e.key === "Escape") { setSlashOpen(false); return; }
     }
-    if (!open && matches.length > 0) {
+    if (open && matches.length > 0) {
       if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => (a + 1) % matches.length); return; }
       if (e.key === "ArrowUp")   { e.preventDefault(); setActive((a) => (a - 1 + matches.length) % matches.length); return; }
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(matches[active]); return; }
@@ -268,6 +276,7 @@ export function MentionInput({
         placeholder={placeholder ?? "Describe a coding task… use @ to reference files"}
         onChange={(e) => handleChange(e.target.value)}
         onKeyDown={onKey}
+        spellCheck={false}
       />
     </>
   );

@@ -90,12 +90,13 @@
 
 .terminals-body {
   flex: 1; min-height: 0; display: flex;
+  flex-direction: row-reverse;
 }
 
 .terminals-sidebar {
   flex-shrink: 0;
   background: var(--bg-2);
-  border-right: 1px solid var(--border-subtle);
+  border-left: 1px solid var(--border-subtle);
   overflow-x: hidden;
   overflow-y: auto;
   display: flex; flex-direction: column;
@@ -104,7 +105,7 @@
 }
 .terminals-sidebar-resizer {
   position: absolute;
-  top: 0; right: -3px;
+  top: 0; left: -3px;
   width: 6px; height: 100%;
   cursor: col-resize;
   z-index: 10;

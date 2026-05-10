@@ -217,7 +217,8 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
     const startW = sidebarWidth;
     const onMove = (ev: MouseEvent) => {
       if (!sidebarResizing.current) return;
-      const next = Math.max(140, Math.min(400, startW + ev.clientX - startX));
+      // sidebar is on the right: dragging left (negative dx) = wider
+      const next = Math.max(140, Math.min(400, startW - (ev.clientX - startX)));
       setSidebarWidth(next);
     };
     const onUp = () => {

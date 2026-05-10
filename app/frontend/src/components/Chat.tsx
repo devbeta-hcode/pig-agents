@@ -1,4 +1,5 @@
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { Steps } from "antd";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
 import { ChatsList } from "./ChatsList";
@@ -613,7 +614,12 @@ function LiveThoughtStreamFold({
   collapseWhenToolsVisible?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const autoOpenedRef = useRef(false);
+  // Start open immediately when streaming (before any tokens arrive).
+  // autoOpenedRef = true from the start prevents the effect from re-opening
+  // after the user manually collapses the fold.
+  const initialOpen = Boolean(isStreamingAssistant && !collapseWhenToolsVisible);
+  const [open, setOpen] = useState(initialOpen);
+  const autoOpenedRef = useRef(initialOpen);
   // While streaming, never go blank: if markdown momentarily empties (e.g. at the
   // THOUGHT: keyword boundary before thought text arrives) keep the last non-empty value.
   // useMemo over a render-time mutation so the ref is reset whenever the parent stops
@@ -626,7 +632,6 @@ function LiveThoughtStreamFold({
     : isStreamingAssistant
       ? lastNonEmptyRef.current
       : markdown;
-  const [open, setOpen] = useState(() => Boolean(isStreamingAssistant && !collapseWhenToolsVisible && displayMarkdown.trim()));
   const streamingChrome = Boolean(isStreamingAssistant && !collapseWhenToolsVisible);
   useEffect(() => {
     if (collapseWhenToolsVisible) { setOpen(false); return; }
@@ -671,7 +676,12 @@ function LiveThoughtStreamFold({
       <div ref={scrollRef} className="assistant-stream-thought-scroll assistant-thought-content">
         {hasMd ? (
           <div className="assistant-stream-thought-md">
-            <Markdown>{displayMarkdown}</Markdown>
+            {/* Same as above: skip Markdown during live streaming to avoid
+                per-frame remark-gfm re-parse inside the thought fold. */}
+            {isStreamingAssistant
+              ? <div className="streaming-plaintext">{displayMarkdown}</div>
+              : <Markdown>{displayMarkdown}</Markdown>
+            }
           </div>
         ) : (
           <div className="assistant-stream-thought-placeholder">Analyzing…</div>
@@ -1490,7 +1500,13 @@ function AssistantMessageBase({
         {assistantStepListJsx}
         {displayedFinalText && (
           <div className="assistant-answer msg-text">
-            <Markdown>{displayedFinalText}</Markdown>
+            {/* During streaming, skip markdown parse (react-markdown+prism is too
+                expensive at 60fps). Render plain pre-wrap text; full Markdown
+                renders once the turn settles and finalText arrives. */}
+            {(isStreaming && !finalText)
+              ? <div className="streaming-plaintext">{displayedFinalText}</div>
+              : <Markdown>{displayedFinalText}</Markdown>
+            }
           </div>
         )}
 
@@ -1579,23 +1595,18 @@ export function Chat({
   // actual change boundaries so typing mostly avoids re-rendering Chat.
   const [composerMentions, setComposerMentions] = useState<string[]>([]);
   const [taskHasContent, setTaskHasContent] = useState(false);
-  const rafRef = useRef<number | null>(null);
 
   // Stable onChange for MentionInput — does NOT call setTask, so Chat does
-  // not re-render on every keystroke. Only updates the two lightweight states.
+  // not re-render on every keystroke. Uses startTransition so React 18 marks
+  // these updates as interruptible: user input always takes priority.
   const handleComposerChange = useCallback((v: string) => {
     taskRef.current = v;
-    // Defer state updates to next animation frame so the DOM input responds
-    // immediately and React state catches up after the frame is painted.
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      const cur = taskRef.current;
+    startTransition(() => {
       setComposerMentions(prev => {
-        const next = extractMentions(cur);
+        const next = extractMentions(v);
         return next.join("\0") === prev.join("\0") ? prev : next;
       });
-      setTaskHasContent(cur.trim().length > 0);
+      setTaskHasContent(v.trim().length > 0);
     });
   }, []);
 
@@ -1633,31 +1644,24 @@ export function Chat({
   const [settledReasoning, setSettledReasoning] = useState<Map<string, Map<number, string>>>(new Map());
   /** THOUGHT content saved per iteration independently from Reasoning Trace. */
   const [settledThoughts, setSettledThoughts] = useState<Map<string, Map<number, string>>>(new Map());
-  /** Sticky-tail state for "↓ Latest" affordance — ref is authoritative to avoid stale effect reads while streaming replays batches. */
+  /** Sticky-tail state for "↓ Latest" affordance. */
   const [autoScroll, setAutoScroll] = useState(true);
-  /** Whether the chat log actually has scrollable overflow — pill only renders when true to avoid the "fake Latest" affordance on short logs. */
-  const [hasOverflow, setHasOverflow] = useState(false);
-  /** Window over `session.turns` — render only the last N to keep the DOM
-   *  bounded for very long chats. The "Load older messages" button below
-   *  doubles the window. New chats start fresh and the window auto-resets
-   *  when the active session id changes. */
-  const TURN_WINDOW_INITIAL = 60;
-  const TURN_WINDOW_STEP = 60;
-  const [turnWindow, setTurnWindow] = useState(TURN_WINDOW_INITIAL);
   useEffect(() => {
-    setTurnWindow(TURN_WINDOW_INITIAL);
+    // Release per-turn in-memory buffers from the previous session.
+    setSettledReasoning(new Map());
+    setSettledThoughts(new Map());
+    setThinking(null);
+    // Scroll to bottom when switching sessions.
+    // Virtuoso renders lazily; retry a few times with increasing delays so the
+    // virtual list has time to measure items before we land at the bottom.
+    const delays = [0, 100, 300, 600];
+    const timers = delays.map((ms) =>
+      setTimeout(() => {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST" });
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
   }, [session.id]);
-  const stickToBottomRef = useRef(true);
-  // scrollTop set by our own auto-snap — used by onScroll to ignore programmatic events.
-  const lastProgrammaticTopRef = useRef(0);
-  // Last observed scrollTop for user-direction detection (any upward delta exits tail mode).
-  const lastScrollTopRef = useRef(0);
-  /** Track scrollHeight so a shrink (fold collapse) doesn't masquerade as a user upward scroll. */
-  const lastScrollHeightRef = useRef(0);
-  /** Once the user explicitly breaks stick (wheel/touch/key), re-engage only when they cuộn sát đáy — not from any "near bottom" sample, otherwise streaming snaps drag them back constantly. */
-  const userBrokeStickRef = useRef(false);
-  /** Sentinel rendered as the very last child of the chat log. IntersectionObserver watches it: visible = at tail = auto-follow. */
-  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
   const [attachedImages, setAttachedImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
@@ -1674,6 +1678,7 @@ export function Chat({
     try { return sessionStorage.getItem(getActiveSessionKey(workspace)); } catch { return null; }
   });
   const logRef = useRef<HTMLDivElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const ctrlRef = useRef<{ close: () => void; done: Promise<void> } | null>(null);
   const stoppedRef = useRef(false);
   const sessionRef = useRef(session);
@@ -1862,9 +1867,8 @@ export function Chat({
     const connectToSession = (backendSession: { id: string; task: string; mode: "ask" | "agent"; status: string; createdAt: number }) => {
       console.log("[Chat] Reconnecting to running session:", backendSession.id);
       setRunning(true);
-      stickToBottomRef.current = true;
-      userBrokeStickRef.current = false;
       setAutoScroll(true);
+      virtuosoRef.current?.scrollToIndex({ index: "LAST" });
       setAwaitingStop(false);
       stoppedRef.current = false;
       
@@ -2118,124 +2122,6 @@ export function Chat({
     });
   }
 
-  // Snap to bottom helper — records the programmatic scrollTop so the onScroll
-  // handler can distinguish our own snap from a real user gesture.
-  const snapToBottom = useCallback(() => {
-    const el = logRef.current;
-    if (!el) return;
-    const target = el.scrollHeight - el.clientHeight;
-    el.scrollTop = target;
-    lastProgrammaticTopRef.current = target;
-    lastScrollTopRef.current = target;
-  }, []);
-
-  // Auto-scroll only when intentionally following tail — ref avoids React batch lag vs streamed updates.
-  useLayoutEffect(() => {
-    if (!stickToBottomRef.current) return;
-    snapToBottom();
-  }, [session.turns, session.turns.map((t) => t.events.length).join(","), thinking?.partial, snapToBottom]);
-
-  // IntersectionObserver on the bottom sentinel is the source of truth for
-  // "is the user reading the tail?" — far more robust than scrollTop deltas
-  // during streaming (Copilot/Cursor/Claude all use this pattern). When the
-  // sentinel leaves view (because the user scrolled up OR new content pushed
-  // it below the viewport) we drop tail-follow; when it re-enters we resume.
-  useEffect(() => {
-    const root = logRef.current;
-    const sentinel = bottomSentinelRef.current;
-    if (!root || !sentinel) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const e = entries[0];
-        if (!e) return;
-        const overflow = root.scrollHeight > root.clientHeight + 4;
-        setHasOverflow((prev) => (prev === overflow ? prev : overflow));
-        if (e.isIntersecting) {
-          // Sentinel back in view → user is at the tail again. Resume follow.
-          if (!stickToBottomRef.current) {
-            stickToBottomRef.current = true;
-            userBrokeStickRef.current = false;
-            setAutoScroll(true);
-          }
-        } else {
-          // Sentinel out of view. Distinguish three causes:
-          //  - Streaming token just pushed it down by 1 frame → snap back.
-          //  - User toggled a step (expand/collapse) and stick was on but no
-          //    stream is active → keep position; don't yank them away from
-          //    the section they just opened.
-          //  - User scrolled up → mark as broken so the pill appears.
-          const isStreamingNow = thinkingRef.current != null;
-          if (stickToBottomRef.current && isStreamingNow) {
-            snapToBottom();
-          } else if (!userBrokeStickRef.current && !stickToBottomRef.current) {
-            userBrokeStickRef.current = true;
-            setAutoScroll(false);
-          }
-        }
-      },
-      { root, threshold: 0, rootMargin: "0px 0px 32px 0px" },
-    );
-    io.observe(sentinel);
-    // Refresh hasOverflow when content height changes. Do NOT auto-snap on every
-    // resize — toggling a step (expand/collapse) fires ResizeObserver and would
-    // yank the user's view to the bottom, making it impossible to read above.
-    // The streaming useLayoutEffect handles tail-following during token streams.
-    const ro = new ResizeObserver(() => {
-      const overflow = root.scrollHeight > root.clientHeight + 4;
-      setHasOverflow((prev) => (prev === overflow ? prev : overflow));
-    });
-    ro.observe(root);
-    for (const child of Array.from(root.children)) ro.observe(child);
-    return () => {
-      io.disconnect();
-      ro.disconnect();
-    };
-  }, [snapToBottom]);
-
-  // Wheel/touch/keyboard listener: any explicit upward gesture immediately
-  // breaks stick. This catches the case where the user nudges up by 1-2px,
-  // which IntersectionObserver wouldn't fire for (sentinel still visible).
-  useEffect(() => {
-    const el = logRef.current;
-    if (!el) return;
-    const breakStick = () => {
-      if (!stickToBottomRef.current) return;
-      stickToBottomRef.current = false;
-      userBrokeStickRef.current = true;
-      setAutoScroll(false);
-    };
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < -1) breakStick();
-    };
-    let touchStartY = 0;
-    const onTouchStart = (e: TouchEvent) => {
-      touchStartY = e.touches[0]?.clientY ?? 0;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const y = e.touches[0]?.clientY ?? 0;
-      if (y - touchStartY > 4) breakStick();
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home") {
-        breakStick();
-      }
-    };
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    el.addEventListener("keydown", onKeyDown);
-    return () => {
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      el.removeEventListener("keydown", onKeyDown);
-    };
-  }, []);
-
-  // No onScroll handler needed — IntersectionObserver handles re-engagement.
-  // Keep an empty stub so the JSX prop binding stays stable.
-  function onScroll() { /* intentionally empty */ }
-
   function patchSession(fn: (s: ChatSession) => ChatSession) {
     const next = fn(sessionRef.current);
     sessionRef.current = next;
@@ -2270,9 +2156,8 @@ export function Chat({
     setTaskExternal("");
     setAttachedImages([]); // Clear images after capturing
     setRunning(true);
-    stickToBottomRef.current = true;
-    userBrokeStickRef.current = false;
     setAutoScroll(true);
+    virtuosoRef.current?.scrollToIndex({ index: "LAST" });
     setAwaitingStop(false);
     stoppedRef.current = false;
     thinkingRef.current = { iteration: 1, partial: "" };
@@ -2698,8 +2583,7 @@ export function Chat({
       )}
 
       <div className="chat-log-wrap">
-      <div className="chat-log" ref={logRef} onScroll={onScroll}>
-        {session.turns.length === 0 && (
+        {session.turns.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-title">How can I help?</div>
             <div className="chat-empty-sub">
@@ -2709,74 +2593,51 @@ export function Chat({
               <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>@</kbd> reference file · <kbd>Esc</kbd> stop
             </div>
           </div>
+        ) : (
+          <Virtuoso
+            ref={virtuosoRef}
+            className="chat-log"
+            data={session.turns}
+            initialTopMostItemIndex={session.turns.length - 1}
+            followOutput={(isAtBottom) => isAtBottom ? "auto" : false}
+            atBottomStateChange={(atBottom) => setAutoScroll(atBottom)}
+            itemContent={(index, turn) => {
+              const isLast = index === session.turns.length - 1;
+              const isStreaming = isLast && running;
+              return (
+                <div className="chat-turn">
+                  <UserMessage
+                    task={turn.task}
+                    mode={turn.mode}
+                    images={turn.images}
+                    onCopy={() => copyText(turn.task)}
+                    onRegenerate={() => regenerate(turn)}
+                    canRegenerate={!running}
+                  />
+                  <AssistantMessage
+                    turn={turn}
+                    isStreaming={isStreaming}
+                    streamingText={isStreaming ? thinking?.partial ?? "" : ""}
+                    streamingIteration={isStreaming ? thinking?.iteration : undefined}
+                    awaitingStop={awaitingStop}
+                    sessionConnecting={sessionConnecting}
+                    onCopy={() => {
+                      const f = (turn.events as UIEvent[]).slice().reverse().find((e) => e.type === "final");
+                      if (f?.result) copyText(f.result);
+                    }}
+                    onRegenerate={() => regenerate(turn)}
+                    onRetry={() => regenerate(turn)}
+                    canRegenerate={!running && isLast}
+                    onRestore={restoreToCheckpoint}
+                    settledReasoningMap={settledReasoning.get(turn.id)}
+                    settledThoughtMap={settledThoughts.get(turn.id)}
+                  />
+                </div>
+              );
+            }}
+          />
         )}
-        {session.turns.length > turnWindow && (
-          <div className="chat-load-older">
-            <button
-              type="button"
-              className="chat-load-older-btn"
-              onClick={() => setTurnWindow((w) => w + TURN_WINDOW_STEP)}
-              title={`${session.turns.length - turnWindow} older message(s) hidden`}
-            >
-              Load {Math.min(TURN_WINDOW_STEP, session.turns.length - turnWindow)} older message(s)
-              <span className="chat-load-older-count">
-                ({session.turns.length - turnWindow} hidden)
-              </span>
-            </button>
-          </div>
-        )}
-        {(session.turns.length > turnWindow
-          ? session.turns.slice(session.turns.length - turnWindow)
-          : session.turns
-        ).map((turn, idx, arr) => {
-          const isLast = idx === arr.length - 1;
-          const isStreaming = isLast && running;
-          return (
-            <div key={turn.id} className="chat-turn">
-              <UserMessage
-                task={turn.task}
-                mode={turn.mode}
-                images={turn.images}
-                onCopy={() => copyText(turn.task)}
-                onRegenerate={() => regenerate(turn)}
-                canRegenerate={!running}
-              />
-              <AssistantMessage
-                turn={turn}
-                isStreaming={isStreaming}
-                streamingText={isStreaming ? thinking?.partial ?? "" : ""}
-                streamingIteration={isStreaming ? thinking?.iteration : undefined}
-                awaitingStop={awaitingStop}
-                sessionConnecting={sessionConnecting}
-                onCopy={() => {
-                  const f = (turn.events as UIEvent[]).slice().reverse().find((e) => e.type === "final");
-                  if (f?.result) copyText(f.result);
-                }}
-                onRegenerate={() => regenerate(turn)}
-                onRetry={() => regenerate(turn)}
-                canRegenerate={!running && isLast}
-                onRestore={restoreToCheckpoint}
-                settledReasoningMap={settledReasoning.get(turn.id)}
-                settledThoughtMap={settledThoughts.get(turn.id)}
-              />
-            </div>
-          );
-        })}
-        <div ref={bottomSentinelRef} className="chat-log-sentinel" aria-hidden />
-      </div>
 
-      {!autoScroll && hasOverflow && session.turns.length > 0 && (
-        <button
-          className="scroll-bottom"
-          onClick={() => {
-            stickToBottomRef.current = true;
-            userBrokeStickRef.current = false;
-            snapToBottom();
-            setAutoScroll(true);
-          }}
-          title="Scroll to bottom"
-        >↓ Latest</button>
-      )}
       </div>
 
       <div

@@ -182,38 +182,37 @@
   color: #d4aa30;
 }
 
-/* ===== Chat log — Copilot-style redesign ===== */
-.chat-log {
+/* ===== Chat log — Virtuoso virtual list ===== */
+.chat-log-wrap {
   flex: 1;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 0 0 24px;
-  font-size: 13px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  /* No smooth-scroll: Cursor/Copilot use native scrolling so user wheel /
-     trackpad input never fights an in-flight CSS animation. snapToBottom()
-     in JS sets scrollTop synchronously — instant, no animation conflict. */
-  scroll-behavior: auto;
-  /* Hint the browser to keep the viewport pinned to the bottom while content
-     grows from streaming — reduces jank vs. JS-only follow. */
-  overflow-anchor: auto;
-  /* Subtle, near-invisible scrollbar like Cursor/Copilot. */
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
   position: relative;
 }
-.chat-log::-webkit-scrollbar { width: 10px; }
-.chat-log::-webkit-scrollbar-track { background: transparent; }
-.chat-log::-webkit-scrollbar-thumb {
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  font-size: 13px;
+}
+/* Virtuoso renders an internal scroller div; target it for overflow/scrollbar styles */
+.chat-log [data-virtuoso-scroller="true"] {
+  overflow-x: hidden !important;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+.chat-log [data-virtuoso-scroller="true"]::-webkit-scrollbar { width: 10px; }
+.chat-log [data-virtuoso-scroller="true"]::-webkit-scrollbar-track { background: transparent; }
+.chat-log [data-virtuoso-scroller="true"]::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: padding-box;
   transition: background 120ms ease;
 }
-.chat-log:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); background-clip: padding-box; }
-.chat-log::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); background-clip: padding-box; }
+.chat-log [data-virtuoso-scroller="true"]:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); background-clip: padding-box; }
+.chat-log [data-virtuoso-scroller="true"]::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); background-clip: padding-box; }
 .chat-empty {
   color: var(--fg-dim);
   padding: 56px 20px;
@@ -991,6 +990,16 @@ details[open] > .assistant-stream-thought-sum .assistant-thought-fold-chev {
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
+}
+/* Live streaming text rendered as plain pre-wrap to skip react-markdown+prism
+   re-parse on every token frame. Replaced by full Markdown once turn settles. */
+.streaming-plaintext {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  line-height: 1.68;
+  color: var(--fg);
 }
 .msg-assistant .msg-text.streaming { position: relative; }
 .msg-assistant .msg-text .caret {
@@ -1952,5 +1961,63 @@ kbd {
 .composer-lower:focus-within {
   border-color: var(--accent);
   box-shadow: var(--shadow-glow), var(--shadow-md);
+}
+
+/* ── Chat visual polish (no background fills, no border-radius changes) ── */
+
+/* Turns fade+slide in */
+@keyframes turn-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chat-turn { animation: turn-in 0.2s var(--ease-out-expo) both; }
+
+/* Turn separator: fades at both edges instead of a hard line */
+.chat-turn + .chat-turn::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--border-subtle) 12%,
+    var(--border-subtle) 88%,
+    transparent 100%
+  );
+}
+
+/* Tool type left-borders: full opacity, not faded */
+.assistant-action-accent--mutate-fs { border-left-color: #a78bfa; }
+.assistant-action-accent--read-fs   { border-left-color: #38bdf8; }
+.assistant-action-accent--terminal  { border-left-color: #34d399; }
+.assistant-action-accent--search    { border-left-color: #fbbf24; }
+.assistant-action-accent--map       { border-left-color: #f472b6; }
+
+/* Action group header: slightly brighter text + accent count */
+.assistant-action-group-sum {
+  color: rgba(220, 220, 240, 0.78) !important;
+  font-weight: 500 !important;
+}
+.assistant-action-group-count {
+  color: var(--accent-2) !important;
+  font-size: 10.5px !important;
+}
+
+/* Row dividers inside a group */
+.assistant-action-group-body > .assistant-action-fold {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent) !important;
+}
+.assistant-action-group-body > .assistant-action-fold:last-child {
+  border-bottom: none !important;
+}
+
+/* Fold header text: slightly more legible */
+.assistant-action-fold-sum { color: rgba(200, 200, 220, 0.72); }
+
+/* Thought/reasoning header text */
+.assistant-live-thought-summary,
+.thought-step-archive-label { color: rgba(180, 170, 210, 0.8) !important; }
+
+/* Streaming caret: accent-2 color */
+.assistant-live-caret {
+  background: var(--accent-2);
+  width: 1.5px;
 }
 
