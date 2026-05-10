@@ -1838,7 +1838,7 @@ export function Chat({
             askId: ev.askId!,
             cmd: String(ev.cmd),
             suggestedAllow: String(ev.suggestedAllow ?? ev.cmd),
-            kind: (ev.kind === "web_fetch" || ev.kind === "web_search") ? ev.kind : "command",
+            kind: (ev.kind === "web_fetch" || ev.kind === "web_search" || ev.kind === "browser") ? ev.kind : "command",
           },
         ]);
       });

@@ -105,6 +105,13 @@ TOOLS:
 - create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}} — content is written verbatim. Do NOT add END/EOF/END_OF_FILE markers; those belong to write_patch and will end up as literal text breaking the file.
 - web_search: {"type":"web_search","input":{"query":"react useEffect cleanup"}} — DDG HTML scrape, top results (title/url/snippet). Each call needs user approval unless auto-allow is on.
 - web_fetch: {"type":"web_fetch","input":{"url":"https://docs.example.com/api"}} — fetch HTTP(S), strip HTML, return plaintext (capped). Refuses localhost/private IPs. Each call needs user approval unless auto-allow is on.
+- browser_navigate: {"type":"browser_navigate","input":{"url":"https://app.local"}} — drive embedded Playwright Chromium (Browser panel). Use instead of web_fetch when the page needs JS to render. Auto-launches.
+- browser_get_text: {"type":"browser_get_text","input":{"selector":"main"}} — visible text of current page (or selector). Run after browser_navigate.
+- browser_get_html: {"type":"browser_get_html","input":{"selector":"#root"}} — outer HTML of current page (or selector).
+- browser_click: {"type":"browser_click","input":{"selector":"button.submit"}} — click matching element (CSS or Playwright "text=Submit").
+- browser_fill: {"type":"browser_fill","input":{"selector":"input[name=q]","value":"hello"}} — type into input/textarea.
+- browser_wait_for: {"type":"browser_wait_for","input":{"selector":".ready","state":"visible"}} — wait for selector before reading.
+- browser_eval: {"type":"browser_eval","input":{"js":"document.title"}} — run JS in page, JSON-stringified result. Escape hatch.
 
 Parallel: emit multiple ACTION lines for independent ops (e.g. reading several files at once).
 
@@ -142,7 +149,7 @@ OR
 THOUGHT: <done>
 FINAL: <answer>
 
-Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file, web_search, web_fetch
+Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file, web_search, web_fetch, browser_navigate, browser_get_text, browser_click, browser_fill, browser_eval
 
 Example:
 User: "Read main.ts"

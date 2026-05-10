@@ -7,8 +7,8 @@ export interface PendingApproval {
   cmd: string;
   /** Coarse pattern the backend suggests for "Allow always" (e.g. `git push *`). */
   suggestedAllow: string;
-  /** "command" (default) | "web_fetch" | "web_search" — drives the modal copy. */
-  kind?: "command" | "web_fetch" | "web_search";
+  /** "command" (default) | "web_fetch" | "web_search" | "browser" — drives the modal copy. */
+  kind?: "command" | "web_fetch" | "web_search" | "browser";
 }
 
 interface Props {
@@ -72,18 +72,25 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Pr
 
   const cmdChanged = edited.trim() !== pending.cmd.trim();
   const kind = pending.kind ?? "command";
-  const isWeb = kind === "web_fetch" || kind === "web_search";
+  const isWeb = kind === "web_fetch" || kind === "web_search" || kind === "browser";
   const title = kind === "web_fetch"
     ? "Agent wants to fetch a URL"
     : kind === "web_search"
       ? "Agent wants to run a web search"
-      : "Agent wants to run a command";
-  const fieldLabel = kind === "web_fetch" ? "URL" : kind === "web_search" ? "Query" : "Command";
+      : kind === "browser"
+        ? "Agent wants to drive the browser"
+        : "Agent wants to run a command";
+  const fieldLabel = kind === "web_fetch" ? "URL"
+    : kind === "web_search" ? "Query"
+    : kind === "browser" ? "Browser action"
+    : "Command";
   const hint = kind === "web_fetch"
     ? "The agent will fetch this URL and read its plaintext. Loopback / private IPs are blocked at the tool layer regardless. Enable \"Auto-allow web tools\" in Settings to skip this prompt."
     : kind === "web_search"
       ? "The agent will run this DuckDuckGo HTML search and read the result list (no clicks). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
-      : "This command isn’t on your allow-list yet. Review it carefully before letting the agent run it.";
+      : kind === "browser"
+        ? "The agent will drive the embedded Playwright browser (visible in the Browser panel). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
+        : "This command isn’t on your allow-list yet. Review it carefully before letting the agent run it.";
 
   return (
     <div className="modal-backdrop policy-modal-backdrop">

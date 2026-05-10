@@ -319,6 +319,86 @@ export class BrowserSession extends EventEmitter {
     return this.page.evaluate(js);
   }
 
+  // -------------------------------------------------------------------------
+  // Helpers used by the agent's `browser_*` tools. They share the same page
+  // as the BrowserPanel so the user can watch what the agent is doing live.
+
+  /** Lazy-launch on first agent use so the LLM doesn't have to remember to
+   *  call a separate "start" tool. */
+  async ensureStarted(): Promise<void> {
+    if (this.started) return;
+    if (!(await checkPlaywright())) {
+      throw new Error(
+        "Playwright is not installed. Open the Browser panel and click Install, or run `npx playwright install chromium` once.",
+      );
+    }
+    await this.start();
+  }
+
+  /** Current page title (best-effort). */
+  async getTitle(): Promise<string> {
+    if (!this.page) return "";
+    try { return await this.page.title(); } catch { return ""; }
+  }
+
+  /** Visible text of the page (or a selector subtree). HTML is stripped, runs
+   *  of whitespace are collapsed, and the result is capped to keep the model
+   *  context small. */
+  async getPageText(selector?: string, maxChars = 12_000): Promise<string> {
+    if (!this.page) throw new Error("Browser not started");
+    const raw = await this.page.evaluate(
+      ({ sel }: { sel: string | null }) => {
+        const root = sel ? document.querySelector(sel) : document.body;
+        if (!root) return "";
+        // innerText respects layout (no <script>/<style> noise) and matches
+        // what a human user would see.
+        return (root as HTMLElement).innerText || root.textContent || "";
+      },
+      { sel: selector ?? null },
+    );
+    const collapsed = String(raw).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (collapsed.length <= maxChars) return collapsed;
+    return `${collapsed.slice(0, maxChars)}\n\n…[truncated, original ${collapsed.length} chars]`;
+  }
+
+  /** Outer HTML of the page (or a selector). Capped. */
+  async getPageHTML(selector?: string, maxChars = 20_000): Promise<string> {
+    if (!this.page) throw new Error("Browser not started");
+    const raw = await this.page.evaluate(
+      ({ sel }: { sel: string | null }) => {
+        const root = sel ? document.querySelector(sel) : document.documentElement;
+        if (!root) return "";
+        return (root as Element).outerHTML;
+      },
+      { sel: selector ?? null },
+    );
+    const html = String(raw);
+    if (html.length <= maxChars) return html;
+    return `${html.slice(0, maxChars)}\n<!-- truncated, original ${html.length} chars -->`;
+  }
+
+  /** Click the first element matching a CSS selector. */
+  async clickSelector(selector: string, timeoutMs = 8_000): Promise<void> {
+    if (!this.page) throw new Error("Browser not started");
+    await this.page.click(selector, { timeout: timeoutMs });
+  }
+
+  /** Fill an `<input>` / `<textarea>` matching a selector. */
+  async fillSelector(selector: string, value: string, timeoutMs = 8_000): Promise<void> {
+    if (!this.page) throw new Error("Browser not started");
+    await this.page.fill(selector, value, { timeout: timeoutMs });
+  }
+
+  /** Wait for a selector to appear / become visible. */
+  async waitForSelector(
+    selector: string,
+    state: "attached" | "visible" | "hidden" = "visible",
+    timeoutMs = 10_000,
+  ): Promise<void> {
+    if (!this.page) throw new Error("Browser not started");
+    await this.page.waitForSelector(selector, { state, timeout: timeoutMs });
+  }
+
   isStarted(): boolean { return this.started; }
 }
 

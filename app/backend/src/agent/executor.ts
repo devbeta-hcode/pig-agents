@@ -7,6 +7,7 @@ import { getWorkspace } from "../utils/workspace.js";
 import { decide as policyDecide, trust as policyTrust, loadPolicy as loadAgentPolicy } from "../utils/policy.js";
 import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approvals.js";
 import { webFetch, webSearch } from "../tools/web.js";
+import { browserSession } from "../browser/session.js";
 
 export interface ToolOutcome {
   ok: boolean;
@@ -62,7 +63,7 @@ function stripStrayPatchMarkers(content: string): string {
  */
 async function gateWebApproval(
   ctx: ToolContext,
-  kind: "web_fetch" | "web_search",
+  kind: "web_fetch" | "web_search" | "browser",
   initial: string,
 ): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
   const policy = await loadAgentPolicy().catch(() => null);
@@ -467,6 +468,115 @@ export async function executeTool(
           summary: `web_search "${q}" → ${result.hits.length} result(s)\n${lines.join("\n\n")}`,
           data: result,
         };
+      }
+      case "browser_navigate": {
+        const url = String(input.url || "").trim();
+        if (!url) return { ok: false, summary: "browser_navigate: missing 'url'" };
+        const approved = await gateWebApproval(ctx, "browser", `navigate → ${url}`);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        await browserSession.ensureStarted();
+        await browserSession.navigate(url);
+        const finalUrl = browserSession.currentUrl();
+        const title = await browserSession.getTitle();
+        return {
+          ok: true,
+          summary: `browser_navigate → ${finalUrl}${title ? ` ("${title}")` : ""}`,
+          data: { url: finalUrl, title },
+        };
+      }
+      case "browser_get_text": {
+        const sel = typeof input.selector === "string" && input.selector.trim() ? String(input.selector) : undefined;
+        const cap = typeof input.maxChars === "number" ? Math.max(500, Math.min(50_000, input.maxChars)) : 12_000;
+        if (!browserSession.isStarted()) {
+          return { ok: false, summary: "browser_get_text: no page loaded. Call browser_navigate first." };
+        }
+        const url = browserSession.currentUrl();
+        const approved = await gateWebApproval(ctx, "browser", `read text from ${url}${sel ? ` (selector=${sel})` : ""}`);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        const text = await browserSession.getPageText(sel, cap);
+        return {
+          ok: true,
+          summary: `browser_get_text ${url}${sel ? ` (${sel})` : ""}\n\n${text || "(empty)"}`,
+          data: { url, selector: sel, length: text.length },
+        };
+      }
+      case "browser_get_html": {
+        const sel = typeof input.selector === "string" && input.selector.trim() ? String(input.selector) : undefined;
+        const cap = typeof input.maxChars === "number" ? Math.max(500, Math.min(60_000, input.maxChars)) : 20_000;
+        if (!browserSession.isStarted()) {
+          return { ok: false, summary: "browser_get_html: no page loaded. Call browser_navigate first." };
+        }
+        const url = browserSession.currentUrl();
+        const approved = await gateWebApproval(ctx, "browser", `read HTML from ${url}${sel ? ` (selector=${sel})` : ""}`);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        const html = await browserSession.getPageHTML(sel, cap);
+        return {
+          ok: true,
+          summary: `browser_get_html ${url}${sel ? ` (${sel})` : ""}\n\n${html || "(empty)"}`,
+          data: { url, selector: sel, length: html.length },
+        };
+      }
+      case "browser_click": {
+        const sel = String(input.selector || "").trim();
+        if (!sel) return { ok: false, summary: "browser_click: missing 'selector'" };
+        if (!browserSession.isStarted()) {
+          return { ok: false, summary: "browser_click: no page loaded. Call browser_navigate first." };
+        }
+        const url = browserSession.currentUrl();
+        const approved = await gateWebApproval(ctx, "browser", `click "${sel}" on ${url}`);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        await browserSession.clickSelector(sel, typeof input.timeoutMs === "number" ? input.timeoutMs : undefined);
+        return { ok: true, summary: `browser_click → ${sel}`, data: { selector: sel, url } };
+      }
+      case "browser_fill": {
+        const sel = String(input.selector || "").trim();
+        const value = String(input.value ?? "");
+        if (!sel) return { ok: false, summary: "browser_fill: missing 'selector'" };
+        if (!browserSession.isStarted()) {
+          return { ok: false, summary: "browser_fill: no page loaded. Call browser_navigate first." };
+        }
+        const url = browserSession.currentUrl();
+        const preview = value.length > 60 ? `${value.slice(0, 60)}…` : value;
+        const approved = await gateWebApproval(ctx, "browser", `fill ${sel} = "${preview}" on ${url}`);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        await browserSession.fillSelector(sel, value, typeof input.timeoutMs === "number" ? input.timeoutMs : undefined);
+        return { ok: true, summary: `browser_fill → ${sel}`, data: { selector: sel, length: value.length } };
+      }
+      case "browser_wait_for": {
+        const sel = String(input.selector || "").trim();
+        if (!sel) return { ok: false, summary: "browser_wait_for: missing 'selector'" };
+        if (!browserSession.isStarted()) {
+          return { ok: false, summary: "browser_wait_for: no page loaded. Call browser_navigate first." };
+        }
+        const state = (input.state === "attached" || input.state === "hidden") ? input.state : "visible";
+        const timeoutMs = typeof input.timeoutMs === "number" ? input.timeoutMs : 10_000;
+        try {
+          await browserSession.waitForSelector(sel, state, timeoutMs);
+          return { ok: true, summary: `browser_wait_for → ${sel} (${state})` };
+        } catch (err) {
+          return { ok: false, summary: `browser_wait_for timeout: ${(err as Error).message}` };
+        }
+      }
+      case "browser_eval": {
+        const js = String(input.js || "").trim();
+        if (!js) return { ok: false, summary: "browser_eval: missing 'js'" };
+        if (!browserSession.isStarted()) {
+          return { ok: false, summary: "browser_eval: no page loaded. Call browser_navigate first." };
+        }
+        const url = browserSession.currentUrl();
+        const preview = js.length > 80 ? `${js.slice(0, 80)}…` : js;
+        const approved = await gateWebApproval(ctx, "browser", `eval JS on ${url}: ${preview}`);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        try {
+          const result = await browserSession.evalScript(js);
+          const out = (() => {
+            try { return JSON.stringify(result, null, 2); } catch { return String(result); }
+          })();
+          const capped = out.length > 8_000 ? `${out.slice(0, 8_000)}\n…[truncated]` : out;
+          return { ok: true, summary: `browser_eval →\n${capped}`, data: { result } };
+        } catch (err) {
+          return { ok: false, summary: `browser_eval error: ${(err as Error).message}` };
+        }
       }
       default:
         return { ok: false, summary: `Unknown tool: ${type}` };

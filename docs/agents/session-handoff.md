@@ -127,6 +127,31 @@ The dev server URLs:
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
 
+### Last session (2026-05-13) — agent-driven Playwright browser tools
+
+- Context: `BrowserSession` (singleton in `app/backend/src/browser/session.ts`)
+  was already wired to the `BrowserPanel` UI, but the agent had no way to
+  drive it. The only "web" reach was `web_fetch` (raw HTTP) which is useless
+  for SPA / dev-server pages that need JS to render.
+- New helpers on `BrowserSession`: `ensureStarted()` (lazy launch on first
+  agent call), `getTitle()`, `getPageText(selector?, maxChars)`,
+  `getPageHTML(selector?, maxChars)`, `clickSelector()`, `fillSelector()`,
+  `waitForSelector()`. They share the same `Page` as the panel, so when the
+  agent navigates/clicks the user sees it live in the screencast.
+- Executor (`agent/executor.ts`) gains 7 new tool cases —
+  `browser_navigate`, `browser_get_text`, `browser_get_html`,
+  `browser_click`, `browser_fill`, `browser_wait_for`, `browser_eval`.
+  Each goes through `gateWebApproval(ctx, "browser", <human-readable
+  description>)` so the same Settings toggle (`Auto-allow web tools`) and
+  the same approval modal cover them — no new policy switch.
+- Modal: `PendingApproval.kind` now also accepts `"browser"`; copy:
+  "Agent wants to drive the browser" + field label "Browser action".
+  Allow-always pattern row stays hidden (web flow).
+- Prompts: both `prompt.ts` and `prompt-compact.ts` advertise the new tools
+  with one-line usage hints and a steering note ("Use instead of web_fetch
+  when the page needs JS to render").
+- Build green for both backend and frontend.
+
 ### Last session (2026-05-13) — web tools (`web_fetch` / `web_search`) with approval gate
 
 - New backend tool `app/backend/src/tools/web.ts`:
