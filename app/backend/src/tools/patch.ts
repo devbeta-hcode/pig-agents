@@ -130,7 +130,12 @@ export function parsePatch(raw: string, defaultPath?: string): PatchBlock[] {
 
   const single = /SEARCH\n([\s\S]*?)\nREPLACE\n([\s\S]*?)$/s.exec(text);
   if (single && defaultPath) {
-    blocks.push({ path: defaultPath, search: single[1], replace: single[2] });
+    // Strip an optional trailing `END` sentinel: write_patch single-file
+    // form doesn't require it, but the model often appends one out of habit
+    // from the multi-FILE shape and it would otherwise become a literal
+    // line at the bottom of the file.
+    const replaceBody = single[2].replace(/\n[ \t]*END[ \t]*\s*$/, "");
+    blocks.push({ path: defaultPath, search: single[1], replace: replaceBody });
   }
   return blocks;
 }

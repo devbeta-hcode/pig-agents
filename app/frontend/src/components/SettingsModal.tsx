@@ -169,6 +169,7 @@ export function SettingsModal({ onClose }: Props) {
   // every flick rather than waiting for the Save button so behaviour matches
   // what the user clicked.
   const [autoApprove, setAutoApprove] = useState<boolean | null>(null);
+  const [autoApproveWeb, setAutoApproveWeb] = useState<boolean | null>(null);
   const [autoSaving, setAutoSaving] = useState(false);
   /** Managed cloud providers use built-in endpoints unless the user expands "custom URL". */
   const [customBaseUrl, setCustomBaseUrl] = useState(false);
@@ -179,8 +180,14 @@ export function SettingsModal({ onClose }: Props) {
   useEffect(() => {
     api.getSettings().then(setS).catch((e) => setMsg(`Load error: ${(e as Error).message}`));
     api.getPolicy()
-      .then(({ policy }) => setAutoApprove(!!policy.autoApprove))
-      .catch(() => setAutoApprove(false));
+      .then(({ policy }) => {
+        setAutoApprove(!!policy.autoApprove);
+        setAutoApproveWeb(!!policy.autoApproveWeb);
+      })
+      .catch(() => {
+        setAutoApprove(false);
+        setAutoApproveWeb(false);
+      });
   }, []);
 
   async function toggleAutoApprove(next: boolean) {
@@ -192,6 +199,20 @@ export function SettingsModal({ onClose }: Props) {
     } catch (err) {
       setAutoApprove(!next);
       setMsg(`Auto-approve toggle failed: ${(err as Error).message}`);
+    } finally {
+      setAutoSaving(false);
+    }
+  }
+
+  async function toggleAutoApproveWeb(next: boolean) {
+    setAutoApproveWeb(next);
+    setAutoSaving(true);
+    try {
+      const r = await api.setAutoApproveWeb(next);
+      setAutoApproveWeb(!!r.autoApproveWeb);
+    } catch (err) {
+      setAutoApproveWeb(!next);
+      setMsg(`Auto-allow web toggle failed: ${(err as Error).message}`);
     } finally {
       setAutoSaving(false);
     }
@@ -660,6 +681,30 @@ export function SettingsModal({ onClose }: Props) {
           built-in deny-list (<code>rm -rf /</code>, <code>sudo</code>, <code>git push --force</code>,
           <code>npm publish</code>, fork bombs, etc.) which are <em>always</em> blocked. Persisted in
           <code>.pig-agents/policy.json</code> per workspace.
+        </div>
+
+        <div className="settings-row settings-row-toggle" style={{ marginTop: 12 }}>
+          <label htmlFor="auto-approve-web-toggle">Auto-allow web tools</label>
+          <div className="toggle-wrap">
+            <button
+              id="auto-approve-web-toggle"
+              type="button"
+              role="switch"
+              aria-checked={autoApproveWeb === true}
+              disabled={autoApproveWeb === null || autoSaving}
+              className={`toggle-switch ${autoApproveWeb ? "on" : "off"}`}
+              onClick={() => toggleAutoApproveWeb(!autoApproveWeb)}
+              title={autoApproveWeb ? "Click to disable" : "Click to enable"}
+            >
+              <span className="toggle-knob" />
+              <span className="toggle-label">{autoApproveWeb === null ? "…" : autoApproveWeb ? "ON" : "OFF"}</span>
+            </button>
+          </div>
+        </div>
+        <div className="hint">
+          When <strong>ON</strong>, <code>web_fetch</code> and <code>web_search</code> calls skip the
+          approval modal. Localhost / private-network hosts are still rejected at the tool layer
+          regardless of this flag (SSRF guard). Same per-workspace policy file as above.
         </div>
       </div>
     </Modal>

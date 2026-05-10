@@ -7,6 +7,8 @@ export interface PendingApproval {
   cmd: string;
   /** Coarse pattern the backend suggests for "Allow always" (e.g. `git push *`). */
   suggestedAllow: string;
+  /** "command" (default) | "web_fetch" | "web_search" — drives the modal copy. */
+  kind?: "command" | "web_fetch" | "web_search";
 }
 
 interface Props {
@@ -69,20 +71,33 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Pr
   if (!pending) return null;
 
   const cmdChanged = edited.trim() !== pending.cmd.trim();
+  const kind = pending.kind ?? "command";
+  const isWeb = kind === "web_fetch" || kind === "web_search";
+  const title = kind === "web_fetch"
+    ? "Agent wants to fetch a URL"
+    : kind === "web_search"
+      ? "Agent wants to run a web search"
+      : "Agent wants to run a command";
+  const fieldLabel = kind === "web_fetch" ? "URL" : kind === "web_search" ? "Query" : "Command";
+  const hint = kind === "web_fetch"
+    ? "The agent will fetch this URL and read its plaintext. Loopback / private IPs are blocked at the tool layer regardless. Enable \"Auto-allow web tools\" in Settings to skip this prompt."
+    : kind === "web_search"
+      ? "The agent will run this DuckDuckGo HTML search and read the result list (no clicks). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
+      : "This command isn’t on your allow-list yet. Review it carefully before letting the agent run it.";
 
   return (
     <div className="modal-backdrop policy-modal-backdrop">
       <div className="modal policy-modal" role="dialog" aria-modal="true" aria-labelledby="policy-modal-title">
         <div className="modal-header">
           <div id="policy-modal-title" className="modal-title">
-            <span className="policy-modal-icon"><IconAlertTriangle size={13} /></span> Agent wants to run a command
+            <span className="policy-modal-icon"><IconAlertTriangle size={13} /></span> {title}
           </div>
         </div>
         <div className="modal-body">
           <div className="policy-modal-hint">
-            This command isn’t on your allow-list yet. Review it carefully before letting the agent run it.
+            {hint}
           </div>
-          <div className="policy-modal-cmd-label">Command</div>
+          <div className="policy-modal-cmd-label">{fieldLabel}</div>
           <input
             ref={inputRef}
             className="policy-modal-cmd"
@@ -102,21 +117,23 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Pr
               Edited from: <code>{pending.cmd}</code>
             </div>
           )}
-          <div className="policy-modal-trust">
-            <label>
-              <span className="policy-modal-trust-label">“Allow always” pattern</span>
-              <input
-                className="policy-modal-trust-input"
-                value={trustPattern}
-                onChange={(e) => setTrustPattern(e.target.value)}
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </label>
-            <div className="policy-modal-trust-hint">
-              Used only when you click <b>Allow always</b>. <code>*</code> is a wildcard. Edit it to be as specific as you’re comfortable with.
+          {!isWeb && (
+            <div className="policy-modal-trust">
+              <label>
+                <span className="policy-modal-trust-label">“Allow always” pattern</span>
+                <input
+                  className="policy-modal-trust-input"
+                  value={trustPattern}
+                  onChange={(e) => setTrustPattern(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <div className="policy-modal-trust-hint">
+                Used only when you click <b>Allow always</b>. <code>*</code> is a wildcard. Edit it to be as specific as you’re comfortable with.
+              </div>
             </div>
-          </div>
+          )}
         </div>
         <div className="modal-footer policy-modal-footer">
           <button
@@ -126,7 +143,7 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Pr
           >
             Deny
           </button>
-          {onAutoApproveAll && (
+          {onAutoApproveAll && !isWeb && (
             <button
               className="policy-modal-yolo"
               onClick={() => onAutoApproveAll(pending.askId, edited.trim() || undefined)}
@@ -143,13 +160,15 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Pr
           >
             Allow once
           </button>
-          <button
-            className="policy-modal-allow-always"
-            onClick={() => onAnswer(pending.askId, "allow_always", edited.trim() || undefined)}
-            title="Cmd/Ctrl+Enter"
-          >
-            Allow always
-          </button>
+          {!isWeb && (
+            <button
+              className="policy-modal-allow-always"
+              onClick={() => onAnswer(pending.askId, "allow_always", edited.trim() || undefined)}
+              title="Cmd/Ctrl+Enter"
+            >
+              Allow always
+            </button>
+          )}
         </div>
       </div>
     </div>

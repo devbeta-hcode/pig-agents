@@ -28,7 +28,7 @@ import {
   listCheckpoints,
   restoreCheckpoint,
 } from "../utils/checkpoints.js";
-import { loadPolicy, savePolicy, setAutoApprove, trust as policyTrust, type Policy } from "../utils/policy.js";
+import { loadPolicy, savePolicy, setAutoApprove, setAutoApproveWeb, trust as policyTrust, type Policy } from "../utils/policy.js";
 import { resolveApproval, type ApprovalDecision } from "../utils/approvals.js";
 
 export const router = Router();
@@ -312,6 +312,16 @@ router.post("/policy/auto-approve", async (req, res) => {
     const value = !!req.body?.value;
     const p = await setAutoApprove(value);
     res.json({ ok: true, autoApprove: !!p.autoApprove, policy: p });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+router.post("/policy/auto-approve-web", async (req, res) => {
+  try {
+    const value = !!req.body?.value;
+    const p = await setAutoApproveWeb(value);
+    res.json({ ok: true, autoApproveWeb: !!p.autoApproveWeb, policy: p });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

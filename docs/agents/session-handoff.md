@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-12
+Last updated: 2026-05-13
 
 ---
 
@@ -126,6 +126,59 @@ The dev server URLs:
    [`workflows.md`](workflows.md).
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
+
+### Last session (2026-05-13) — web tools (`web_fetch` / `web_search`) with approval gate
+
+- New backend tool `app/backend/src/tools/web.ts`:
+  - `webFetch(url, maxChars)` — Node 20 `fetch`, hand-rolled HTML→text
+    stripper, 12 KB body cap, 15 s timeout, realistic UA. SSRF guard
+    rejects non-http(s), loopback, link-local, and RFC1918 hosts before the
+    request fires.
+  - `webSearch(query)` — scrapes `html.duckduckgo.com` (no API key, no
+    third-party deps), returns up to 8 `{title, url, snippet}` hits.
+- Executor (`app/backend/src/agent/executor.ts`):
+  - `gateWebApproval(ctx, kind, initial)` emits a `policy_ask` SSE event
+    with `kind: "web_fetch" | "web_search"` and waits for the user's
+    answer — unless `policy.autoApproveWeb` is on, in which case it skips.
+  - New cases `web_fetch` / `web_search` wired into the tool dispatch.
+- Policy (`app/backend/src/utils/policy.ts`): added
+  `autoApproveWeb?: boolean` field + `setAutoApproveWeb(value)` mutator.
+  Persisted to `<workspace>/.pig-agents/policy.json`.
+- Route: `POST /policy/auto-approve-web` → `{ ok, autoApproveWeb, policy }`.
+- Prompt (both `prompt.ts` and `prompt-compact.ts`): added the two tools to
+  the catalogue with one-line usage hints; warning that web access is
+  always gated by user approval (or the auto-allow toggle).
+- Frontend:
+  - `lib/api.ts`: `CommandPolicy.autoApproveWeb?` + `setAutoApproveWeb()`.
+  - `CommandApprovalModal.tsx`: `PendingApproval.kind` field; modal title /
+    field label / hint copy now branch on `kind`. For web kinds the
+    "Allow always" pattern row + button + "Auto-approve all" button are
+    hidden — those are shell-specific concepts; the equivalent for web is
+    the Settings toggle.
+  - `Chat.tsx`: forwards `kind` from the SSE event into the approval queue.
+  - `SettingsModal.tsx`: new "Auto-allow web tools" toggle right under the
+    existing command auto-approve toggle, hitting
+    `/policy/auto-approve-web`.
+- Build: `npm run build` is green for both backend and frontend.
+
+### Last session (2026-05-12) — stray END/EOF marker leaking into create_file
+
+- Symptom: model frequently appended `END` (or `EOF`, `END_OF_FILE`) on a
+  fresh line at the bottom of a `create_file` content payload — confused
+  with the `write_patch` SEARCH/REPLACE/END syntax. The marker became a
+  literal line in the produced file, so `main.jsx` would throw
+  `Uncaught ReferenceError: END is not defined` in the browser.
+- `app/backend/src/agent/executor.ts`: added `stripStrayPatchMarkers()`
+  helper. The `create_file` case now passes `content` through it before
+  writing to disk. Pattern only matches a sentinel-only trailing line so
+  legitimate code containing the word "END" mid-line is untouched.
+- `app/backend/src/tools/patch.ts`: `parsePatch` single-file form (when
+  `defaultPath` is supplied) now also strips a trailing `\nEND` from the
+  REPLACE body — same root cause: model adds it out of habit even though
+  the single-file shape doesn't take a terminator.
+- `app/backend/src/llm/prompt.ts` and `app/backend/src/llm/prompt-compact.ts`:
+  `create_file` description now explicitly warns that content is written
+  verbatim and END/EOF markers belong only to write_patch.
 
 ### Last session (2026-05-12) — model hallucinated cwd (`cd /workspace`)
 

@@ -46,6 +46,12 @@ export interface Policy {
    * the next stretch, stop nagging" rather than "remove all guardrails".
    */
   autoApprove?: boolean;
+  /**
+   * Web-tool auto-approve. When true, `web_fetch` / `web_search` skip the
+   * approval modal. SSRF / loopback / private-network hosts are still
+   * rejected at the tool layer regardless of this flag.
+   */
+  autoApproveWeb?: boolean;
 }
 
 export const DEFAULT_POLICY: Policy = {
@@ -187,6 +193,7 @@ export async function loadPolicy(workspace?: string): Promise<Policy> {
         allow: Array.isArray(obj.allow) ? obj.allow : DEFAULT_POLICY.allow,
         trusted: Array.isArray(obj.trusted) ? obj.trusted : [],
         autoApprove: !!obj.autoApprove,
+        autoApproveWeb: !!obj.autoApproveWeb,
       };
     }
   } catch {
@@ -213,6 +220,16 @@ export async function setAutoApprove(value: boolean, workspace?: string): Promis
   const p = await loadPolicy(ws);
   if (!!p.autoApprove === !!value) return p;
   p.autoApprove = !!value;
+  await savePolicy(p, ws);
+  return p;
+}
+
+/** Same as `setAutoApprove` but for the web tools (`web_fetch` / `web_search`). */
+export async function setAutoApproveWeb(value: boolean, workspace?: string): Promise<Policy> {
+  const ws = workspace ?? getWorkspace();
+  const p = await loadPolicy(ws);
+  if (!!p.autoApproveWeb === !!value) return p;
+  p.autoApproveWeb = !!value;
   await savePolicy(p, ws);
   return p;
 }

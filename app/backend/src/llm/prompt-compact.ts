@@ -102,7 +102,9 @@ TOOLS:
 - glob: {"type":"glob","input":{"pattern":"**/*.ts"}}
 - run_command: {"type":"run_command","input":{"cmd":"npm test"}} — runs with cwd = workspace root (see WORKSPACE_PATH below). Do NOT prefix with "cd /workspace", "cd /data/workspace", or any imagined absolute path — they don't exist; the command will fail with "No such file or directory". For sub-folders use relative "cd ./sub && ...".
 - write_patch: {"type":"write_patch","input":{"patches":"FILE:path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND"}} — after FILE: rel/path the next line must be SEARCH then REPLACE (never raw file body under FILE:); new file = SEARCH\\n\\nREPLACE\\n<content>\\nEND. Or {"path":"x.ts","patches":"SEARCH\\n..."} only.
-- create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}}
+- create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}} — content is written verbatim. Do NOT add END/EOF/END_OF_FILE markers; those belong to write_patch and will end up as literal text breaking the file.
+- web_search: {"type":"web_search","input":{"query":"react useEffect cleanup"}} — DDG HTML scrape, top results (title/url/snippet). Each call needs user approval unless auto-allow is on.
+- web_fetch: {"type":"web_fetch","input":{"url":"https://docs.example.com/api"}} — fetch HTTP(S), strip HTML, return plaintext (capped). Refuses localhost/private IPs. Each call needs user approval unless auto-allow is on.
 
 Parallel: emit multiple ACTION lines for independent ops (e.g. reading several files at once).
 
@@ -140,7 +142,7 @@ OR
 THOUGHT: <done>
 FINAL: <answer>
 
-Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file
+Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file, web_search, web_fetch
 
 Example:
 User: "Read main.ts"

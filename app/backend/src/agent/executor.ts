@@ -4,8 +4,9 @@ import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, makeUnifi
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
 import { startAgentCommand } from "./commandLog.js";
 import { getWorkspace } from "../utils/workspace.js";
-import { decide as policyDecide, trust as policyTrust } from "../utils/policy.js";
+import { decide as policyDecide, trust as policyTrust, loadPolicy as loadAgentPolicy } from "../utils/policy.js";
 import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approvals.js";
+import { webFetch, webSearch } from "../tools/web.js";
 
 export interface ToolOutcome {
   ok: boolean;
@@ -30,6 +31,69 @@ export interface ToolContext {
   emit?: (event: { type: string; [k: string]: unknown }) => void;
   /** Per-run read_file cache to prevent duplicate file reads wasting tokens. */
   readCache?: Map<string, string>;
+}
+
+/**
+ * Strip stray write_patch sentinel markers (`END`, `EOF`, `END_OF_FILE`,
+ * `END_PATCH`, `END_FILE`) that the model sometimes appends to a
+ * `create_file` content payload after confusing it with the `write_patch`
+ * SEARCH/REPLACE/END syntax. Without this guard the marker ends up at the
+ * tail of `main.jsx` and the browser throws `Uncaught ReferenceError: END
+ * is not defined`. Only strips the marker when it sits **alone** on the
+ * very last line so legitimate code containing the word "END" mid-line is
+ * left intact.
+ */
+function stripStrayPatchMarkers(content: string): string {
+  if (!content) return content;
+  // Up to two trailing sentinel-only lines (e.g. `END\n\n` or `END\nEOF\n`).
+  return content.replace(/(?:\r?\n[ \t]*(?:END|EOF|END_OF_FILE|END_PATCH|END_FILE)[ \t]*){1,2}\s*$/i, "");
+}
+
+/**
+ * Approval bridge for the `web_fetch` / `web_search` tools.
+ *
+ * Mirrors the `run_command` flow: emits a `policy_ask` event the frontend
+ * uses to render the modal, then awaits the user's POST to
+ * `/agent/approvals/:askId`. The `kind` field lets the modal pick a
+ * URL-friendly title and skip the shell-pattern UI. If `autoApproveWeb` is
+ * on in the workspace policy, we skip straight to allow.
+ *
+ * Returns the (possibly user-edited) URL/query, or a deny reason.
+ */
+async function gateWebApproval(
+  ctx: ToolContext,
+  kind: "web_fetch" | "web_search",
+  initial: string,
+): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
+  const policy = await loadAgentPolicy().catch(() => null);
+  if (policy?.autoApproveWeb) {
+    ctx.emit?.({ type: "policy_decision", decision: "allow_auto", cmd: initial, kind });
+    return { ok: true, value: initial };
+  }
+
+  const askId = newAskId();
+  ctx.emit?.({ type: "policy_ask", askId, cmd: initial, suggestedAllow: initial, kind });
+  let ans: ApprovalAnswer;
+  try {
+    ans = await waitForApproval(askId, initial, { runId: ctx.runId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: initial, kind, reason: msg });
+    return { ok: false, reason: `${kind} not approved: ${msg}` };
+  }
+  if (ans.decision === "deny") {
+    ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: initial, kind, reason: "user denied" });
+    return { ok: false, reason: `${kind} denied by user.` };
+  }
+  const value = (typeof ans.editedCmd === "string" && ans.editedCmd.trim()) ? ans.editedCmd.trim() : initial;
+  ctx.emit?.({
+    type: "policy_decision",
+    decision: ans.decision,
+    cmd: value,
+    kind,
+    originalCmd: value === initial ? undefined : initial,
+  });
+  return { ok: true, value };
 }
 
 export async function executeTool(
@@ -326,7 +390,7 @@ export async function executeTool(
       }
       case "create_file": {
         const p = String(input.path || "");
-        const content = String(input.content ?? "");
+        const content = stripStrayPatchMarkers(String(input.content ?? ""));
         if (!p) return { ok: false, summary: "create_file: missing 'path'" };
         // Capture pre-state so DiffViewer can render a row + revert can restore it.
         // Treat unreadable / non-existent as an empty file (mark the patch as a
@@ -349,6 +413,59 @@ export async function executeTool(
           ok: true,
           summary: `glob "${pattern}" → ${matches.length} matches:\n${matches.slice(0, 200).join("\n")}`,
           data: matches,
+        };
+      }
+      case "web_fetch": {
+        const rawUrl = String(input.url || "").trim();
+        if (!rawUrl) return { ok: false, summary: "web_fetch: missing 'url'" };
+
+        // Approval gate: per-call modal unless `autoApproveWeb` is on.
+        const approved = await gateWebApproval(ctx, "web_fetch", rawUrl);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        const url = approved.value;
+
+        const result = await webFetch(url, {
+          maxChars: typeof input.maxChars === "number" ? input.maxChars : undefined,
+          timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+        });
+        if (!result.ok && !result.text) {
+          return { ok: false, summary: `web_fetch failed: ${result.error ?? "unknown error"} (url=${url})` };
+        }
+        const headerLines = [
+          `URL: ${result.finalUrl ?? url}`,
+          result.status !== undefined ? `Status: ${result.status}` : null,
+          result.contentType ? `Content-Type: ${result.contentType}` : null,
+          result.truncated ? "Truncated: yes" : null,
+        ].filter(Boolean).join("\n");
+        const body = result.text ?? "";
+        return {
+          ok: result.ok,
+          summary: `web_fetch ${url}\n${headerLines}\n\n${body}`,
+          data: result,
+        };
+      }
+      case "web_search": {
+        const query = String(input.query || "").trim();
+        if (!query) return { ok: false, summary: "web_search: missing 'query'" };
+
+        const approved = await gateWebApproval(ctx, "web_search", query);
+        if (!approved.ok) return { ok: false, summary: approved.reason };
+        const q = approved.value;
+
+        const result = await webSearch(q, {
+          maxResults: typeof input.maxResults === "number" ? input.maxResults : undefined,
+          timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+        });
+        if (!result.ok || result.hits.length === 0) {
+          return { ok: false, summary: `web_search failed: ${result.error ?? "no results"} (query=${q})` };
+        }
+        const lines = result.hits.map((h, i) =>
+          `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`,
+        );
+        return {
+          ok: true,
+          summary: `web_search "${q}" → ${result.hits.length} result(s)\n${lines.join("\n\n")}`,
+          data: result,
         };
       }
       default:

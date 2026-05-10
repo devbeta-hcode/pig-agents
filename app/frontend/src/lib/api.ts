@@ -86,6 +86,8 @@ export interface CommandPolicy {
   trusted: string[];
   /** YOLO mode — auto-approve everything except hard-deny patterns. */
   autoApprove?: boolean;
+  /** Auto-approve `web_fetch` / `web_search` calls. SSRF guards still apply. */
+  autoApproveWeb?: boolean;
 }
 
 export type PolicyDecision = "allow_once" | "allow_always" | "deny";
@@ -326,6 +328,11 @@ export const api = {
     }).then(jsonOrThrow),
   setAutoApprove: (value: boolean): Promise<{ ok: true; autoApprove: boolean; policy: CommandPolicy }> =>
     apiFetch(`${BASE}/policy/auto-approve`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    }).then(jsonOrThrow),
+  setAutoApproveWeb: (value: boolean): Promise<{ ok: true; autoApproveWeb: boolean; policy: CommandPolicy }> =>
+    apiFetch(`${BASE}/policy/auto-approve-web`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
     }).then(jsonOrThrow),

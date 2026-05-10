@@ -1834,7 +1834,12 @@ export function Chat({
       startTransition(() => {
         setApprovalQueue((q) => [
           ...q,
-          { askId: ev.askId!, cmd: String(ev.cmd), suggestedAllow: String(ev.suggestedAllow ?? ev.cmd) },
+          {
+            askId: ev.askId!,
+            cmd: String(ev.cmd),
+            suggestedAllow: String(ev.suggestedAllow ?? ev.cmd),
+            kind: (ev.kind === "web_fetch" || ev.kind === "web_search") ? ev.kind : "command",
+          },
         ]);
       });
     }
