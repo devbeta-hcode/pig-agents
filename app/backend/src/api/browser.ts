@@ -152,8 +152,34 @@ browserRouter.post("/browser/hover", async (req, res) => {
   const { x, y } = req.body as { x?: number; y?: number };
   if (x == null || y == null) return res.status(400).json({ error: "x and y required" });
   try {
-    const label = await browserSession.hover(x, y);
-    res.json({ ok: true, label });
+    const info = await browserSession.hover(x, y);
+    res.json({ ok: true, label: info.label, cursor: info.cursor });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+// Real mouse-move: dispatched on hover so :hover / mouseenter / mousemove
+// handlers run on the live page (the panel cursor alone doesn't trigger them).
+browserRouter.post("/browser/move", async (req, res) => {
+  const { x, y } = req.body as { x?: number; y?: number };
+  if (x == null || y == null) return res.status(400).json({ error: "x and y required" });
+  try {
+    await browserSession.mouseMove(x, y);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+// Resize the live viewport + screencast resolution. Sent by the panel on
+// mount and on container resize so frames stay crisp at the displayed size.
+browserRouter.post("/browser/viewport", async (req, res) => {
+  const { width, height, dpr } = req.body as { width?: number; height?: number; dpr?: number };
+  if (!width || !height) return res.status(400).json({ error: "width and height required" });
+  try {
+    await browserSession.setViewport(width, height, dpr ?? 1);
+    res.json({ ok: true, viewport: browserSession.getViewport() });
   } catch (err) {
     res.status(500).json({ ok: false, error: (err as Error).message });
   }

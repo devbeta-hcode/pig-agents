@@ -41,15 +41,44 @@ exhaust the iteration budget and end with `FINAL: Iteration limit reached`.
 
 ## Tools
 
-Catalogue advertised in `llm/prompt.ts`:
+Catalogue advertised in `llm/prompt.ts` (and the compact mirror in
+`llm/prompt-compact.ts`):
 
 | Tool | Input | Effect |
 | --- | --- | --- |
-| `read_file` | `{ "path": "rel/path" }` | returns file contents |
+| `codebase_map` | `{ "max_depth": 5 }` | full tree + manifest excerpts; rarely needed (a depth-3 tree is already in context) |
+| `read_file` | `{ "path": "rel/path" }` | returns file contents (per-run cache dedupes repeats) |
 | `list_files` | `{ "dir": "rel/dir" }` | lists entries in dir |
 | `search_code` | `{ "query": "text" }` | full-text search across workspace |
-| `run_command` | `{ "cmd": "shell command" }` | **smart execution** — auto-detects long-running commands (dev servers, watchers) and runs them in background mode with ready-signal detection; short commands run normally with 30s timeout |
-| `write_patch` | `{ "patches": "FILE: …\nSEARCH\n<old>\nREPLACE\n<new>\nEND" }` | applies patches; returns unified diffs |
+| `glob` | `{ "pattern": "**/*.ts" }` | filename glob |
+| `run_command` | `{ "cmd": "shell command" }` | **smart execution** \u2014 see below. Gated by the workspace approval policy. |
+| `write_patch` | `{ "patches": "FILE: \u2026\nSEARCH\n<old>\nREPLACE\n<new>\nEND" }` | applies SEARCH/REPLACE patches; returns unified diffs |
+| `create_file` | `{ "path", "content" }` | overwrite a file with verbatim `content` (no SEARCH/REPLACE) |
+| `web_search` | `{ "query" }` | DuckDuckGo HTML scrape \u2014 returns top results `{title,url,snippet}`. Approval gated. |
+| `web_fetch` | `{ "url", "maxChars?" }` | raw HTTP(S) fetch + HTML\u2192text strip. Refuses loopback / RFC1918 hosts. Approval gated. |
+| `browser_navigate` | `{ "url" }` | drive the embedded Playwright Chromium (Browser panel). Auto-launches on first call. Approval gated. |
+| `browser_get_text` | `{ "selector?", "maxChars?" }` | visible text (`innerText`) of page or selector subtree |
+| `browser_get_html` | `{ "selector?", "maxChars?" }` | outer HTML of page or selector |
+| `browser_click` | `{ "selector", "timeoutMs?" }` | click first matching element (CSS or Playwright `text=...`) |
+| `browser_fill` | `{ "selector", "value" }` | type into `<input>` / `<textarea>` |
+| `browser_wait_for` | `{ "selector", "state?", "timeoutMs?" }` | wait for selector before reading |
+| `browser_eval` | `{ "js" }` | evaluate JS in the page; result JSON-stringified. Escape hatch. |
+
+### Approval gate
+
+`run_command`, all `web_*`, and all `browser_*` calls go through
+`utils/policy.ts` + `utils/approvals.ts`:
+
+- The runner emits a `policy_ask` SSE event with `kind: "command" |
+  "web_fetch" | "web_search" | "browser"` and a human-readable
+  `cmd`/description.
+- The frontend's `CommandApprovalModal` lets the user **Allow once**,
+  **Allow always** (commands only \u2014 stores a glob in
+  `<workspace>/.pig-agents/policy.json`), **Deny**, or **Auto-approve all**
+  (commands only).
+- Web / browser approvals are bypassed when `policy.autoApproveWeb` is on
+  (Settings \u2192 "Auto-allow web tools"). The shell deny-list still
+  applies to `run_command` regardless.
 
 ### Smart command execution (`tools/smartCommand.ts`)
 
@@ -116,6 +145,8 @@ runAgent({ task, mode })
 | `token` | `{ iteration, delta }` (per-LLM-token streaming) |
 | `thought` | `{ iteration, thought }` |
 | `action` | `{ iteration, tool, input }` |
+| `policy_ask` | `{ askId, cmd, suggestedAllow, kind: "command" \| "web_fetch" \| "web_search" \| "browser" }` \u2014 frontend renders the approval modal and POSTs `/agent/approvals/:askId` |
+| `policy_decision` | `{ decision, cmd, kind, originalCmd?, reason? }` \u2014 emitted after the user answers (or auto-allow fires) |
 | `observation` | `{ iteration, ok, summary, diffs? }` |
 | `final` | `{ result }` |
 | `error` | `{ message }` |

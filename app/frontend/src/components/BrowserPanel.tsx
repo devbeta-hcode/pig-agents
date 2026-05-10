@@ -49,6 +49,10 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
   const [currentUrl, setCurrentUrl] = useState("");
   const [hoverLabel, setHoverLabel] = useState<string | null>(null);
   const [hoverScreen, setHoverScreen] = useState<{ x: number; y: number } | null>(null);
+  // Cursor style read from the live page at the hover position so the
+  // panel matches what the real browser would show (pointer on links,
+  // text on inputs, etc.). null = use our own default.
+  const [pageCursor, setPageCursor] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
   const [installingDeps, setInstallingDeps] = useState(false);
@@ -61,12 +65,30 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
   const pendingStartAfterInstall = useRef(false);
   const handleStartRef = useRef<() => Promise<void>>();
 
+  // The page's layout viewport is pinned server-side to 1280×800 (desktop)
+  // so sites never collapse into mobile layout when the panel is narrow.
+  // What we DO send to the backend on resize is the panel's display size —
+  // Chromium downscales the rendered page to that resolution before
+  // streaming, so frames stay crisp without forcing a wasteful full-DPR
+  // capture. `viewport` here is just the layout dims used for click-coord
+  // mapping (stays fixed).
+  const viewport = { w: 1280, h: 800 };
+  const viewportSentRef = useRef<{ w: number; h: number; dpr: number }>({ w: 0, h: 0, dpr: 0 });
+
   const imgRef = useRef<HTMLImageElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const moveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingMove = useRef<{ x: number; y: number } | null>(null);
+  const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingScroll = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
+  // Monotonic request ids for async WS replies (hover label, inspect rect).
+  // Replies that don't match the latest id are dropped, so a stale label
+  // never overwrites a fresher one when the cursor is moving fast.
+  const hoverReqRef = useRef(0);
+  const inspectReqRef = useRef(0);
 
   // ── fetch initial status ──────────────────────────────────────────────────
   useEffect(() => {
@@ -113,6 +135,14 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
             if (typeof msg.running === "boolean") {
               setStatus((s) => ({ ...s, running: msg.running }));
             }
+          } else if (msg.type === "hover_label") {
+            // Drop stale labels: only the most recent request wins.
+            if (msg.id === hoverReqRef.current) {
+              setHoverLabel(msg.label ?? null);
+              setPageCursor(typeof msg.cursor === "string" ? msg.cursor : null);
+            }
+          } else if (msg.type === "inspect_rect") {
+            if (msg.id === inspectReqRef.current && msg.rect) setInspectRect(msg.rect);
           } else if (msg.type === "install_progress") {
             setInstallLog((l) => [...l.slice(-100), msg.line]);
           } else if (msg.type === "install_done") {
@@ -154,11 +184,66 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
     return r.json();
   }
 
-  function scaleCoords(e: React.MouseEvent<HTMLImageElement>) {
+  // Send a fire-and-forget input event over the bidirectional /browser/ws
+  // socket. This is the hot path for mouse/keyboard/scroll: HTTP per event
+  // would queue up dozens of round-trips per second and feel sluggish, plus
+  // overload the backend. Server coalesces moves/scrolls/viewport for us.
+  function wsSend(payload: object): boolean {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try { ws.send(JSON.stringify(payload)); return true; }
+    catch { return false; }
+  }
+
+  // On panel resize, tell Chromium to *render* its screencast frames at the
+  // panel's display resolution. The page layout stays at desktop 1280×800
+  // server-side; only the JPEG output size changes — keeping frames small
+  // and crisp instead of bilinearly upscaled blobs.
+  useEffect(() => {
+    if (!status.running) return;
+    const el = viewportRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+
+    const send = () => {
+      const rect = el.getBoundingClientRect();
+      const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const w = Math.max(160, Math.min(2560, Math.round(rect.width)));
+      const h = Math.max(120, Math.min(1600, Math.round(rect.height)));
+      if (!w || !h) return;
+      const last = viewportSentRef.current;
+      if (last.w === w && last.h === h && last.dpr === dpr) return;
+      viewportSentRef.current = { w, h, dpr };
+      // Try the WS first (server debounces internally); fall back to HTTP
+      // if the socket isn't ready yet (e.g. during initial connect).
+      const sent = wsSend({ type: "viewport", width: w, height: h, dpr });
+      if (!sent) {
+        fetch("/api/browser/viewport", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ width: w, height: h, dpr }),
+        }).catch(() => { /* swallow */ });
+      }
+    };
+
+    send();
+    const ro = new ResizeObserver(() => {
+      if (resizeTimer.current) clearTimeout(resizeTimer.current);
+      resizeTimer.current = setTimeout(send, 200);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      if (resizeTimer.current) clearTimeout(resizeTimer.current);
+    };
+  }, [status.running]);
+
+  // Map panel-pixel coords → desktop layout coords (1280×800), since that's
+  // what `page.mouse.click(x,y)` and friends expect server-side.
+  function scaleCoords(e: { clientX: number; clientY: number }) {
     const rect = imgRef.current!.getBoundingClientRect();
     return {
-      x: Math.round(((e.clientX - rect.left) / rect.width) * 1280),
-      y: Math.round(((e.clientY - rect.top) / rect.height) * 800),
+      x: Math.round(((e.clientX - rect.left) / rect.width) * viewport.w),
+      y: Math.round(((e.clientY - rect.top) / rect.height) * viewport.h),
     };
   }
 
@@ -226,7 +311,8 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
       }
       return;
     }
-    await post("/click", { x, y });
+    // Click goes over WS — no response needed and we want minimal latency.
+    if (!wsSend({ type: "click", x, y })) await post("/click", { x, y });
   }
 
   function handleImgMouseMove(e: React.MouseEvent<HTMLImageElement>) {
@@ -237,27 +323,54 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
     // In inspect mode: debounce element highlight
     if (inspecting) {
       if (inspectHoverTimer.current) clearTimeout(inspectHoverTimer.current);
-      inspectHoverTimer.current = setTimeout(async () => {
-        const r = await post("/element", { x, y });
-        if (r.element?.rect) setInspectRect(r.element.rect);
+      inspectHoverTimer.current = setTimeout(() => {
+        const id = ++inspectReqRef.current;
+        if (!wsSend({ type: "inspect_hover", x, y, id })) {
+          // HTTP fallback if the socket dropped
+          post("/element", { x, y }).then((r) => {
+            if (id === inspectReqRef.current && r.element?.rect) setInspectRect(r.element.rect);
+          });
+        }
       }, 60);
       return;
     }
 
-    // Debounce hover label fetch (100ms)
+    // Dispatch the *real* mouse move to Chrome so :hover, mouseenter, and
+    // mousemove handlers fire on the live page. Sent over WS — the server
+    // coalesces a burst of events down to one CDP call per 16 ms tick.
+    pendingMove.current = { x, y };
+    if (!moveTimer.current) {
+      moveTimer.current = setTimeout(() => {
+        moveTimer.current = null;
+        const m = pendingMove.current;
+        pendingMove.current = null;
+        if (!m) return;
+        if (!wsSend({ type: "move", x: m.x, y: m.y })) post("/move", m);
+      }, 16);
+    }
+
+    // Hover label tooltip is a separate, slower request so it doesn't
+    // saturate page.evaluate on every mousemove. Reply is matched by id.
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(async () => {
-      const r = await post("/hover", { x, y });
-      setHoverLabel(r.label ?? null);
-    }, 100);
+    hoverTimer.current = setTimeout(() => {
+      const id = ++hoverReqRef.current;
+      if (!wsSend({ type: "hover", x, y, id })) {
+        post("/hover", { x, y }).then((r) => {
+          if (id === hoverReqRef.current) {
+            setHoverLabel(r.label ?? null);
+            setPageCursor(typeof r.cursor === "string" ? r.cursor : null);
+          }
+        });
+      }
+    }, 60);
   }
 
   function handleWheel(e: React.WheelEvent<HTMLDivElement>) {
     e.preventDefault();
     if (!imgRef.current) return;
     const rect = imgRef.current.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * 1280);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * 800);
+    const x = Math.round(((e.clientX - rect.left) / rect.width) * viewport.w);
+    const y = Math.round(((e.clientY - rect.top) / rect.height) * viewport.h);
 
     // Batch scroll events within 16ms
     if (pendingScroll.current) {
@@ -270,7 +383,9 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
     scrollTimer.current = setTimeout(() => {
       const s = pendingScroll.current!;
       pendingScroll.current = null;
-      post("/scroll", { x: s.x, y: s.y, deltaX: s.dx, deltaY: s.dy });
+      if (!wsSend({ type: "scroll", x: s.x, y: s.y, dx: s.dx, dy: s.dy })) {
+        post("/scroll", { x: s.x, y: s.y, deltaX: s.dx, deltaY: s.dy });
+      }
     }, 16);
   }
 
@@ -296,10 +411,10 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
         e.altKey ? "Alt" : "",
       ].filter(Boolean);
       const combo = mods.length ? `${mods.join("+")}+${special}` : special;
-      post("/key", { key: combo });
+      if (!wsSend({ type: "key", key: combo })) post("/key", { key: combo });
     } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
-      post("/type", { text: e.key });
+      if (!wsSend({ type: "type", text: e.key })) post("/type", { text: e.key });
     }
   }
 
@@ -476,7 +591,7 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
         onWheel={handleWheel}
         onFocus={() => setViewportFocused(true)}
         onBlur={() => setViewportFocused(false)}
-        onMouseLeave={() => { setHoverLabel(null); setHoverScreen(null); setInspectRect(null); }}
+        onMouseLeave={() => { setHoverLabel(null); setHoverScreen(null); setInspectRect(null); setPageCursor(null); }}
         style={{ outline: "none" }}
       >
         {connState !== "connected" ? (
@@ -490,7 +605,7 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
             className="browser-screencast"
             alt="Browser screencast"
             draggable={false}
-            style={{ cursor: inspecting ? "crosshair" : "default" }}
+            style={{ cursor: inspecting ? "crosshair" : (pageCursor ?? "default") }}
             onClick={handleImgClick}
             onMouseMove={handleImgMouseMove}
           />
@@ -499,8 +614,8 @@ export default function BrowserPanel({ onAddToChat, onAddElementToChat }: Browse
         {inspecting && inspectRect && imgRef.current && (() => {
           const img = imgRef.current!.getBoundingClientRect();
           const vp = viewportRef.current!.getBoundingClientRect();
-          const scaleX = img.width / 1280;
-          const scaleY = img.height / 800;
+          const scaleX = img.width / viewport.w;
+          const scaleY = img.height / viewport.h;
           const left = img.left - vp.left + inspectRect.left * scaleX;
           const top = img.top - vp.top + inspectRect.top * scaleY;
           const width = inspectRect.width * scaleX;

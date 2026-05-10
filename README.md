@@ -11,7 +11,8 @@ Not a demo. The agent reads/writes real files, runs real commands, and validates
 ### Backend (`app/backend`, Node.js + TypeScript, Express + WS)
 
 - **Agent loop** with strict ReAct format (`THOUGHT` / `ACTION` / `FINAL`) and iteration cap
-- **Tool system**: `read_file`, `list_files`, `search_code`, `run_command`, `write_patch`
+- **Tool system**: `read_file`, `list_files`, `search_code`, `glob`, `run_command`, `write_patch`, `create_file`, `web_search`, `web_fetch`, and a full `browser_*` family (`navigate`, `get_text`, `get_html`, `click`, `fill`, `wait_for`, `eval`) that drives the embedded Playwright Chromium shown in the Browser panel
+- **Approval gate**: every shell command goes through a per-workspace policy modal (Allow once / Allow always / Deny / Auto-approve all). `web_*` and `browser_*` calls share a separate "Auto-allow web tools" toggle in Settings.
 - **Patch engine**: `SEARCH` / `REPLACE` blocks with uniqueness checks + unified-diff output
 - **Relevance engine**: scores files by keyword, filename, and import hints
 - **Validator**: auto-runs `typecheck` / `lint` / `test` / `build` after patches
@@ -100,6 +101,14 @@ If neither tree exists, the agent still runs — there are simply no extra proje
 | WS     | `/terminal/ws`              | interactive terminal                    |
 | POST   | `/agent/run`                | run agent (JSON response)               |
 | POST   | `/agent/run?stream=1`       | run agent (SSE stream of events)        |
+| POST   | `/agent/approvals/:askId`   | answer a `policy_ask` event (`allow_once` / `allow_always` / `deny`) |
+| GET    | `/policy`                   | read per-workspace approval policy      |
+| POST   | `/policy/auto-approve`      | toggle YOLO command auto-approve        |
+| POST   | `/policy/auto-approve-web`  | toggle auto-allow for `web_*` / `browser_*` tools |
+| GET    | `/browser/status`           | playwright installed? browser running?  |
+| POST   | `/browser/install`          | `npx playwright install chromium` (progress over WS) |
+| POST   | `/browser/start` · `/browser/stop` · `/browser/navigate` | drive the embedded Chromium |
+| WS     | `/browser/ws`               | screencast frames + page events         |
 
 ## Build
 

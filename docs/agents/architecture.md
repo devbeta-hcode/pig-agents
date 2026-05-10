@@ -23,17 +23,21 @@ React/Vite frontend that talks to it.
 │  │  api/        │ │  agent/      │ │  tools/                    │  │
 │  │  routes.ts   │ │  runner.ts   │ │  file.ts  command.ts       │  │
 │  │  fs.ts       │ │  executor.ts │ │  patch.ts terminal.ts (PTY)│  │
-│  │  chats.ts    │ │  parser.ts   │ │                            │  │
-│  │  diff.ts     │ │  commandLog  │ └────────────────────────────┘  │
-│  │  settings.ts │ └──────┬───────┘                                 │
-│  └──────────────┘        │                                         │
-│                          │ uses                                    │
+│  │  chats.ts    │ │  parser.ts   │ │  smartCommand.ts  web.ts   │  │
+│  │  diff.ts     │ │  commandLog  │ │                            │  │
+│  │  settings.ts │ └──────┬───────┘ └────────────────────────────┘  │
+│  │  browser.ts  │        │                                         │
+│  └──────────────┘        │ uses                                    │
+│                          │                                         │
 │  ┌───────────────────────┴───────────────────────────────────────┐ │
 │  │  llm/client.ts ── OpenAI-compatible HTTP client               │ │
 │  │  llm/prompt.ts ── ReAct system prompt                         │ │
+│  │  browser/session.ts ── Playwright Chromium (shared with UI)   │ │
 │  └───────────────────────────────────────────────────────────────┘ │
 │                                                                    │
 │  utils/workspace.ts  → safeJoin, getWorkspace, setWorkspace        │
+│  utils/policy.ts     → per-workspace approval policy + allow-list  │
+│  utils/approvals.ts  → policy_ask ↔ /agent/approvals/:askId bridge │
 │  validation/validator.ts → typecheck/lint/test/build hooks         │
 └────────────────────────────────────────────────────────────────────┘
                           │

@@ -2478,6 +2478,19 @@ export function Chat({
     void respondToApproval(askId, "allow_once", editedCmd);
   }
 
+  // Modal "Always allow web" button: flips the per-workspace auto-allow toggle
+  // for web_fetch / web_search / browser_* tools, then satisfies the current
+  // ask. Same Settings flag, just reachable without leaving the modal.
+  async function autoApproveWebFromModal(askId: string, editedCmd?: string) {
+    try {
+      await api.setAutoApproveWeb(true);
+    } catch (err) {
+      void dlg.alert(`Failed to enable auto-allow web tools: ${(err as Error).message}`);
+      return;
+    }
+    void respondToApproval(askId, "allow_once", editedCmd);
+  }
+
   // Drop the last turn (so a re-run replaces it)
   function dropLastTurn() {
     patchSession((s) => ({ ...s, turns: s.turns.slice(0, -1), updatedAt: Date.now() }));
@@ -2919,6 +2932,7 @@ export function Chat({
         pending={approvalQueue[0] ?? null}
         onAnswer={(askId, decision, editedCmd) => void respondToApproval(askId, decision, editedCmd)}
         onAutoApproveAll={(askId, editedCmd) => void autoApproveAllFromModal(askId, editedCmd)}
+        onAutoApproveWeb={(askId, editedCmd) => void autoApproveWebFromModal(askId, editedCmd)}
       />
     </div>
   );

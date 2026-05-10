@@ -21,6 +21,12 @@ interface Props {
    * provided so this stays a power-user feature.
    */
   onAutoApproveAll?: (askId: string, editedCmd?: string) => void;
+  /**
+   * Optional: flips the per-workspace "auto-allow web tools" toggle on,
+   * then answers the current prompt with allow-once. Only meaningful for
+   * `web_fetch` / `web_search` / `browser` kinds. Hidden when not provided.
+   */
+  onAutoApproveWeb?: (askId: string, editedCmd?: string) => void;
 }
 
 /**
@@ -32,7 +38,7 @@ interface Props {
  * Keyboard: Enter = Allow once, Cmd/Ctrl+Enter = Allow always, Esc = Deny.
  * Mirrors common terminal prompts so muscle memory does the right thing.
  */
-export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Props) {
+export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAutoApproveWeb }: Props) {
   const [edited, setEdited] = useState("");
   const [trustPattern, setTrustPattern] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -174,6 +180,15 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll }: Pr
               title="Cmd/Ctrl+Enter"
             >
               Allow always
+            </button>
+          )}
+          {isWeb && onAutoApproveWeb && (
+            <button
+              className="policy-modal-allow-always"
+              onClick={() => onAutoApproveWeb(pending.askId, edited.trim() || undefined)}
+              title="Allow this and auto-approve all future web_fetch / web_search / browser calls (toggle in Settings)"
+            >
+              <IconZap size={13} style={{ marginRight: 4 }} />Always allow web
             </button>
           )}
         </div>

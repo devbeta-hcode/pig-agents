@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-13
+Last updated: 2026-05-14d
 
 ---
 
@@ -126,6 +126,250 @@ The dev server URLs:
    [`workflows.md`](workflows.md).
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
+
+### Last session (2026-05-14d) — BrowserPanel: page cursor + always-visible scrollbars
+
+Two follow-up complaints from the user about the screencast losing fidelity
+vs a real browser:
+
+1. **Cursor didn't reflect page CSS** — pointer over links, text over
+   inputs, etc. The panel always showed the OS default arrow.
+2. **Scrollbars invisible** even when the page was scrollable. Despite the
+   init-script that injects classic scrollbar CSS, modern Chromium's new
+   *FluentScrollbar* / *OverlayScrollbar* features hide them when the OS
+   cursor isn't actively hovering — and there is no OS cursor in headless.
+
+Fixes:
+
+- **`browser/session.ts` launch args**: added
+  `--disable-features=OverlayScrollbar,FluentScrollbar`. Combined with the
+  existing scrollbar CSS init script, scrollbars now render as classic
+  always-visible 14 px tracks, captured cleanly by the JPEG screencast.
+- **`browser/session.ts` hover()**: now returns
+  `{ label: string|null, cursor: string|null }` instead of just the
+  label. Walks up the DOM from `elementFromPoint` until it finds a
+  computed `cursor` value that isn't `auto`/`inherit` — same logic the
+  browser itself uses to pick a cursor style. Hover debounce on the
+  client dropped 150 ms → 60 ms so cursor changes feel snappy.
+- **`api/browser.ts` `/hover`** + **`server.ts` WS `hover` reply**:
+  forward both `label` and `cursor`. WS reply event is now
+  `{ type: "hover_label", id, label, cursor }`.
+- **`BrowserPanel.tsx`**: new `pageCursor` state, applied to the `<img>`
+  inline `style.cursor`. Inspect mode still wins (`crosshair`).
+  `onMouseLeave` clears it back to default.
+- Build green.
+
+
+
+User feedback: even after the layout/render decoupling, interactions still
+felt laggy because every mousemove/scroll/key/click was a fresh HTTP POST
+to `/api/browser/*`. At ~30 moves/s + scroll bursts that's a constant
+stream of round-trips through Express middleware — both slow and a great
+way to "ngợp backend".
+
+Solution: reuse the existing `/browser/ws` socket as a **bidirectional**
+channel. Same WS that streams JPEG frames now also carries input events
+client → server.
+
+- **Backend `server.ts`** — `browserWss.on("connection")` adds an
+  `ws.on("message")` handler that accepts JSON messages and dispatches:
+  `move`, `scroll`, `click`, `key`, `type`, `hover`, `inspect_hover`,
+  `viewport`. Per-connection coalescing state:
+  - `move` / `scroll` → 16 ms tick (one CDP call per frame max).
+  - `viewport` → 120 ms latest-wins (screencast restart is the costliest).
+  - `hover` and `inspect_hover` carry a client-supplied `id` and the
+    server replies `{type:"hover_label"|"inspect_rect", id, …}` so the
+    client can drop stale replies that arrive after the cursor moved on
+    (no more flickering tooltips).
+  - Cleanup on `ws.close` clears all pending tick timers.
+- **Frontend `BrowserPanel.tsx`** — added `wsSend(payload)` helper.
+  Hot-path events (`click`, `move`, `scroll`, `key`, `type`, `hover`,
+  inspect element highlight, `viewport` resize) now go through the
+  socket; HTTP `post(...)` is kept as a graceful fallback when the WS
+  isn't `OPEN` (initial connect, reconnect window). Hover label /
+  inspect rect listeners added to the WS `onmessage` switch using
+  monotonic `hoverReqRef` / `inspectReqRef` ids — only the latest reply
+  wins. `mousemove` debounce dropped from 30 ms → 16 ms (server already
+  coalesces, so we may as well send promptly).
+- **Unchanged HTTP routes** (rare + need a response): `start`, `stop`,
+  `install`, `navigate`, `back/forward/reload`, `inspect` (full element
+  data + screenshot), `screenshot`, `eval`. Existing per-event POST
+  routes still work for backwards compat / fallback.
+- Build green.
+
+
+
+User feedback after the WebM-extension attempt: **worse** than before — image
+distorted (`object-fit: fill` stretched the desktop frame into the panel's
+aspect), no auto-resize anymore, and interactions felt laggier. Diagnosis:
+the streamer extension never actually worked in headless Chromium (no real
+tab to capture), so we were paying full overhead for nothing. Plus
+`--headless=new` is slower than legacy headless.
+
+Decision: **revert** the extension/MSE/`<video>` path entirely. Solve only
+the original "to tướng" complaint by separating two concepts that had been
+conflated: **layout viewport** (what sites use for responsive design,
+1280×800 desktop, fixed) vs **screencast output resolution** (size of JPEG
+frames Chrome pushes, tracks panel size for crispness without upscaling).
+
+- **Backend `browser/session.ts`**:
+  - Removed `streamerPort` / `streamerActive` / extension launch path. Back
+    to plain `chromium.launch({ headless: true })` + `browser.newContext()`.
+  - Added `private renderCss = { width, height }` field separate from
+    `viewportCss`. The page is created with `viewport: { 1280, 800 }` and
+    that **never changes** for the lifetime of the session — sites always
+    see desktop layout.
+  - Rewrote `setViewport(width, height, dpr)`: now updates `renderCss`
+    only, then restarts `Page.startScreencast` with
+    `maxWidth: min(viewportCss.w, renderCss.w) * dpr`. The min() cap stops
+    us from asking Chrome to upscale a small panel.
+  - Dropped `Emulation.setDeviceMetricsOverride` from setViewport — it was
+    mutating layout, which is exactly what we don't want.
+  - JPEG quality 90 → **80** (smaller frames, faster encode, visually
+    indistinguishable on a screencast).
+- **Backend `server.ts`**: removed `/browser/ingest` WS endpoint and
+  `webm-chunk` event forwarding. Back to single `/browser/ws` JSON channel.
+  Removed the `setStreamerPort` call from `startListening`.
+- **Files deleted**: `app/backend/src/browser/extension/{manifest.json,
+  background.js}`, `app/backend/src/browser/extensionDir.ts`. `package.json`
+  build script reverted to plain `tsc -p tsconfig.json` (no extension copy).
+- **Frontend `BrowserPanel.tsx`**:
+  - Removed `videoRef`/`stageRef`/`mediaSourceRef`/MSE helpers/`hasVideo`
+    state. Removed `webm-reset` and binary-frame WS handling. Single
+    `<img ref={imgRef}>` again.
+  - `viewport` is a constant `{ w: 1280, h: 800 }` (used only for
+    click-coord mapping into the page's layout space).
+  - ResizeObserver restored: on panel resize, debounce 200 ms then POST
+    `/api/browser/viewport { width, height, dpr }` with the **panel's
+    display size**, not the layout size. This drives the screencast
+    resolution change above. Auto-resize works again.
+  - Inspect highlight overlay back to `imgRef`.
+- **CSS**: `.browser-viewport { background: #1a1a1a }` (dark letterbox
+  bg), `.browser-screencast { object-fit: contain }` (no distortion). All
+  `.browser-stage` / `--video` / `--hidden` selectors removed.
+- Build green (`npm run build`).
+
+
+
+User complaint: pixel-perfect dynamic-viewport scaling made every site render
+in mobile/tablet layout because the panel-CSS-px width was being sent
+straight to Chromium as the viewport. They asked for WebRTC; I went with the
+practically-equivalent path that doesn't need a peer connection: a Chrome
+extension capturing the active tab via MediaRecorder → WebM chunks → WS →
+MediaSource on a `<video>` overlay. The CDP/JPEG screencast is **kept
+running** as a fallback so the panel always shows something even if the
+extension doesn't load (or while MSE is still warming up).
+
+- **NEW** `app/backend/src/browser/extension/{manifest.json,background.js}`
+  — MV2 extension. Background dials `ws://127.0.0.1:PORT/browser/ingest`,
+  uses `chrome.tabCapture.capture()` (no user gesture needed thanks to
+  `--enable-usermedia-screen-capturing`), pipes the stream through
+  `MediaRecorder({ mimeType: "video/webm; codecs=vp8", videoBitsPerSecond: 2_500_000 })`
+  with a 100 ms timeslice, and sends each `dataavailable` blob as a binary
+  WS frame. Re-captures on `chrome.tabs.onUpdated` (`status === "complete"`)
+  and `chrome.tabs.onActivated`.
+- **NEW** `app/backend/src/browser/extensionDir.ts` — copies the in-tree
+  extension to OS tmp on first start, replacing `__PORT__` in
+  `background.js` with the backend's listen port. `package.json` `build`
+  script also `cpSync`s `src/browser/extension → dist/browser/extension`
+  so the runtime path resolves in production.
+- **`app/backend/src/browser/session.ts`**:
+  - `setStreamerPort(port)`, `emitWebmChunk(buf)`, `emitWebmReset()` for
+    the server.ts WS handlers to plumb extension data through.
+  - `start()` now switches to `chromium.launchPersistentContext` (extensions
+    require persistent contexts in Playwright) when the streamer extension
+    is prepared. Launch flags include `--load-extension`,
+    `--disable-extensions-except`, `--enable-usermedia-screen-capturing`,
+    `--use-fake-ui-for-media-stream`, plus `--window-position=-32000,…` so
+    the headful Chromium window stays off-screen. Falls back to old headless
+    `browser.newContext()` if extension prep fails.
+  - Reuses `ctx.pages()[0]` (the persistent context's initial about:blank)
+    instead of `ctx.newPage()` so the extension's first capture target is
+    the page Playwright actually drives.
+- **`app/backend/src/server.ts`**:
+  - New WS endpoint `/browser/ingest` (rejects non-loopback) for the
+    extension uplink.
+  - `/browser/ws` handler now also forwards the new `webm-chunk` events as
+    binary frames; JSON `webm-reset` control frames signal MSE teardown.
+- **`app/frontend/src/components/BrowserPanel.tsx`**:
+  - `viewport` is now **fixed at 1280×800** (no more ResizeObserver →
+    POST `/browser/viewport` chain). The desktop layout is preserved; the
+    panel just scales the rendered image down via CSS.
+  - New `<div class="browser-stage">` wraps both the existing `<img>`
+    JPEG fallback and a new `<video>` overlay. The stage has
+    `aspect-ratio: 1280/800; max-{w,h}: 100%` so it letterboxes inside the
+    panel; mouse coord helpers (`scaleCoords`, `handleWheel`, inspect
+    overlay) all map against `stageRef.getBoundingClientRect()` instead of
+    `imgRef`.
+  - WS `binaryType = "arraybuffer"`. Binary frames feed
+    `setupMediaSource()` / `appendWebmChunk()` (queued + drained on
+    `updateend`, with a defensive QuotaExceeded fallback that drops the
+    oldest buffered range). First chunk reveals the video overlay and
+    hides the `<img>` via `.browser-screencast--hidden { visibility: hidden }`.
+  - On `webm-reset` (extension restarted MediaRecorder after a navigation)
+    we tear down the MediaSource and start fresh on the next chunk.
+- **CSS** (`styles.css` + `styles/workspace-manager.css`): `.browser-viewport`
+  now centers the stage on a dark letterbox background; `.browser-stage`
+  carries the desktop aspect; `.browser-screencast--video` and
+  `--hidden` toggle the overlay.
+- Build green (`npm run build`).
+- **Caveats** (this is a POC; expect iteration):
+  - The extension uses MV2 — Playwright's bundled Chromium still loads
+    MV2 fine but be aware MV3 may be required eventually.
+  - `tabCapture.capture()` from a background page without a user gesture
+    relies on the `--enable-usermedia-screen-capturing` flag. If a
+    Chromium update removes that flag, the capture call will fail and
+    the panel will silently fall back to JPEG-only.
+  - **No X server needed**: launch flags include `--headless=new` (Chrome
+    109+ "new headless" mode), and `headless: false` is passed to
+    Playwright so it doesn't inject the legacy `--headless` flag that
+    would conflict. New headless supports both extensions and tabCapture.
+    Initial attempt used a real headful window with off-screen
+    `--window-position` and crashed on server boxes ("Looks like you
+    launched a headed browser without having a XServer running.").
+
+
+
+- **Backend `browser/session.ts`**:
+  - Bumped CDP screencast JPEG quality 75 → 90 and `everyNthFrame: 1`.
+  - Added `setViewport(width, height, dpr)` that calls
+    `Emulation.setDeviceMetricsOverride` (so `deviceScaleFactor` can
+    change mid-session) and restarts the screencast at
+    `width*dpr × height*dpr`. This is the main blur fix.
+  - Added `mouseMove(x, y)` → `page.mouse.move()` so CSS `:hover` /
+    `mouseenter` / `mousemove` actually fire on the live page.
+  - `addInitScript` injects forced `::-webkit-scrollbar` styling on every
+    page so users can SEE the page is scrollable (Chromium's default
+    overlay scrollbars vanish in screencasts).
+- **Backend `api/browser.ts`**: new routes `POST /browser/move` and
+  `POST /browser/viewport`.
+- **Frontend `BrowserPanel.tsx`**:
+  - Added `viewport` state + `viewportSentRef`. ResizeObserver on the
+    viewport div debounces 200 ms and POSTs `/browser/viewport`
+    `{ width, height, dpr }`.
+  - `scaleCoords` and `handleWheel` now use `viewport.{w,h}` instead of
+    hardcoded 1280×800; inspect highlight overlay scales the same way.
+  - `handleImgMouseMove` now ALSO debounces (~30 ms) `POST /browser/move`
+    so real hover dispatches happen alongside the slower (150 ms) hover
+    label fetch.
+- **CSS**: `.browser-screencast { image-rendering: -webkit-optimize-contrast }`.
+- Build green (`npm run build`).
+
+### Last session (2026-05-13) — docs sync for web + browser tools
+
+- `README.md`: tool list now mentions `glob`, `create_file`, `web_search`,
+  `web_fetch`, the full `browser_*` family, and the approval-gate model.
+  API table gains `/agent/approvals/:askId`, `/policy*`, and `/browser/*`.
+- `docs/agents/agent-loop.md`: tool table rewritten to reflect every tool
+  the executor actually dispatches (was missing 9). New "Approval gate"
+  subsection. SSE event table now lists `policy_ask` / `policy_decision`.
+- `docs/agents/api.md`: `/agent/run?stream=1` event list updated; new
+  "Approval policy" section (`/policy`, `/policy/auto-approve*`,
+  `/policy/{allow,deny}`); new "Browser" section documenting every
+  `/browser/*` route + the screencast WebSocket.
+- `docs/agents/architecture.md`: backend ASCII diagram now shows
+  `browser.ts`, `smartCommand.ts`, `web.ts`, `policy.ts`, `approvals.ts`,
+  and the shared `browser/session.ts`.
 
 ### Last session (2026-05-13) — agent-driven Playwright browser tools
 

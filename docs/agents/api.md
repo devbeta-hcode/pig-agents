@@ -51,7 +51,8 @@ WS protocol (JSON frames):
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/agent/run` | body `{ task, mode? }` (`mode` = `"ask"` or `"agent"`); returns full result JSON |
-| POST | `/agent/run?stream=1` | **SSE**: events `log`, `iter_start`, `token`, `thought`, `tool_payload_streaming` (optional `tool`), `action` (optional `actionKey`), `tool_disk_settled` (`actionKey`, `ok` — write tools finished on disk before stream ends), `observation`, `final`, `error`, `aborted`, `done` |
+| POST | `/agent/run?stream=1` | **SSE**: events `log`, `iter_start`, `token`, `thought`, `tool_payload_streaming` (optional `tool`), `action` (optional `actionKey`), `policy_ask` (`askId`, `cmd`, `suggestedAllow`, `kind`), `policy_decision` (`decision`, `cmd`, `kind`, `originalCmd?`, `reason?`), `tool_disk_settled` (`actionKey`, `ok`), `observation`, `final`, `error`, `aborted`, `done` |
+| POST | `/agent/approvals/:askId` | body `{ decision: "allow_once" \| "allow_always" \| "deny", editedCmd?, autoApproveAll? }` — answer to a `policy_ask` |
 
 Client cancels by closing the `EventSource` / aborting the `fetch`; the
 backend listens to `res.on("close")` and aborts the underlying
@@ -100,3 +101,32 @@ backend listens to `res.on("close")` and aborts the underlying
 
 If a request omits the API key the backend keeps the existing one (don't
 unintentionally clear it from the UI).
+
+## Approval policy
+
+Persisted to `<workspace>/.pig-agents/policy.json`. See `utils/policy.ts`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET  | `/policy` | `{ policy }` — fields: `autoApprove`, `autoApproveWeb`, `allowList`, `denyList` |
+| POST | `/policy/auto-approve` | body `{ value: boolean }` — toggle YOLO command auto-approve |
+| POST | `/policy/auto-approve-web` | body `{ value: boolean }` — toggle auto-allow for `web_*` / `browser_*` tools |
+| POST | `/policy/allow` | body `{ pattern }` — add a glob to the per-workspace allow-list |
+| POST | `/policy/deny`  | body `{ pattern }` — add a glob to the per-workspace deny-list |
+
+## Browser (embedded Playwright Chromium)
+
+Driven by `browser/session.ts` (singleton). Same `Page` is shared between
+the `BrowserPanel` UI and the agent's `browser_*` tools, so the user can
+watch the agent navigate / click / fill in the live screencast.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET  | `/browser/status` | `{ installed, running, url }` |
+| POST | `/browser/install` | fire-and-forget `npx playwright install chromium`; progress on the WS |
+| POST | `/browser/start` · `/browser/stop` | launch / close Chromium |
+| POST | `/browser/navigate` | body `{ url }` |
+| POST | `/browser/back` · `/browser/forward` · `/browser/reload` | navigation |
+| POST | `/browser/click` · `/browser/element` | body `{ x, y }` — inspect / click viewport coords; returns `ElementInfo` |
+| POST | `/browser/eval` | body `{ js }` — evaluate JS in the page |
+| WS   | `/browser/ws` | server pushes `frame` (base64 JPEG screencast), `navigate`, `status`, `install_progress`, `install_done` |

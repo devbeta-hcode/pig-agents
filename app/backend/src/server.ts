@@ -111,6 +111,14 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 // Browser screencast: fan out BrowserSession events to all connected WS clients.
+// The same socket is also a low-latency *input* channel — the panel sends
+// move/scroll/key/viewport events here instead of POSTing each one over HTTP,
+// which would queue up dozens of round-trips per second and feel laggy.
+//
+// Server-side coalescing: mouse moves, scrolls and viewport resizes are
+// folded together within a tight tick window so we drop input bursts onto
+// the floor of the previous frame instead of blasting Chromium with one
+// CDP call per pixel of motion.
 browserWss.on("connection", (ws) => {
   const onEvent = (ev: unknown) => {
     if (ws.readyState === ws.OPEN) {
@@ -122,7 +130,116 @@ browserWss.on("connection", (ws) => {
   browserSession.isPlaywrightReady().then((installed) => {
     onEvent({ type: "status", status: "idle", installed, running: browserSession.isStarted() });
   }).catch(() => { /* noop */ });
-  ws.on("close", () => browserSession.off("event", onEvent));
+
+  // ── input channel state (per-connection) ─────────────────────────────────
+  let pendingMove: { x: number; y: number } | null = null;
+  let pendingScroll: { x: number; y: number; dx: number; dy: number } | null = null;
+  let pendingViewport: { w: number; h: number; dpr: number } | null = null;
+  let moveTick: NodeJS.Timeout | null = null;
+  let scrollTick: NodeJS.Timeout | null = null;
+  let viewportTick: NodeJS.Timeout | null = null;
+
+  const flushMove = async () => {
+    moveTick = null;
+    const m = pendingMove; pendingMove = null;
+    if (!m) return;
+    try { await browserSession.mouseMove(m.x, m.y); } catch { /* noop */ }
+  };
+  const flushScroll = async () => {
+    scrollTick = null;
+    const s = pendingScroll; pendingScroll = null;
+    if (!s) return;
+    try { await browserSession.scroll(s.x, s.y, s.dx, s.dy); } catch { /* noop */ }
+  };
+  const flushViewport = async () => {
+    viewportTick = null;
+    const v = pendingViewport; pendingViewport = null;
+    if (!v) return;
+    try { await browserSession.setViewport(v.w, v.h, v.dpr); } catch { /* noop */ }
+  };
+
+  ws.on("message", async (raw) => {
+    let msg: { type?: string; [k: string]: unknown };
+    try { msg = JSON.parse(typeof raw === "string" ? raw : raw.toString("utf8")); }
+    catch { return; }
+    if (!msg || typeof msg.type !== "string") return;
+
+    try {
+      switch (msg.type) {
+        case "move": {
+          // Coalesce to the most-recent position within ~16ms (one frame).
+          pendingMove = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
+          if (!moveTick) moveTick = setTimeout(flushMove, 16);
+          break;
+        }
+        case "scroll": {
+          // Accumulate deltas; anchor stays at the latest cursor position.
+          const x = Number(msg.x) || 0;
+          const y = Number(msg.y) || 0;
+          const dx = Number(msg.dx) || 0;
+          const dy = Number(msg.dy) || 0;
+          if (pendingScroll) {
+            pendingScroll.x = x; pendingScroll.y = y;
+            pendingScroll.dx += dx; pendingScroll.dy += dy;
+          } else {
+            pendingScroll = { x, y, dx, dy };
+          }
+          if (!scrollTick) scrollTick = setTimeout(flushScroll, 16);
+          break;
+        }
+        case "click": {
+          await browserSession.clickAt(Number(msg.x) || 0, Number(msg.y) || 0);
+          break;
+        }
+        case "key": {
+          if (typeof msg.key === "string") await browserSession.keyPress(msg.key);
+          break;
+        }
+        case "type": {
+          if (typeof msg.text === "string") await browserSession.typeText(msg.text);
+          break;
+        }
+        case "hover": {
+          // Async reply: includes the request id so the client can match it
+          // to the cursor position that produced it (avoids stale labels
+          // flickering after the cursor has already moved on).
+          const x = Number(msg.x) || 0;
+          const y = Number(msg.y) || 0;
+          const id = (msg as { id?: number }).id ?? 0;
+          const info = await browserSession.hover(x, y);
+          onEvent({ type: "hover_label", id, label: info.label, cursor: info.cursor });
+          break;
+        }
+        case "inspect_hover": {
+          const x = Number(msg.x) || 0;
+          const y = Number(msg.y) || 0;
+          const id = (msg as { id?: number }).id ?? 0;
+          const el = await browserSession.getElementAt(x, y);
+          onEvent({ type: "inspect_rect", id, rect: el?.rect ?? null });
+          break;
+        }
+        case "viewport": {
+          // Latest-wins, with a slightly longer debounce — restarting the
+          // CDP screencast is the most expensive of the input ops.
+          pendingViewport = {
+            w: Number(msg.width) || 0,
+            h: Number(msg.height) || 0,
+            dpr: Number(msg.dpr) || 1,
+          };
+          if (viewportTick) clearTimeout(viewportTick);
+          viewportTick = setTimeout(flushViewport, 120);
+          break;
+        }
+      }
+    } catch { /* swallow — input errors shouldn't kill the socket */ }
+  });
+
+  ws.on("close", () => {
+    browserSession.off("event", onEvent);
+    if (moveTick) clearTimeout(moveTick);
+    if (scrollTick) clearTimeout(scrollTick);
+    if (viewportTick) clearTimeout(viewportTick);
+  });
   ws.on("error", () => browserSession.off("event", onEvent));
 });
 

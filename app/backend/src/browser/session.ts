@@ -46,10 +46,21 @@ type BrowserEvent =
 
 export class BrowserSession extends EventEmitter {
   private browser: import("playwright").Browser | null = null;
+  private context: import("playwright").BrowserContext | null = null;
   private page: import("playwright").Page | null = null;
   private cdp: import("playwright").CDPSession | null = null;
   private started = false;
   private screencastActive = false;
+  /** Logical viewport in CSS pixels — the size sites lay themselves out for.
+   *  Pinned to a desktop default; *never* tied to the panel size, otherwise
+   *  responsive sites collapse into mobile/tablet layout when the panel is
+   *  narrow. */
+  private viewportCss = { width: 1280, height: 800 };
+  /** devicePixelRatio used for screencast frame resolution. */
+  private viewportDpr = 1;
+  /** Output resolution of screencast frames (CSS px). Tracks the panel's
+   *  display size, decoupled from `viewportCss` so layout stays desktop. */
+  private renderCss = { width: 1280, height: 800 };
 
   // -------------------------------------------------------------------------
   async isPlaywrightReady(): Promise<boolean> {
@@ -91,15 +102,49 @@ export class BrowserSession extends EventEmitter {
       throw new Error("Playwright not installed. Call installPlaywright() first.");
     }
     const { chromium } = await import("playwright");
+
     this.browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        // Modern Chromium uses overlay scrollbars that fade out unless the
+        // mouse is moving over them. In a screencast there's no real OS
+        // cursor, so the scrollbar effectively vanishes — we want classic
+        // always-visible scrollbars instead.
+        "--disable-features=OverlayScrollbar,FluentScrollbar",
+      ],
     });
-    const ctx = await this.browser.newContext({
-      viewport: { width: 1280, height: 800 },
+    this.context = await this.browser.newContext({
+      viewport: { width: this.viewportCss.width, height: this.viewportCss.height },
+      deviceScaleFactor: this.viewportDpr,
       userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
     });
-    this.page = await ctx.newPage();
+    const ctx = this.context;
+    // Inject a forced scrollbar style so the user can SEE the page can scroll
+    // (most modern Linux Chromium renders overlay scrollbars that vanish
+    // when idle — unhelpful in a screencast where there's no real cursor).
+    await ctx.addInitScript(() => {
+      const inject = () => {
+        if (document.getElementById("__pig_scrollbars")) return;
+        const style = document.createElement("style");
+        style.id = "__pig_scrollbars";
+        style.textContent = `
+          html { scrollbar-width: auto !important; scrollbar-color: rgba(140,140,160,0.65) rgba(0,0,0,0.06) !important; }
+          *::-webkit-scrollbar { width: 14px !important; height: 14px !important; background: rgba(0,0,0,0.06) !important; }
+          *::-webkit-scrollbar-thumb { background: rgba(140,140,160,0.65) !important; border-radius: 7px !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+          *::-webkit-scrollbar-thumb:hover { background: rgba(140,140,160,0.9) !important; border: 3px solid transparent !important; background-clip: padding-box !important; }
+          *::-webkit-scrollbar-corner { background: transparent !important; }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+      };
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", inject, { once: true });
+      } else {
+        inject();
+      }
+    });
+    this.page = ctx.pages()[0] ?? await ctx.newPage();
     this.cdp = await ctx.newCDPSession(this.page);
     this.started = true;
 
@@ -126,8 +171,10 @@ export class BrowserSession extends EventEmitter {
 
   async stop(): Promise<void> {
     try { await this.cdp?.detach(); } catch { /* noop */ }
+    try { await this.context?.close(); } catch { /* noop */ }
     try { await this.browser?.close(); } catch { /* noop */ }
     this.cdp = null;
+    this.context = null;
     this.page = null;
     this.browser = null;
     this.started = false;
@@ -140,11 +187,20 @@ export class BrowserSession extends EventEmitter {
     if (!this.cdp || this.screencastActive) return;
     this.screencastActive = true;
 
+    // Render frames at *device* pixels so the panel stays crisp on HiDPI
+    // displays (CSS px × DPR). Quality 90 is a noticeable upgrade from 75 —
+    // typical frame size goes from ~25 KB to ~55 KB which the local WS
+    // handles trivially.
     await this.cdp.send("Page.startScreencast", {
       format: "jpeg",
-      quality: 75,
-      maxWidth: 1280,
-      maxHeight: 800,
+      quality: 80,
+      // Output frame size = panel display size (CSS px × DPR). Layout is
+      // driven by `viewportCss` (1280×800 desktop), Chromium downscales the
+      // rendered page to this resolution before sending. Capped at the
+      // layout dimensions so we never *upscale* a small panel to fake DPR.
+      maxWidth: Math.round(Math.min(this.viewportCss.width, this.renderCss.width) * this.viewportDpr),
+      maxHeight: Math.round(Math.min(this.viewportCss.height, this.renderCss.height) * this.viewportDpr),
+      everyNthFrame: 1,
     });
 
     this.cdp.on("Page.screencastFrame", async ({ data, sessionId, metadata }) => {
@@ -261,23 +317,76 @@ export class BrowserSession extends EventEmitter {
     await this.page.mouse.wheel(deltaX, deltaY);
   }
 
-  async hover(x: number, y: number): Promise<string | null> {
-    if (!this.page) return null;
+  /** Move the real mouse so :hover / mouseenter / mousemove handlers fire on
+   *  the page — the panel's cursor is just a CSS overlay otherwise. */
+  async mouseMove(x: number, y: number): Promise<void> {
+    if (!this.page) return;
+    try {
+      await this.page.mouse.move(x, y, { steps: 1 });
+    } catch { /* page closing */ }
+  }
+
+  /** Resize the live page (CSS px) and the screencast resolution (px \u00d7 dpr).
+   *  Restarts the screencast so Chromium starts pushing frames at the new
+   *  size; without this the frames stay 1280\u00d7800 and the panel scales them
+   *  up, which is the main reason the screencast looked blurry. */
+  /** Update only the *screencast output resolution* (size of JPEG frames
+   *  Chrome pushes). The page's layout viewport stays pinned at the desktop
+   *  default (1280×800) so sites never collapse into mobile layout just
+   *  because the panel is narrow. Chromium downscales the rendered page to
+   *  fit, which is the cheap-and-fast path. */
+  async setViewport(width: number, height: number, dpr = 1): Promise<void> {
+    const rw = Math.max(160, Math.min(3840, Math.round(width)));
+    const rh = Math.max(120, Math.min(2400, Math.round(height)));
+    const d = Math.max(1, Math.min(2, dpr || 1));
+    if (rw === this.renderCss.width && rh === this.renderCss.height && d === this.viewportDpr) return;
+    this.renderCss = { width: rw, height: rh };
+    this.viewportDpr = d;
+    if (!this.cdp) return;
+    try {
+      if (this.screencastActive) {
+        try { await this.cdp.send("Page.stopScreencast"); } catch { /* noop */ }
+        this.screencastActive = false;
+        await this.startScreencast();
+      }
+    } catch (err) {
+      logger.warn("[browser] setViewport failed:", err);
+    }
+  }
+
+  getViewport(): { width: number; height: number; dpr: number } {
+    return { width: this.viewportCss.width, height: this.viewportCss.height, dpr: this.viewportDpr };
+  }
+
+  async hover(x: number, y: number): Promise<{ label: string | null; cursor: string | null }> {
+    if (!this.page) return { label: null, cursor: null };
     try {
       return await this.page.evaluate(
         ({ x, y }: { x: number; y: number }) => {
           const el = document.elementFromPoint(x, y);
-          if (!el) return null;
+          if (!el) return { label: null, cursor: null };
           const tag = el.tagName.toLowerCase();
           const id = el.id ? `#${el.id}` : "";
           const cls = Array.from(el.classList).slice(0, 2).map((c) => `.${c}`).join("");
           const role = el.getAttribute("aria-label") || el.getAttribute("title") || "";
-          return `${tag}${id}${cls}${role ? ` — ${role}` : ""}`;
+          // Walk up the tree until we find a non-`auto`/`inherit` cursor —
+          // matches what the browser would actually render.
+          let cursor: string | null = null;
+          let cur: Element | null = el;
+          while (cur) {
+            const c = getComputedStyle(cur).cursor;
+            if (c && c !== "auto" && c !== "inherit") { cursor = c; break; }
+            cur = cur.parentElement;
+          }
+          return {
+            label: `${tag}${id}${cls}${role ? ` — ${role}` : ""}`,
+            cursor,
+          };
         },
         { x, y },
       );
     } catch {
-      return null;
+      return { label: null, cursor: null };
     }
   }
 
