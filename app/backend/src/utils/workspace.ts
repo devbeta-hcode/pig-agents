@@ -69,9 +69,10 @@ export function validateWorkspacePath(p: string): string {
   return abs;
 }
 
-/** If the request includes `X-Build-Agents-Workspace`, return validated absolute path; else null. */
+/** If the request includes the workspace header, return validated absolute path; else null.
+ *  Accepts both `X-Pig-Agents-Workspace` (current) and legacy `X-Build-Agents-Workspace`. */
 export function workspaceFromRequestHeader(req: { get(name: string): string | undefined }): string | null {
-  const raw = req.get("x-build-agents-workspace");
+  const raw = req.get("x-pig-agents-workspace") ?? req.get("x-build-agents-workspace");
   if (!raw?.trim()) return null;
   return validateWorkspacePath(raw.trim());
 }
