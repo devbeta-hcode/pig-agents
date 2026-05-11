@@ -68,11 +68,24 @@ function isIgnored(rel: string): boolean {
 const debounceMs = 200;
 
 /**
- * One recursive `fs.watch` on a single absolute root. Emits `changes` with
- * batched {@link FsChangeEvent} lists (same shape as the legacy singleton).
+ * Selective recursive watcher for one workspace root.
+ *
+ * Strategy (Linux-safe, inotify-frugal):
+ *   1. Watch `root` non-recursively → catches top-level file events and new
+ *      immediate subdirs appearing.
+ *   2. For each immediate subdir of root that is NOT in IGNORED_SEGMENTS, add
+ *      a *recursive* fs.watch on that subdir.  This skips `.git`,
+ *      `node_modules`, `dist`, etc. at the inotify level (not just filtering
+ *      events), which is the only reliable way to avoid ENOSPC on systems with
+ *      constrained inotify limits.
+ *   3. When a new top-level subdir is created, wire it up dynamically if it is
+ *      not ignored.
  */
 class SingleRootWatcher extends EventEmitter {
-  private watcher: fs.FSWatcher | null = null;
+  /** Non-recursive watcher on root itself (catches top-level file events). */
+  private rootWatcher: fs.FSWatcher | null = null;
+  /** Recursive watchers keyed by absolute path of immediate non-ignored subdir. */
+  private readonly subdirWatchers = new Map<string, fs.FSWatcher>();
   private pending = new Map<string, FsChangeEvent>();
   private flushTimer: NodeJS.Timeout | null = null;
 
@@ -82,37 +95,64 @@ class SingleRootWatcher extends EventEmitter {
   }
 
   private start(): void {
+    // Step 1: non-recursive root watch
+    this.rootWatcher = this.openWatch(this.rootAbs, "", false);
+    // Step 2: recursive watches for non-ignored immediate subdirs
+    this.scanRoot();
+    logger.info(`fs watcher: watching ${this.rootAbs}`);
+  }
+
+  private openWatch(absDir: string, prefix: string, recursive: boolean): fs.FSWatcher | null {
     try {
-      const w = fs.watch(this.rootAbs, { recursive: true, persistent: false }, (eventType, filename) => {
-        const rel = filename ? String(filename).split(path.sep).join("/") : "";
+      const w = fs.watch(absDir, { recursive, persistent: false }, (eventType, filename) => {
+        const name = filename ? String(filename).split(path.sep).join("/") : "";
+        const rel = prefix ? (name ? `${prefix}/${name}` : prefix) : name;
         if (rel && isIgnored(rel)) return;
-        this.queue({
-          type: "change",
-          path: rel,
-          kind: eventType === "rename" ? "rename" : "change",
-        });
+        this.queue({ type: "change", path: rel, kind: eventType === "rename" ? "rename" : "change" });
+        // Dynamically pick up new top-level subdirs
+        if (!prefix && name && eventType === "rename") {
+          const childAbs = path.join(absDir, name);
+          if (this.subdirWatchers.has(childAbs)) return;
+          try {
+            if (fs.statSync(childAbs).isDirectory() && !isIgnored(name)) {
+              const sub = this.openWatch(childAbs, name, true);
+              if (sub) this.subdirWatchers.set(childAbs, sub);
+            }
+          } catch { /* dir may have been immediately deleted */ }
+        }
       });
       w.on("error", (err) => {
-        logger.warn(`fs watcher error (${this.rootAbs}): ${err.message}`);
+        logger.warn(`fs watcher error (${absDir}): ${err.message}`);
       });
-      this.watcher = w;
-      logger.info(`fs watcher: watching ${this.rootAbs}`);
+      return w;
     } catch (err) {
-      logger.warn(`fs watcher: failed to watch ${this.rootAbs}: ${(err as Error).message}`);
-      this.watcher = null;
+      logger.warn(`fs watcher: failed to watch ${absDir}: ${(err as Error).message}`);
+      return null;
     }
   }
 
+  private scanRoot(): void {
+    try {
+      for (const ent of fs.readdirSync(this.rootAbs, { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue;
+        if (isIgnored(ent.name)) continue;
+        const childAbs = path.join(this.rootAbs, ent.name);
+        if (this.subdirWatchers.has(childAbs)) continue;
+        const sub = this.openWatch(childAbs, ent.name, true);
+        if (sub) this.subdirWatchers.set(childAbs, sub);
+      }
+    } catch { /* noop */ }
+  }
+
   stop(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     this.pending.clear();
-    if (this.watcher) {
-      try { this.watcher.close(); } catch { /* noop */ }
-      this.watcher = null;
+    try { this.rootWatcher?.close(); } catch { /* noop */ }
+    this.rootWatcher = null;
+    for (const w of this.subdirWatchers.values()) {
+      try { w.close(); } catch { /* noop */ }
     }
+    this.subdirWatchers.clear();
   }
 
   poke(rel = ""): void {
