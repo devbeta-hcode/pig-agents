@@ -1646,22 +1646,31 @@ export function Chat({
   const [settledThoughts, setSettledThoughts] = useState<Map<string, Map<number, string>>>(new Map());
   /** Sticky-tail state for "↓ Latest" affordance. */
   const [autoScroll, setAutoScroll] = useState(true);
+
+  // Helper: scroll to absolute bottom with retries (Virtuoso renders lazily).
+  // scrollToIndex({index:"LAST"}) only reaches the top of the last item; using
+  // align:"end" + a DOM scrollTop=scrollHeight combo ensures we land at the very end.
+  const scrollToBottom = useCallback(() => {
+    const doScroll = () => {
+      const v = virtuosoRef.current;
+      if (v) v.scrollToIndex({ index: "LAST", align: "end" });
+      // Belt-and-suspenders: also push the native scroller to its maximum.
+      const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    };
+    const delays = [0, 100, 300, 600];
+    const timers = delays.map((ms) => setTimeout(doScroll, ms));
+    return () => timers.forEach(clearTimeout);
+  }, []);
+
   useEffect(() => {
     // Release per-turn in-memory buffers from the previous session.
     setSettledReasoning(new Map());
     setSettledThoughts(new Map());
     setThinking(null);
-    // Scroll to bottom when switching sessions.
-    // Virtuoso renders lazily; retry a few times with increasing delays so the
-    // virtual list has time to measure items before we land at the bottom.
-    const delays = [0, 100, 300, 600];
-    const timers = delays.map((ms) =>
-      setTimeout(() => {
-        virtuosoRef.current?.scrollToIndex({ index: "LAST" });
-      }, ms),
-    );
-    return () => timers.forEach(clearTimeout);
-  }, [session.id]);
+    // Scroll to bottom when switching sessions / workspace.
+    return scrollToBottom();
+  }, [session.id, workspace, scrollToBottom]);
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
   const [attachedImages, setAttachedImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
@@ -1868,7 +1877,7 @@ export function Chat({
       console.log("[Chat] Reconnecting to running session:", backendSession.id);
       setRunning(true);
       setAutoScroll(true);
-      virtuosoRef.current?.scrollToIndex({ index: "LAST" });
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
       setAwaitingStop(false);
       stoppedRef.current = false;
       
@@ -2157,7 +2166,7 @@ export function Chat({
     setAttachedImages([]); // Clear images after capturing
     setRunning(true);
     setAutoScroll(true);
-    virtuosoRef.current?.scrollToIndex({ index: "LAST" });
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
     setAwaitingStop(false);
     stoppedRef.current = false;
     thinkingRef.current = { iteration: 1, partial: "" };
