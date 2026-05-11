@@ -68,25 +68,19 @@ function isIgnored(rel: string): boolean {
 const debounceMs = 200;
 
 /**
- * Shallow two-level watcher: one non-recursive watch on root, plus one
- * non-recursive watch per immediate non-ignored subdir.
+ * Single-fd root watcher.
  *
- * Why non-recursive everywhere:
- *   On Linux, `fs.watch({ recursive: true })` calls `inotify_add_watch` for
- *   every nested subdirectory it traverses, consuming one entry from
- *   `max_user_watches` per directory.  Large workspaces (Android, monorepos)
- *   exhaust this budget quickly and produce ENOSPC errors.  By limiting to
- *   two levels and skipping ignored segments at the inotify level (not just
- *   in the event callback), we cap total watches at roughly
- *   1 + |non-ignored immediate subdirs| — typically < 50.
+ * Uses exactly ONE inotify fd (one FSWatcher) per workspace, watching
+ * only the root directory non-recursively.  This is the only design that
+ * never hits `max_user_instances` (default 128 on Linux) regardless of
+ * workspace size or how many other processes (VSCode, vite, …) are open.
  *
- *   Trade-off: changes deeper than two levels only propagate the closest
- *   ancestor path the watcher knows about.  The file-tree UI refreshes
- *   lazily anyway, so this is acceptable.
+ * Trade-off: events from files nested deeper than the root only carry the
+ * root-level path component.  The file-tree UI triggers explicit API list
+ * calls on any change, so this is acceptable.
  */
 class SingleRootWatcher extends EventEmitter {
-  /** All active non-recursive watchers keyed by absolute directory path. */
-  private readonly watchers = new Map<string, fs.FSWatcher>();
+  private watcher: fs.FSWatcher | null = null;
   private pending = new Map<string, FsChangeEvent>();
   private flushTimer: NodeJS.Timeout | null = null;
 
@@ -96,52 +90,27 @@ class SingleRootWatcher extends EventEmitter {
   }
 
   private start(): void {
-    this.addWatch(this.rootAbs, "");
     try {
-      for (const ent of fs.readdirSync(this.rootAbs, { withFileTypes: true })) {
-        if (!ent.isDirectory() || isIgnored(ent.name)) continue;
-        this.addWatch(path.join(this.rootAbs, ent.name), ent.name);
-      }
-    } catch { /* permission denied, skip */ }
-    logger.info(`fs watcher: watching ${this.rootAbs} (${this.watchers.size} watches)`);
-  }
-
-  private addWatch(absDir: string, prefix: string): void {
-    if (this.watchers.has(absDir)) return;
-    try {
-      const w = fs.watch(absDir, { recursive: false, persistent: false }, (eventType, filename) => {
+      const w = fs.watch(this.rootAbs, { recursive: false, persistent: false }, (eventType, filename) => {
         const name = filename ? String(filename).split(path.sep).join("/") : "";
-        const rel = prefix ? (name ? `${prefix}/${name}` : prefix) : name;
-        if (rel && isIgnored(rel)) return;
-        this.queue({ type: "change", path: rel, kind: eventType === "rename" ? "rename" : "change" });
-        // When a new immediate subdir of root appears, start watching it too.
-        if (!prefix && name && eventType === "rename") {
-          const childAbs = path.join(absDir, name);
-          if (this.watchers.has(childAbs)) return;
-          try {
-            if (fs.statSync(childAbs).isDirectory() && !isIgnored(name)) {
-              this.addWatch(childAbs, name);
-            }
-          } catch { /* dir was immediately deleted */ }
-        }
+        if (name && isIgnored(name)) return;
+        this.queue({ type: "change", path: name, kind: eventType === "rename" ? "rename" : "change" });
       });
       w.on("error", (err) => {
-        logger.warn(`fs watcher error (${absDir}): ${err.message}`);
-        this.watchers.delete(absDir);
+        logger.warn(`fs watcher error (${this.rootAbs}): ${err.message}`);
       });
-      this.watchers.set(absDir, w);
+      this.watcher = w;
+      logger.info(`fs watcher: watching ${this.rootAbs}`);
     } catch (err) {
-      logger.warn(`fs watcher: failed to watch ${absDir}: ${(err as Error).message}`);
+      logger.warn(`fs watcher: failed to watch ${this.rootAbs}: ${(err as Error).message}`);
     }
   }
 
   stop(): void {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     this.pending.clear();
-    for (const w of this.watchers.values()) {
-      try { w.close(); } catch { /* noop */ }
-    }
-    this.watchers.clear();
+    try { this.watcher?.close(); } catch { /* noop */ }
+    this.watcher = null;
   }
 
   poke(rel = ""): void {
