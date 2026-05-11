@@ -47,8 +47,26 @@ interface SessionMeta {
   turnCount: number;
 }
 
+function realHomedir(): string {
+  // When the server is started with `sudo`, os.homedir() returns /root.
+  // Read SUDO_USER from the environment and resolve their home from /etc/passwd
+  // so chat history is stored in the right place.
+  const sudoUser = process.env.SUDO_USER;
+  if (sudoUser) {
+    try {
+      const passwd = fs.readFileSync("/etc/passwd", "utf8");
+      const line = passwd.split("\n").find((l) => l.startsWith(`${sudoUser}:`));
+      if (line) {
+        const home = line.split(":")[5];
+        if (home) return home;
+      }
+    } catch { /* noop */ }
+  }
+  return os.homedir();
+}
+
 function rootDir(): string {
-  return path.join(os.homedir(), ".pig-agents", "chats");
+  return path.join(realHomedir(), ".pig-agents", "chats");
 }
 
 function workspaceHash(ws: string): string {

@@ -68,24 +68,25 @@ function isIgnored(rel: string): boolean {
 const debounceMs = 200;
 
 /**
- * Selective recursive watcher for one workspace root.
+ * Shallow two-level watcher: one non-recursive watch on root, plus one
+ * non-recursive watch per immediate non-ignored subdir.
  *
- * Strategy (Linux-safe, inotify-frugal):
- *   1. Watch `root` non-recursively → catches top-level file events and new
- *      immediate subdirs appearing.
- *   2. For each immediate subdir of root that is NOT in IGNORED_SEGMENTS, add
- *      a *recursive* fs.watch on that subdir.  This skips `.git`,
- *      `node_modules`, `dist`, etc. at the inotify level (not just filtering
- *      events), which is the only reliable way to avoid ENOSPC on systems with
- *      constrained inotify limits.
- *   3. When a new top-level subdir is created, wire it up dynamically if it is
- *      not ignored.
+ * Why non-recursive everywhere:
+ *   On Linux, `fs.watch({ recursive: true })` calls `inotify_add_watch` for
+ *   every nested subdirectory it traverses, consuming one entry from
+ *   `max_user_watches` per directory.  Large workspaces (Android, monorepos)
+ *   exhaust this budget quickly and produce ENOSPC errors.  By limiting to
+ *   two levels and skipping ignored segments at the inotify level (not just
+ *   in the event callback), we cap total watches at roughly
+ *   1 + |non-ignored immediate subdirs| — typically < 50.
+ *
+ *   Trade-off: changes deeper than two levels only propagate the closest
+ *   ancestor path the watcher knows about.  The file-tree UI refreshes
+ *   lazily anyway, so this is acceptable.
  */
 class SingleRootWatcher extends EventEmitter {
-  /** Non-recursive watcher on root itself (catches top-level file events). */
-  private rootWatcher: fs.FSWatcher | null = null;
-  /** Recursive watchers keyed by absolute path of immediate non-ignored subdir. */
-  private readonly subdirWatchers = new Map<string, fs.FSWatcher>();
+  /** All active non-recursive watchers keyed by absolute directory path. */
+  private readonly watchers = new Map<string, fs.FSWatcher>();
   private pending = new Map<string, FsChangeEvent>();
   private flushTimer: NodeJS.Timeout | null = null;
 
@@ -95,64 +96,52 @@ class SingleRootWatcher extends EventEmitter {
   }
 
   private start(): void {
-    // Step 1: non-recursive root watch
-    this.rootWatcher = this.openWatch(this.rootAbs, "", false);
-    // Step 2: recursive watches for non-ignored immediate subdirs
-    this.scanRoot();
-    logger.info(`fs watcher: watching ${this.rootAbs}`);
+    this.addWatch(this.rootAbs, "");
+    try {
+      for (const ent of fs.readdirSync(this.rootAbs, { withFileTypes: true })) {
+        if (!ent.isDirectory() || isIgnored(ent.name)) continue;
+        this.addWatch(path.join(this.rootAbs, ent.name), ent.name);
+      }
+    } catch { /* permission denied, skip */ }
+    logger.info(`fs watcher: watching ${this.rootAbs} (${this.watchers.size} watches)`);
   }
 
-  private openWatch(absDir: string, prefix: string, recursive: boolean): fs.FSWatcher | null {
+  private addWatch(absDir: string, prefix: string): void {
+    if (this.watchers.has(absDir)) return;
     try {
-      const w = fs.watch(absDir, { recursive, persistent: false }, (eventType, filename) => {
+      const w = fs.watch(absDir, { recursive: false, persistent: false }, (eventType, filename) => {
         const name = filename ? String(filename).split(path.sep).join("/") : "";
         const rel = prefix ? (name ? `${prefix}/${name}` : prefix) : name;
         if (rel && isIgnored(rel)) return;
         this.queue({ type: "change", path: rel, kind: eventType === "rename" ? "rename" : "change" });
-        // Dynamically pick up new top-level subdirs
+        // When a new immediate subdir of root appears, start watching it too.
         if (!prefix && name && eventType === "rename") {
           const childAbs = path.join(absDir, name);
-          if (this.subdirWatchers.has(childAbs)) return;
+          if (this.watchers.has(childAbs)) return;
           try {
             if (fs.statSync(childAbs).isDirectory() && !isIgnored(name)) {
-              const sub = this.openWatch(childAbs, name, true);
-              if (sub) this.subdirWatchers.set(childAbs, sub);
+              this.addWatch(childAbs, name);
             }
-          } catch { /* dir may have been immediately deleted */ }
+          } catch { /* dir was immediately deleted */ }
         }
       });
       w.on("error", (err) => {
         logger.warn(`fs watcher error (${absDir}): ${err.message}`);
+        this.watchers.delete(absDir);
       });
-      return w;
+      this.watchers.set(absDir, w);
     } catch (err) {
       logger.warn(`fs watcher: failed to watch ${absDir}: ${(err as Error).message}`);
-      return null;
     }
-  }
-
-  private scanRoot(): void {
-    try {
-      for (const ent of fs.readdirSync(this.rootAbs, { withFileTypes: true })) {
-        if (!ent.isDirectory()) continue;
-        if (isIgnored(ent.name)) continue;
-        const childAbs = path.join(this.rootAbs, ent.name);
-        if (this.subdirWatchers.has(childAbs)) continue;
-        const sub = this.openWatch(childAbs, ent.name, true);
-        if (sub) this.subdirWatchers.set(childAbs, sub);
-      }
-    } catch { /* noop */ }
   }
 
   stop(): void {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
     this.pending.clear();
-    try { this.rootWatcher?.close(); } catch { /* noop */ }
-    this.rootWatcher = null;
-    for (const w of this.subdirWatchers.values()) {
+    for (const w of this.watchers.values()) {
       try { w.close(); } catch { /* noop */ }
     }
-    this.subdirWatchers.clear();
+    this.watchers.clear();
   }
 
   poke(rel = ""): void {
