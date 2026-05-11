@@ -17,7 +17,7 @@ import { browserSession } from "./browser/session.js";
 import { createPty } from "./tools/terminal.js";
 import { logger } from "./utils/logger.js";
 import { workspaceWatcher, type WorkspaceChangesPayload } from "./utils/watcher.js";
-import { getWorkspace, onWorkspaceChange, validateWorkspacePath } from "./utils/workspace.js";
+import { getWorkspace, validateWorkspacePath } from "./utils/workspace.js";
 import { workspaceMiddleware } from "./api/workspaceMiddleware.js";
 import { hydrateEnvFromProfiles } from "./llm/profiles.js";
 
@@ -84,9 +84,13 @@ server.headersTimeout = 2000;
 // Filesystem watcher: a single recursive fs.watch on the active workspace,
 // fanned out over a /fs/watch WebSocket so the file tree (and anything else
 // that cares) updates in real time without manual refresh.
+//
+// We do NOT start watching on server startup because the default workspace
+// resolves to the pig-agents project root (with its huge node_modules), which
+// exhausts inotify watches on systems with many open watchers. The watcher
+// is started lazily by the fs WebSocket handler below when a real client
+// connects and provides an explicit workspace path.
 // ---------------------------------------------------------------------------
-workspaceWatcher.start();
-onWorkspaceChange(() => workspaceWatcher.start());
 
 // IMPORTANT: We attach two WebSocket endpoints to the same HTTP server. The
 // `ws` library's automatic upgrade routing breaks down when multiple servers
