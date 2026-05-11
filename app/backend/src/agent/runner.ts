@@ -324,6 +324,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   };
 
   const wsRoot = getWorkspace();
+  emit({ type: "log", level: "info", message: `Preparing agent context for ${wsRoot}` });
   const loadedRules = loadProjectRules(wsRoot);
   const projectRulesBlock =
     loadedRules.text.length > 0
@@ -348,9 +349,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
-  const relevant = await rankRelevant(opts.task, maxFiles);
-  // Build once; embedded in every context message so agent doesn't need codebase_map for orientation.
-  const compactTree = await buildCompactTree(3, 180).catch(() => "");
+  emit({ type: "log", level: "info", message: `Ranking relevant files and compacting workspace tree` });
+  const [relevant, compactTree] = await Promise.all([
+    rankRelevant(opts.task, maxFiles),
+    buildCompactTree(3, 180).catch(() => ""),
+  ]);
+  emit({ type: "log", level: "info", message: `Context ready (${relevant.length} relevant file(s))` });
 
   // History uses simple string content (images only go in the initial user message, not history)
   const history: { role: "system" | "user" | "assistant"; content: string }[] = [];

@@ -6,7 +6,7 @@
 > forward. Update this file when you finish a meaningful chunk of work so
 > the next handoff stays fresh.
 
-Last updated: 2026-05-14d
+Last updated: 2026-05-12
 
 ---
 
@@ -126,6 +126,61 @@ The dev server URLs:
    [`workflows.md`](workflows.md).
 3. When you finish a non-trivial chunk of work, **append a short bullet
    here** under a new "Last session" section so the next handoff is honest.
+
+### Last session (2026-05-12) — workspace watcher lease cleanup
+
+The backend filesystem watcher was keeping per-workspace `fs.watch`
+instances alive after browser tabs disconnected. On large or frequently
+switched workspaces, those stale leases can accumulate and eventually hit
+Linux inotify limits (`ENOSPC`).
+
+Fixes:
+
+- `utils/watcher.ts`: ref-count active subscribers, return a release
+  callback from `ensureWatching()`, and stop/remove the underlying watcher
+  when the last client disconnects.
+- `utils/watcher.ts`: if `fs.watch()` fails to start, do not cache the
+  failed watcher as a live entry, so later connections can retry after
+  resources recover.
+- `server.ts`: `/fs/watch` now owns the release callback per websocket and
+  runs idempotent cleanup on `close`/`error` so the lease is released
+  exactly once.
+- Build is green (`npm run build`).
+
+### Last session (2026-05-12) — agent startup no longer stalls before LLM
+
+The agent could appear to hang forever on large workspaces because it did a
+full relevance scan and compact tree build before emitting any progress or
+calling the LLM. On repositories with lots of files, that made it look like
+the model never got a chance to respond.
+
+Fixes:
+
+- `agent/runner.ts`: emit progress logs before context preparation, run
+  relevance ranking and tree compaction in parallel, and log when the first
+  context bundle is ready.
+- `relevance/search.ts`: cap file scanning with `MAX_CONTEXT_SCAN_FILES`
+  (default 1200) so huge workspaces cannot block the first model call for
+  unbounded time.
+- Build is green (`npm run build`).
+
+### Last session (2026-05-12) — chat trace split for Thinking / THOUGHT / ACTION
+
+The chat timeline could mix sections when streamed output skipped clean
+`THOUGHT:` boundaries (or emitted `ACTION` early), so users saw reasoning
+and action payloads bleed into the same fold.
+
+Fixes:
+
+- `frontend/components/Chat.tsx`: hardened `streamingReasoningExtract()` so
+  Thinking only shows the prefix before `THOUGHT`/`ACTION`/`FINAL` (and
+  JSON action objects), preventing tool JSON from leaking into the thinking
+  block.
+- `frontend/components/Chat.tsx`: normalized archive labels to explicit
+  `THOUGHT` and added an explicit `ACTION` badge on action accordion rows so
+  the three phases read consistently.
+- `frontend/styles/chat.css`: added styling for the `ACTION` badge.
+- Build is green (`npm run build`).
 
 ### Last session (2026-05-14d) — BrowserPanel: page cursor + always-visible scrollbars
 

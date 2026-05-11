@@ -246,9 +246,11 @@ function writePatchAccordionSlug(patchSection: string, fi: number): string {
 /** Content BEFORE THOUGHT: — the raw reasoning trace shown in the streaming box. */
 function streamingReasoningExtract(buf: string): string {
   const norm = normalizeStreamXmlMarkers(buf);
-  const idx = norm.search(/\bTHOUGHT\s*:/i);
-  if (idx === -1) return norm.trim(); // THOUGHT: not yet appeared — show everything
-  return norm.slice(0, idx).trim();
+  // Reasoning is ONLY the prefix before THOUGHT/ACTION/FINAL.
+  // If the model skips THOUGHT and jumps straight to ACTION, keep Thinking empty
+  // instead of leaking tool JSON into the reasoning pane.
+  const m = norm.match(/^[\s\S]*?(?=\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,20}"type"\s*:|$)/i);
+  return (m?.[0] ?? "").trim();
 }
 
 /** Content AFTER THOUGHT: — shown as plain text log once THOUGHT: appears. */
@@ -588,6 +590,7 @@ function ActionAccordionFold({
         <span className="assistant-action-fold-chev" aria-hidden>
           <ChevronExpand expanded={foldOpen} size={15} />
         </span>
+        <span className="assistant-action-kind">ACTION</span>
         <ToolAccordionHeader
           tool={ev.tool || "unknown"}
           input={(ev.input || {}) as Record<string, unknown>}
@@ -708,7 +711,7 @@ function ThoughtLog({ body }: { body: string }) {
     >
       <summary className="thought-step-archive-row">
         <IconBrain size={13} strokeWidth={1.6} className="thought-step-archive-rowicon" aria-hidden />
-        <span className="thought-step-archive-label">Thought</span>
+        <span className="thought-step-archive-label">THOUGHT</span>
         <span className="assistant-action-fold-chev thought-log-chev" aria-hidden>
           <ChevronExpand expanded={open} size={13} />
         </span>

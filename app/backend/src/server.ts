@@ -81,7 +81,7 @@ server.keepAliveTimeout = 1000;
 server.headersTimeout = 2000;
 
 // ---------------------------------------------------------------------------
-// Filesystem watcher: a single recursive fs.watch on the active workspace,
+// Filesystem watcher: a single non-recursive fs.watch lease per active workspace,
 // fanned out over a /fs/watch WebSocket so the file tree (and anything else
 // that cares) updates in real time without manual refresh.
 //
@@ -257,7 +257,7 @@ fsWss.on("connection", (ws, req) => {
     try { ws.close(4400, (err as Error).message); } catch { /* noop */ }
     return;
   }
-  workspaceWatcher.ensureWatching(root);
+  const releaseWatching = workspaceWatcher.ensureWatching(root);
   const onChanges = (payload: WorkspaceChangesPayload) => {
     if (payload.workspace !== root) return;
     if (ws.readyState !== ws.OPEN) return;
@@ -267,8 +267,15 @@ fsWss.on("connection", (ws, req) => {
   workspaceWatcher.on("changes", onChanges);
   // Initial hello so the client knows the channel is live.
   try { ws.send(JSON.stringify({ type: "fs:ready" })); } catch { /* noop */ }
-  ws.on("close", () => workspaceWatcher.off("changes", onChanges));
-  ws.on("error", () => workspaceWatcher.off("changes", onChanges));
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    workspaceWatcher.off("changes", onChanges);
+    releaseWatching();
+  };
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
 });
 
 wss.on("connection", async (ws, req) => {

@@ -27,17 +27,22 @@ function tokenize(s: string): string[] {
 async function walkAll(rel: string): Promise<string[]> {
   const out: string[] = [];
   const root = safeJoin(rel);
+  const scanLimit = Math.max(200, Number(process.env.MAX_CONTEXT_SCAN_FILES || 1200));
+  let scanned = 0;
   async function walk(dir: string) {
+    if (scanned >= scanLimit) return;
     let dirents: import("node:fs").Dirent[];
     try {
       dirents = await fs.readdir(dir, { withFileTypes: true });
     } catch { return; }
     for (const d of dirents) {
+      if (scanned >= scanLimit) return;
       if (IGNORED.has(d.name)) continue;
       const full = path.join(dir, d.name);
       if (d.isDirectory()) {
         await walk(full);
       } else if (d.isFile()) {
+        scanned++;
         const ext = path.extname(d.name).toLowerCase();
         if (TEXT_EXT.has(ext) || d.name.includes(".")) {
           if (TEXT_EXT.has(ext)) out.push(full);

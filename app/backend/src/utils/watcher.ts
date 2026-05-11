@@ -81,6 +81,7 @@ const debounceMs = 200;
  */
 class SingleRootWatcher extends EventEmitter {
   private watcher: fs.FSWatcher | null = null;
+  private active = false;
   private pending = new Map<string, FsChangeEvent>();
   private flushTimer: NodeJS.Timeout | null = null;
 
@@ -89,7 +90,7 @@ class SingleRootWatcher extends EventEmitter {
     this.start();
   }
 
-  private start(): void {
+  private start(): boolean {
     try {
       const w = fs.watch(this.rootAbs, { recursive: false, persistent: false }, (eventType, filename) => {
         const name = filename ? String(filename).split(path.sep).join("/") : "";
@@ -100,9 +101,13 @@ class SingleRootWatcher extends EventEmitter {
         logger.warn(`fs watcher error (${this.rootAbs}): ${err.message}`);
       });
       this.watcher = w;
+      this.active = true;
       logger.info(`fs watcher: watching ${this.rootAbs}`);
+      return true;
     } catch (err) {
+      this.active = false;
       logger.warn(`fs watcher: failed to watch ${this.rootAbs}: ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -111,6 +116,11 @@ class SingleRootWatcher extends EventEmitter {
     this.pending.clear();
     try { this.watcher?.close(); } catch { /* noop */ }
     this.watcher = null;
+    this.active = false;
+  }
+
+  isActive(): boolean {
+    return this.active;
   }
 
   poke(rel = ""): void {
@@ -139,20 +149,40 @@ class SingleRootWatcher extends EventEmitter {
  * over a single `fs.watch`.
  */
 class MultiWorkspaceWatcher extends EventEmitter {
-  private readonly byRoot = new Map<string, SingleRootWatcher>();
+  private readonly byRoot = new Map<string, { watcher: SingleRootWatcher; refs: number }>();
 
   /**
    * Start watching `rootAbs` if we are not already. Safe to call on every
    * WebSocket connect — duplicate roots are ignored.
    */
-  ensureWatching(rootAbs: string): void {
+  ensureWatching(rootAbs: string): () => void {
     const root = path.resolve(rootAbs);
-    if (this.byRoot.has(root)) return;
+    const existing = this.byRoot.get(root);
+    if (existing) {
+      existing.refs += 1;
+      return () => this.release(root);
+    }
+
     const inner = new SingleRootWatcher(root);
+    if (!inner.isActive()) {
+      return () => { /* noop */ };
+    }
+
     inner.on("changes", (batch: FsChangeEvent[]) => {
       this.emit("changes", { workspace: root, changes: batch } satisfies WorkspaceChangesPayload);
     });
-    this.byRoot.set(root, inner);
+    this.byRoot.set(root, { watcher: inner, refs: 1 });
+    return () => this.release(root);
+  }
+
+  private release(root: string): void {
+    const existing = this.byRoot.get(root);
+    if (!existing) return;
+    existing.refs -= 1;
+    if (existing.refs > 0) return;
+    existing.watcher.stop();
+    existing.watcher.removeAllListeners();
+    this.byRoot.delete(root);
   }
 
   /**
@@ -169,7 +199,7 @@ class MultiWorkspaceWatcher extends EventEmitter {
    */
   poke(rootAbs: string, rel = ""): void {
     const root = path.resolve(rootAbs);
-    this.byRoot.get(root)?.poke(rel);
+    this.byRoot.get(root)?.watcher.poke(rel);
   }
 }
 
