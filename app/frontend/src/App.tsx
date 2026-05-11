@@ -193,14 +193,16 @@ export default function App() {
       setPickerOpen(false);
       return;
     }
-    let confirmed = false;
-    try { confirmed = localStorage.getItem("pig-agents.ws.confirmed.v1") === "1"; } catch { /* noop */ }
-    if (confirmed) {
-      api.getWorkspace().then((r) => {
-        setSessionWorkspace(r.workspace);
-        setWorkspace(r.workspace);
-        setPickerOpen(false);
-      }).catch(() => { /* noop */ });
+    let savedPath = "";
+    try { savedPath = localStorage.getItem("pig-agents.ws.path.v1") || ""; } catch { /* noop */ }
+    if (savedPath) {
+      // Restore last workspace without trusting the backend's default (which
+      // resets to the pig-agents project root on every restart).
+      setSessionWorkspace(savedPath);
+      setWorkspace(savedPath);
+      setPickerOpen(false);
+      // Also tell the backend so its in-memory currentWorkspace is correct.
+      api.setWorkspace(savedPath).catch(() => { /* noop */ });
     } else {
       setPickerOpen(true);
     }
@@ -825,7 +827,10 @@ export default function App() {
       setActive(undefined);
       setRefreshKey((k) => k + 1);
       setPickerOpen(false);
-      try { localStorage.setItem("pig-agents.ws.confirmed.v1", "1"); } catch { /* noop */ }
+      try {
+        localStorage.setItem("pig-agents.ws.confirmed.v1", "1");
+        localStorage.setItem("pig-agents.ws.path.v1", r.workspace);
+      } catch { /* noop */ }
     } catch (err) {
       void dlg.alert((err as Error).message);
     }
