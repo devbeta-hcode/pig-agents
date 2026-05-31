@@ -1,0 +1,24 @@
+{
+  "name": "pig-agents-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Native Pig Agents IDE (Electron) — Windows, Linux, macOS",
+  "workspaces": [
+    "app/core",
+    "app/electron",
+    "app/renderer"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @pig-agents/electron",
+    "build": "npm run build --workspace @pig-agents/core && npm run build --workspace @pig-agents/renderer && npm run build --workspace @pig-agents/electron",
+    "package:win": "npm run build && npm run package:win --workspace @pig-agents/electron",
+    "sync-icon": "npm run sync-icon --workspace @pig-agents/electron",
+    "audit:deps": "npm audit --workspaces",
+    "rebuild:native": "node scripts/rebuild-native.mjs",
+    "verify:deps": "node scripts/verify-deps.mjs",
+    "preinstall": "node scripts/verify-deps.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

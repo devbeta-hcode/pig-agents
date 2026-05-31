@@ -1,0 +1,414 @@
+/* ============================================================================
+   ToolOutput - Compact tool call rendering (Copilot/Cursor style)
+   ============================================================================ */
+
+.trace-tool-output {
+  border: none;
+  padding: 0;
+}
+
+.tool-output {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+  margin: 1px 0;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  background: transparent;
+  border: none;
+  flex-wrap: nowrap;
+}
+
+.tool-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(130, 170, 255, 0.8);
+  flex-shrink: 0;
+}
+.tool-icon--edit { color: rgba(255, 190, 120, 0.85); }
+.tool-icon--terminal { color: rgba(130, 220, 170, 0.85); }
+.tool-icon--search { color: rgba(200, 160, 255, 0.85); }
+.tool-icon--folder { color: rgba(240, 200, 120, 0.85); }
+.tool-icon--map { color: rgba(130, 200, 255, 0.85); }
+
+.tool-action {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.tool-target {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(180, 200, 255, 0.75);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tool-command-stream-wrap {
+  margin: 0;
+  padding: 0;
+}
+.tool-command-stream-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(180, 200, 255, 0.55);
+  margin-bottom: 4px;
+}
+.tool-command-stream {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 180px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+  color: rgba(220, 228, 240, 0.95);
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* create_file / write_patch streaming — scroll inside <pre> so trace layout isn’t stretched */
+.tool-create-stream {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+}
+.tool-create-stream .tool-command-stream.tool-stream-pre-inner,
+.tool-create-stream .tool-create-content,
+.tool-create-stream .tool-patch-stream {
+  max-height: min(45vh, 360px);
+  overflow: auto;
+  margin: 0;
+}
+.tool-create-content {
+  max-height: 220px;
+}
+.tool-patch-stream {
+  max-height: 220px;
+}
+.tool-cursor {
+  display: inline-block;
+  width: 7px;
+  color: var(--accent-2);
+  animation: blink 0.8s step-start infinite;
+}
+.tool-stream-placeholder {
+  color: rgba(180, 200, 255, 0.5);
+  font-style: italic;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.tool-status--streaming {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent-2);
+  opacity: 0.85;
+}
+.tool-status--streaming::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+
+.tool-cmd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(180, 220, 180, 0.85);
+  background: rgba(0, 0, 0, 0.15);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+.tool-query {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(200, 170, 255, 0.85);
+  background: rgba(0, 0, 0, 0.15);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.tool-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 0;
+  margin-left: auto;
+}
+.tool-status--ok {
+  background: transparent;
+  color: rgba(100, 210, 130, 0.9);
+}
+.tool-status--fail {
+  background: transparent;
+  color: rgba(255, 120, 120, 0.9);
+}
+
+.tool-hit-count,
+.tool-file-count,
+.tool-depth {
+  font-size: 10px;
+  color: var(--fg-dim);
+  background: transparent;
+  padding: 0;
+  margin-left: auto;
+}
+
+.tool-files {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.tool-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.7);
+  background: transparent;
+  padding: 0;
+}
+
+.tool-file-more {
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+/* Tool details section */
+.tool-details {
+  padding: 0;
+  margin-left: 0;
+}
+
+.tool-codebase-map-body.tool-details {
+  margin-left: 12px;
+}
+.tool-codebase-map-body.tool-details > .tool-code-block {
+  margin-left: 0;
+  margin-top: 6px;
+}
+
+/* Inline tool bodies: timeline accordion handles expand — no inner Show row; avoid double indent */
+.tool-inline-body-read.tool-details > .tool-code-block,
+.tool-inline-body-search.tool-details > .tool-code-block,
+.tool-inline-body-run.tool-details > .tool-code-block,
+.tool-inline-body-create.tool-details > .tool-code-block {
+  margin-left: 0;
+  margin-top: 6px;
+}
+.tool-inline-body-list.tool-details > .tool-file-list {
+  margin-left: 0;
+  margin-top: 6px;
+  padding-left: 8px;
+}
+.tool-inline-body-patch.tool-details > .tool-patch-results {
+  margin-top: 6px;
+  padding-left: 8px;
+}
+
+/* Failed read_file: render the error + hint as plain pre so the agent's
+   suggested-paths list is readable (no syntax highlight, no Show-more). */
+.tool-error-pre {
+  margin: 6px 0 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--bad);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.tool-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.tool-toggle:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.tool-code-block {
+  margin: 0;
+  border: none;
+}
+.tool-code-block pre {
+  margin: 0;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.15);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.75);
+}
+.tool-code-block code {
+  font-family: inherit;
+}
+.tool-code-expand {
+  display: inline-block;
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.tool-code-expand:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* Patch results */
+.tool-patch-results {
+  padding: 4px 0 4px 20px;
+  border: none;
+}
+.tool-patch-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  font-size: 11px;
+}
+.tool-patch-file--ok { color: rgba(100, 210, 130, 0.9); }
+.tool-patch-file--fail { color: rgba(255, 120, 120, 0.9); }
+.tool-patch-status {
+  display: flex;
+  align-items: center;
+}
+.tool-validation {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+/* File list */
+.tool-file-list {
+  padding: 4px 0 4px 20px;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tool-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  border-radius: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.75);
+}
+.tool-file-item:hover {
+  color: var(--fg);
+}
+.tool-file-more-items {
+  padding: 2px 0;
+  text-align: left;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+
+/* Generic fallback */
+.tool-generic .tool-fallback-pre {
+  margin: 0;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.15);
+  border-left: 2px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Streaming cursor - Cursor-style blinking cursor at end of streaming text */
+.msg-text--streaming {
+  position: relative;
+}
+
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  background: var(--accent);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: cursor-blink 0.8s infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+

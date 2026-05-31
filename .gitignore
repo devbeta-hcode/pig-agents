@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+release/
+*.log
+.DS_Store
+Thumbs.db
+app/config/.env
+app/llm-profiles.json
+*.local
+app/electron/dist/
+app/core/dist/
+app/renderer/dist/

@@ -1,0 +1,109 @@
+import path from "node:path";
+import fs from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+/** Listeners are notified whenever the active workspace changes. The
+ *  filesystem watcher subscribes here so it can re-target itself. We use a
+ *  plain callback set instead of EventEmitter to keep this module importable
+ *  from anywhere (no circular deps with the watcher module). */
+const workspaceListeners = new Set<(p: string) => void>();
+
+export function onWorkspaceChange(cb: (p: string) => void): () => void {
+  workspaceListeners.add(cb);
+  return () => workspaceListeners.delete(cb);
+}
+
+let currentWorkspace: string = resolveInitial();
+
+/** Per-request workspace when the client sends `X-Build-Agents-Workspace`
+ * (each browser tab can work on a different folder independently). */
+const workspaceALS = new AsyncLocalStorage<string>();
+
+/**
+ * If WORKSPACE_ROOT is not set, walk up from the backend package looking for
+ * a sensible project root (the first ancestor that owns either a top-level
+ * `package.json` or `.git/`). This makes `npm run dev` "just work" without the
+ * user having to set WORKSPACE_ROOT, and avoids defaulting to `app/backend/`.
+ */
+function resolveInitial(): string {
+  const env = process.env.WORKSPACE_ROOT;
+  if (env && env.trim().length > 0) {
+    return path.resolve(env);
+  }
+  let dir = path.resolve(process.cwd());
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    // Prefer a package.json that is NOT just the backend's own.
+    if (fs.existsSync(path.join(parent, "package.json")) && !fs.existsSync(path.join(parent, "src", "server.ts"))) {
+      return parent;
+    }
+    dir = parent;
+  }
+  return path.resolve(process.cwd());
+}
+
+export function getWorkspace(): string {
+  const fromReq = workspaceALS.getStore();
+  if (fromReq !== undefined) return fromReq;
+  return currentWorkspace;
+}
+
+/**
+ * Validate and canonicalize a workspace directory (exists, is dir, allowed root).
+ * Used by HTTP header, POST /workspace, and WebSocket `?workspace=`.
+ */
+export function validateWorkspacePath(p: string): string {
+  const abs = path.resolve(p);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+    throw new Error(`Not a directory: ${abs}`);
+  }
+  const allowed = process.env.ALLOWED_WORKSPACE_ROOT;
+  if (allowed && allowed.trim().length > 0) {
+    const aRoot = path.resolve(allowed);
+    if (!abs.startsWith(aRoot + path.sep) && abs !== aRoot) {
+      throw new Error(`Workspace ${abs} is outside ALLOWED_WORKSPACE_ROOT (${aRoot})`);
+    }
+  }
+  return abs;
+}
+
+/** If the request includes the workspace header, return validated absolute path; else null.
+ *  Accepts both `X-Pig-Agents-Workspace` (current) and legacy `X-Build-Agents-Workspace`. */
+export function workspaceFromRequestHeader(req: { get(name: string): string | undefined }): string | null {
+  const raw = req.get("x-pig-agents-workspace") ?? req.get("x-build-agents-workspace");
+  if (!raw?.trim()) return null;
+  return validateWorkspacePath(raw.trim());
+}
+
+export function setWorkspace(p: string): string {
+  const abs = validateWorkspacePath(p);
+  currentWorkspace = abs;
+  for (const cb of workspaceListeners) {
+    try { cb(abs); } catch { /* listener errors must not block workspace switch */ }
+  }
+  return currentWorkspace;
+}
+
+/**
+ * Run the rest of an HTTP request with `getWorkspace()` resolved to `abs`
+ * (Express middleware uses this with the header or global default).
+ */
+export function runWithWorkspace<T>(abs: string, fn: () => T): T {
+  return workspaceALS.run(abs, fn);
+}
+
+export function safeJoin(rel: string): string {
+  const root = getWorkspace();
+  const target = path.resolve(root, rel || ".");
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(`Path escapes workspace: ${rel}`);
+  }
+  return target;
+}
+
+export function toRel(abs: string): string {
+  const root = getWorkspace();
+  return path.relative(root, abs).split(path.sep).join("/");
+}

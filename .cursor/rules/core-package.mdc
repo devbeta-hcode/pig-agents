@@ -1,0 +1,12 @@
+---
+description: Core business logic package rules
+globs: app/core/**/*
+alwaysApply: false
+---
+
+# @pig-agents/core
+
+- Pure Node/TS — no `electron`, no `express`, no DOM.
+- All workspace paths via `safeJoin()`; escaping workspace must throw.
+- Platform-specific shell/command hints belong in callers (electron), not hardcoded `bash` only.
+- Keep modules small: `workspace`, `logger`, later `agent`, `tools`, `llm`.

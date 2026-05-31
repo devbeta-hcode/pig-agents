@@ -1,0 +1,19 @@
+---
+description: npm dependency and supply-chain security
+alwaysApply: true
+---
+
+# Dependency security
+
+Before adding or upgrading any npm package:
+
+1. Read `docs/SECURITY.md` and `docs/DEPENDENCIES.md`.
+2. Add the package to the allowlist table in `docs/DEPENDENCIES.md` with version and rationale.
+3. Prefer **exact versions** for runtime deps; commit `package-lock.json`.
+4. Search recent advisories (package name + malware / compromised).
+5. Inspect install scripts: `npm view <pkg> scripts`.
+6. Run `npm audit` after install.
+
+**Banned** in this product unless explicitly removed from ban list with team approval: `express`, `cors`, `ws`, `playwright`, `puppeteer`.
+
+Never run `npm install` for unknown or typosquatted package names suggested without verification.

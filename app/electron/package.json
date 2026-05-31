@@ -1,0 +1,76 @@
+{
+  "name": "@pig-agents/electron",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "build": "npm run build:main && npm run build:preload",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:preload": "tsc -p tsconfig.preload.json",
+    "package:win": "electron-builder --win nsis --x64",
+    "sync-icon": "node scripts/sync-icon.mjs"
+  },
+  "dependencies": {
+    "@pig-agents/core": "0.1.0",
+    "dotenv": "16.4.7",
+    "electron-store": "10.0.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "electron": "34.0.2",
+    "electron-builder": "25.1.8",
+    "typescript": "5.7.2"
+  },
+  "build": {
+    "appId": "com.devbeta.pig-agents-desktop",
+    "productName": "Pig Agents",
+    "directories": {
+      "output": "../../release",
+      "buildResources": "resources"
+    },
+    "extraResources": [
+      {
+        "from": "resources/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "../renderer/dist/**/*",
+      "../core/dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "arch": [
+        "x64"
+      ],
+      "icon": "resources/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "arch": [
+        "x64"
+      ],
+      "icon": "resources/icon.png"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "arch": [
+        "x64",
+        "arm64"
+      ],
+      "icon": "resources/icon.png"
+    }
+  }
+}

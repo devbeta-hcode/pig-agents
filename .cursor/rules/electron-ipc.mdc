@@ -1,0 +1,14 @@
+---
+description: Electron main, preload, and IPC conventions
+globs: app/electron/**/*
+alwaysApply: false
+---
+
+# Electron & IPC
+
+- Renderer: `contextIsolation: true`, `nodeIntegration: false`, no direct `fs`/`child_process`.
+- Expose APIs only through `preload.ts` → `contextBridge.exposeInMainWorld('pigAgents', …)`.
+- Channel naming: `pig:<domain>:<action>` (e.g. `pig:workspace:pickFolder`).
+- Handler errors: structured `{ code, message }`; never leak stack traces to renderer in production.
+- Agent streaming: `mainWindow.webContents.send('pig:agent:event', event)` — not EventSource/SSE.
+- Secrets and `.env` loading only in main process (`app/electron/src/env.ts`).

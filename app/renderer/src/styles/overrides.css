@@ -1,0 +1,339 @@
+/* =============================================================
+   Overrides — rules that MUST come last.
+   Base component styles live in chat.css.
+   Only chevron ordering, structural layout, and third-party
+   overrides that must win the cascade belong here.
+   ============================================================= */
+
+/* Electron auto-focuses the first tabbable node — hide rings on shell chrome unless Tab. */
+.app .activity button:focus:not(:focus-visible),
+.app .titlebar button:focus:not(:focus-visible),
+.app .window-controls__btn:focus:not(:focus-visible),
+.app .workspace-manager-badge:focus:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+body:focus {
+  outline: none;
+}
+
+
+.assistant-action-fold-sum .tool-icon {
+  width: 14px;
+  height: 14px;
+  color: color-mix(in srgb, var(--fg-dim) 90%, transparent);
+}
+.assistant-action-fold-sum .tool-icon--edit { color: #d8a05a; }
+.assistant-action-fold-sum .tool-icon--terminal { color: #7fc996; }
+.assistant-action-fold-sum .tool-icon--search { color: #b89cd6; }
+.assistant-action-fold-sum .tool-icon--folder { color: #d4b870; }
+.assistant-action-fold-sum .tool-icon--map { color: #7fb8d8; }
+
+.assistant-action-fold-sum .tool-action {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+}
+
+.assistant-action-fold-sum .tool-target {
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+
+.assistant-action-fold-sum .tool-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: transparent;
+  padding: 0;
+}
+
+/* Status text — muted by default, tiny accent for state.
+   Copilot uses small text, not pills. */
+.assistant-action-fold-sum .tool-status {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  letter-spacing: 0.01em;
+  margin-left: 4px;
+}
+.assistant-action-fold-sum .tool-status--ok {
+  color: color-mix(in srgb, var(--fg-dim) 80%, transparent);
+}
+.assistant-action-fold-sum .tool-status--ok::before {
+  content: "✓ ";
+  color: rgba(120, 200, 140, 0.85);
+  margin-right: 2px;
+}
+.assistant-action-fold-sum .tool-status--fail {
+  color: color-mix(in srgb, #ff8888 80%, var(--fg-dim));
+}
+.assistant-action-fold-sum .tool-status--fail::before {
+  content: "✕ ";
+  margin-right: 2px;
+}
+
+/* ── Thought summary row styles ─────────────────────────────── */
+/* Italic style for thought/reasoning summaries */
+.assistant-stream-thought .assistant-stream-thought-sum,
+.thought-step-archive-row,
+.assistant-live-thought-summary {
+  font-style: italic;
+}
+/* Chevrons always push to the right end */
+.assistant-action-fold-sum .assistant-action-fold-chev,
+.assistant-action-group-sum .assistant-action-fold-chev,
+.thought-step-archive-row .thought-log-chev,
+.assistant-live-thought-summary .assistant-thought-fold-chev,
+.tool-diff-summary .tool-diff-chev,
+.trace-step-head .trace-chev {
+  order: 10;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.assistant-action-fold-sum .tool-target,
+.assistant-action-group-sum .tool-target,
+.tool-diff-summary .tool-diff-path,
+.trace-step-head .trace-step-text {
+  flex: 1;
+  min-width: 0;
+}
+.assistant-stream-thought-scroll {
+  color: color-mix(in srgb, var(--fg) 78%, var(--fg-dim));
+  font-style: normal;
+  background: transparent;
+}
+.thought-step-archive-preview {
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-style: normal;
+  margin-left: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Flat trace step flat-head extra styles — color + padding not in chat.css */
+.trace-step-flat-head {
+  color: var(--fg-muted);
+  padding: 3px 8px 3px 28px;
+}
+.trace-tool-row {
+  padding: 0;
+  margin: 0;
+}
+
+/* Tool body code blocks — remove inner backgrounds since fold already framed. */
+.tool-output {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+.tool-details {
+  padding: 0;
+}
+.tool-code-block pre {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  border-radius: 5px;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+.tool-code-block code {
+  font-family: var(--font-mono);
+  background: transparent;
+  padding: 0;
+}
+.tool-code-expand {
+  margin-top: 6px;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.tool-code-expand:hover {
+  color: var(--fg);
+  border-color: var(--accent-2);
+}
+
+/* Streaming dot — replace gradient pulse with a quieter inline dot. */
+.assistant-action-fold-sum .tool-status--streaming {
+  font-size: 10.5px;
+  color: var(--accent-2);
+  opacity: 0.9;
+}
+
+/* Run command card — flatten so it lives within the fold body, not as another card. */
+.tool-command-stream {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+/* Empty state polish — match the new flat aesthetic. */
+.chat-empty {
+  padding: 64px 24px;
+}
+.chat-empty-title {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Scroll-to-bottom: integrate visually with the new flat surface. */
+.scroll-bottom {
+  background: color-mix(in srgb, var(--bg-3) 95%, var(--accent) 8%);
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  color: var(--fg);
+  font-weight: 500;
+}
+.scroll-bottom:hover {
+  background: var(--bg-3);
+  border-color: var(--accent-2);
+}
+
+/* Explorer loading state on workspace switch — quiet centered spinner. */
+.tree-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 12px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.tree-loading .explorer-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+/* Wrapper that lets the scroll-to-bottom pill anchor above the composer
+   without being inside the scrollable .chat-log (avoids overlapping streamed
+   text and getting repainted on every token). */
+.chat-log-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.chat-log-wrap > .chat-log {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Copilot-style per-file diff viewer for write_patch results. */
+.tool-patch-diffs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.tool-diff-block {
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-2) 70%, var(--bg-3));
+  overflow: hidden;
+}
+.tool-diff-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+  background: color-mix(in srgb, var(--bg-3) 85%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  user-select: none;
+}
+.tool-diff-summary::-webkit-details-marker { display: none; }
+.tool-diff-block:not([open]) .tool-diff-summary { border-bottom: none; }
+.tool-diff-chev {
+  width: 12px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.tool-diff-path {
+  font-family: var(--font-mono);
+  color: var(--fg);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-diff-body {
+  margin: 0;
+  padding: 6px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  font-family: var(--font-mono);
+  background: var(--bg);
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+}
+.tool-diff-body code { display: block; }
+
+/* +/- summary stats (Copilot-style green/red counters). */
+.tool-patch-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.tool-patch-stats-add { color: #4ade80; }
+.tool-patch-stats-del { color: #f87171; }
+
+/* Make +/- markers in the diff body more legible — Copilot keeps them
+   separated from content by a faint gutter color. */
+.tool-diff-body .tool-patch-stream-line {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.tool-diff-body .tool-patch-line-add {
+  background: color-mix(in srgb, #16a34a 22%, transparent);
+  border-left: 2px solid #22c55e;
+  padding-left: 4px;
+}
+.tool-diff-body .tool-patch-line-del {
+  background: color-mix(in srgb, #dc2626 20%, transparent);
+  border-left: 2px solid #ef4444;
+  padding-left: 4px;
+}
+.tool-diff-body .tool-patch-line-hunk {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, #93c5fd 95%, transparent);
+}
+.tool-diff-body .tool-patch-line-meta {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* Tail-follow sentinel — invisible 1px element at the bottom of .chat-log
+   used by IntersectionObserver to detect "user is reading the tail". */
+.chat-log-sentinel {
+  height: 1px;
+  width: 100%;
+  flex-shrink: 0;
+  pointer-events: none;
+}

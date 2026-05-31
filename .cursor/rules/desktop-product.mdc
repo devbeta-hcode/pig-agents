@@ -1,0 +1,15 @@
+---
+description: Pig Agents Desktop — product invariants (always apply)
+alwaysApply: true
+---
+
+# Pig Agents Desktop — product rules
+
+- Follow **`PLAN.md`** for phase order and exit criteria before starting non-trivial work.
+- This repo is **greenfield**. Never copy, symlink, or import source from `pig-agents-web/`.
+- **No web backend**: no Express, no `localhost` API server, no Vite proxy to a backend, no SSE/WebSocket to self for app logic.
+- Use **Electron main + IPC + preload** for all privileged operations.
+- **Browser panel**: Electron `BrowserView` / `webContents` only — never Playwright or puppeteer.
+- **Windows first**, but code must stay portable via `app/electron/src/platform.ts`.
+- Desktop UI must avoid unnecessary network hops; prefer IPC over HTTP for every feature.
+- Do not edit files under `pig-agents-web/` when working on desktop.
