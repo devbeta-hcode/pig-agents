@@ -1,10 +1,46 @@
 import { useEffect, useRef, useState, useMemo } from "react";
+import { Button, ConfigProvider, Input, InputNumber, Select, Slider, theme } from "antd";
 import { api, type SettingsPayload } from "../lib/api";
 import { pig } from "../lib/pig.js";
 import { Modal } from "./Modal";
-import { IconCheck } from "./Icons";
+import { IconCheck, IconChevronDown } from "./Icons";
 
-const PROMPT_MODES = ["minimal", "economical", "balanced", "detailed", "verbose"] as const;
+const PROVIDER_OPTIONS = [
+  { value: "chatgpt", label: "ChatGPT" },
+  { value: "gemini", label: "Gemini" },
+  { value: "openroute", label: "OpenRouter" },
+  { value: "claude", label: "Claude" },
+  { value: "groq", label: "Groq" },
+  { value: "ollama", label: "Ollama" },
+  { value: "local", label: "OpenAI-compatible" },
+] as const;
+
+const PROMPT_MODE_OPTIONS = [
+  { value: "minimal", label: "Ultra-frugal (fewest tokens)" },
+  { value: "economical", label: "Economical" },
+  { value: "balanced", label: "Balanced (default)" },
+  { value: "detailed", label: "Advanced (more context)" },
+  { value: "verbose", label: "Maximum detail (full instructions)" },
+] as const;
+
+const SETTINGS_THEME = {
+  algorithm: theme.darkAlgorithm,
+  token: {
+    colorPrimary: "#1668dc",
+    colorBgContainer: "rgba(255, 255, 255, 0.04)",
+    colorBorder: "#424242",
+    colorText: "rgba(255, 255, 255, 0.88)",
+    colorTextPlaceholder: "rgba(255, 255, 255, 0.25)",
+    borderRadius: 6,
+    fontSize: 14,
+    controlHeight: 32,
+  },
+  components: {
+    Select: {
+      optionSelectedBg: "rgba(22, 104, 220, 0.2)",
+    },
+  },
+} as const;
 
 /** `0`/empty clears override (backend removes env). */
 function llmMaxTokensPayload(n: number | undefined): number {
@@ -14,10 +50,12 @@ function llmMaxTokensPayload(n: number | undefined): number {
 }
 
 /** Match backend `normalizePromptMode`: legacy `compact` → balanced. */
-function normalizePromptModeUi(m: string | undefined): (typeof PROMPT_MODES)[number] {
+function normalizePromptModeUi(m: string | undefined): (typeof PROMPT_MODE_OPTIONS)[number]["value"] {
   const v = (m ?? "").trim();
   if (!v || v === "compact") return "balanced";
-  return (PROMPT_MODES as readonly string[]).includes(v) ? (v as (typeof PROMPT_MODES)[number]) : "balanced";
+  return PROMPT_MODE_OPTIONS.some((o) => o.value === v)
+    ? (v as (typeof PROMPT_MODE_OPTIONS)[number]["value"])
+    : "balanced";
 }
 
 /** Searchable model dropdown */
@@ -75,7 +113,9 @@ function SearchableModelSelect({
         <span className="searchable-select-value">
           {value || <span className="placeholder">{placeholder || "Select..."}</span>}
         </span>
-        <span className="searchable-select-arrow">▾</span>
+        <span className="searchable-select-arrow">
+          <IconChevronDown size={16} />
+        </span>
       </button>
       <div className="searchable-select-dropdown-shell" aria-hidden={!open}>
         <div className="searchable-select-dropdown-inner">
@@ -147,12 +187,10 @@ interface OllamaProbe {
 export function SettingsModal({ onClose }: Props) {
   const [s, setS] = useState<SettingsPayload | null>(null);
   const [apiKey, setApiKey] = useState("");
-  // When the existing key is "set on disk", we show a masked placeholder
-  // value so the user can see at a glance that something is saved. The
-  // moment they focus the field we clear it so they can type a new key
-  // without having to first delete the dots themselves.
+  /** Latest API key draft — ref avoids blur-before-save dropping the value. */
+  const apiKeyRef = useRef("");
   const [apiKeyTouched, setApiKeyTouched] = useState(false);
-  /** True while user focused the field to replace a masked key — does not mean they changed bytes yet. */
+  /** True while replacing a saved key (field empty, mask hidden). */
   const [apiKeyEditing, setApiKeyEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -285,6 +323,37 @@ export function SettingsModal({ onClose }: Props) {
 
   if (!s) return <Modal title="Settings" onClose={onClose}><div>Loading…</div></Modal>;
 
+  function syncApiKey(value: string) {
+    apiKeyRef.current = value;
+    setApiKey(value);
+    setApiKeyTouched(true);
+  }
+
+  function clearApiKeyField() {
+    apiKeyRef.current = "";
+    setApiKey("");
+    setApiKeyTouched(false);
+    setApiKeyEditing(false);
+  }
+
+  function enterApiKeyEdit() {
+    apiKeyRef.current = "";
+    setApiKey("");
+    setApiKeyTouched(false);
+    setApiKeyEditing(true);
+  }
+
+  function apiKeyDraftTrimmed(): string {
+    return apiKeyRef.current.trim();
+  }
+
+  function apiKeySavePatch(hasStoredKey: boolean): Partial<SettingsPayload> {
+    const draft = apiKeyDraftTrimmed();
+    if (draft.length > 0) return { OPENAI_API_KEY: draft };
+    if (apiKeyTouched && hasStoredKey) return { OPENAI_API_KEY: "" };
+    return {};
+  }
+
   async function refreshModelList() {
     const st = s;
     if (!st) return;
@@ -292,8 +361,8 @@ export function SettingsModal({ onClose }: Props) {
     setMsg(null);
     try {
       const mustSyncKey =
-        apiKey.trim().length > 0 ||
-        (apiKeyTouched && !apiKey.trim() && st.OPENAI_API_KEY_SET);
+        apiKeyDraftTrimmed().length > 0 ||
+        (apiKeyTouched && !apiKeyDraftTrimmed() && st.OPENAI_API_KEY_SET);
       if (mustSyncKey) {
         await api.saveSettings({
           LLM_PROVIDER: st.LLM_PROVIDER,
@@ -303,13 +372,11 @@ export function SettingsModal({ onClose }: Props) {
           MAX_ITERATIONS: Number(st.MAX_ITERATIONS),
           PROMPT_MODE: normalizePromptModeUi(st.PROMPT_MODE),
           LLM_MAX_TOKENS: llmMaxTokensPayload(st.LLM_MAX_TOKENS),
-          OPENAI_API_KEY: apiKey.trim().length > 0 ? apiKey.trim() : "",
+          ...apiKeySavePatch(st.OPENAI_API_KEY_SET),
         });
-        setApiKeyTouched(false);
-        setApiKeyEditing(false);
-        setApiKey("");
         const fresh = await api.getSettings();
         setS(fresh);
+        clearApiKeyField();
       }
       setModelListRefreshKey((k) => k + 1);
     } catch (err) {
@@ -343,9 +410,7 @@ export function SettingsModal({ onClose }: Props) {
 
   function pickProvider(p: string) {
     setCustomBaseUrl(false);
-    setApiKeyTouched(false);
-    setApiKeyEditing(false);
-    setApiKey("");
+    clearApiKeyField();
     setS((cur) => {
       if (!cur) return cur;
       const slot = cur.PROFILES?.[p];
@@ -376,19 +441,13 @@ export function SettingsModal({ onClose }: Props) {
         MAX_ITERATIONS: Number(s.MAX_ITERATIONS),
         PROMPT_MODE: normalizePromptModeUi(s.PROMPT_MODE),
         LLM_MAX_TOKENS: llmMaxTokensPayload(s.LLM_MAX_TOKENS),
+        ...apiKeySavePatch(s.OPENAI_API_KEY_SET),
       };
-      if (apiKey.trim().length > 0) {
-        payload.OPENAI_API_KEY = apiKey.trim();
-      } else if (apiKeyTouched && !apiKey.trim() && s.OPENAI_API_KEY_SET) {
-        payload.OPENAI_API_KEY = "";
-      }
       await api.saveSettings(payload);
       setMsg("Saved.");
-      setApiKey("");
-      setApiKeyTouched(false);
-      setApiKeyEditing(false);
       const fresh = await api.getSettings();
       setS(fresh);
+      clearApiKeyField();
       setModelListRefreshKey((k) => k + 1);
     } catch (err) {
       setMsg(`Error: ${(err as Error).message}`);
@@ -413,6 +472,13 @@ export function SettingsModal({ onClose }: Props) {
         ? ollama.models
         : null;
 
+  const showSavedApiKeyMask =
+    !isOllama &&
+    s.OPENAI_API_KEY_SET &&
+    !apiKeyEditing &&
+    !apiKeyTouched &&
+    apiKey.length === 0;
+
   return (
     <Modal
       title="Settings"
@@ -421,29 +487,37 @@ export function SettingsModal({ onClose }: Props) {
         <>
           {msg && <span style={{ marginRight: "auto", color: msg.startsWith("Error") ? "var(--bad)" : "var(--good)", fontSize: 12 }}>{msg}</span>}
           <button onClick={onClose}>Close</button>
-          <button className="primary" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+          <button
+            className="primary"
+            disabled={saving}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void save()}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
         </>
       }
     >
+      <ConfigProvider theme={SETTINGS_THEME}>
+      <div className="settings-form">
       <div className="settings-section">
         <div className="settings-section-title">Appearance</div>
         <div className="settings-row">
           <label>UI zoom</label>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <input
-              type="range"
+          <div className="settings-zoom-row">
+            <Slider
               min={80}
               max={200}
               step={10}
               value={uiZoom}
               disabled={uiZoomSaving}
-              onChange={(e) => void applyUiZoom(Number(e.target.value))}
-              style={{ flex: "1 1 160px", minWidth: 120 }}
+              onChange={(v) => void applyUiZoom(v)}
+              tooltip={{ formatter: (v) => `${v}%` }}
             />
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, minWidth: 44 }}>{uiZoom}%</span>
-            <button type="button" disabled={uiZoomSaving} onClick={() => void applyUiZoom(100)}>
+            <span className="settings-zoom-value">{uiZoom}%</span>
+            <Button size="small" disabled={uiZoomSaving} onClick={() => void applyUiZoom(100)}>
               Reset 100%
-            </button>
+            </Button>
           </div>
           <div className="hint">
             Shortcuts: <kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>+<kbd>−</kbd> / <kbd>Ctrl</kbd>+<kbd>0</kbd>, or <kbd>Ctrl</kbd> + scroll.
@@ -454,34 +528,19 @@ export function SettingsModal({ onClose }: Props) {
 
       <div className="settings-row">
         <label>LLM Provider</label>
-        <select value={s.LLM_PROVIDER} onChange={(e) => pickProvider(e.target.value)}>
-          <option value="chatgpt">ChatGPT</option>
-          <option value="gemini">Gemini</option>
-          <option value="openroute">OpenRouter</option>
-          <option value="claude">Claude</option>
-          <option value="groq">Groq</option>
-          <option value="ollama">Ollama</option>
-          <option value="local">OpenAI-compatible</option>
-        </select>
+        <Select
+          value={s.LLM_PROVIDER}
+          onChange={pickProvider}
+          options={PROVIDER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        />
         <div className="hint">
-          Stored per provider in app data (
-          <code>{s.PROFILES_FILE?.split(/[/\\]/).pop() || "llm-profiles.json"}</code>
-          ).
           {managedCloud && !customBaseUrl && (
             <>
               {" "}
               <button
                 type="button"
+                className="hint-link"
                 onClick={() => setCustomBaseUrl(true)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "var(--accent)",
-                  cursor: "pointer",
-                  padding: 0,
-                  font: "inherit",
-                  textDecoration: "underline",
-                }}
               >
                 Custom endpoint…
               </button>
@@ -493,29 +552,36 @@ export function SettingsModal({ onClose }: Props) {
       {!isOllama && (
         <div className="settings-row">
           <label>API key</label>
-          <input
-            type="password"
-            value={apiKeyEditing || apiKeyTouched || !s.OPENAI_API_KEY_SET ? apiKey : "••••••••••••"}
+          <Input.Password
+            readOnly={showSavedApiKeyMask}
+            className={showSavedApiKeyMask ? "settings-api-key-saved" : undefined}
+            value={showSavedApiKeyMask ? "••••••••••••" : apiKey}
+            autoComplete="new-password"
             onFocus={() => {
-              if (s.OPENAI_API_KEY_SET && !apiKeyEditing) {
-                setApiKeyEditing(true);
-                setApiKey("");
+              if (showSavedApiKeyMask) enterApiKeyEdit();
+            }}
+            onBlur={() => {
+              if (!apiKeyRef.current.trim()) {
+                setApiKeyEditing(false);
+                setApiKeyTouched(false);
+              } else {
+                setApiKeyEditing(false);
               }
             }}
-            onBlur={() => setApiKeyEditing(false)}
+            onChange={(e) => {
+              if (showSavedApiKeyMask) return;
+              syncApiKey(e.target.value);
+            }}
             onPaste={() => setApiKeyTouched(true)}
-            onChange={(e) => { setApiKeyTouched(true); setApiKey(e.target.value); }}
             placeholder={
-              s.OPENAI_API_KEY_SET
-                ? "(replace — Save with empty keeps existing key)"
-                : isChatgpt ? "sk-…" : "API key for this Base URL (OpenAI, Google AI, OpenRouter, …)"
+              isChatgpt ? "sk-…" : "API key for this Base URL (OpenAI, Google AI, OpenRouter, …)"
             }
+            visibilityToggle={!showSavedApiKeyMask}
           />
           <div className="hint">
             {s.OPENAI_API_KEY_SET
               ? <><span style={{ color: "var(--good)" }}>● Saved for this provider</span> — focus to paste a new key; Save with an empty field keeps the current key.</>
               : <><span style={{ color: "var(--warn)" }}>○ Not set</span> — required for most cloud APIs; local servers often accept any string.</>}
-            {" "}Per provider in <code>llm-profiles.json</code> (other settings may still use <code>app/.env</code>).
           </div>
         </div>
       )}
@@ -523,15 +589,15 @@ export function SettingsModal({ onClose }: Props) {
       {showBaseUrlInput && (
         <div className="settings-row">
           <label>{managedCloud && customBaseUrl ? "Custom Base URL" : "Base URL"}</label>
-          <input
+          <Input
             value={s.BASE_URL}
             onChange={(e) => field("BASE_URL", e.target.value)}
             placeholder={
               isOllama
                 ? "http://localhost:11434  (Ollama default)"
                 : isChatgpt
-                ? "https://api.openai.com/v1"
-                : "https://…  ·  http://host:port/v1"
+                  ? "https://api.openai.com/v1"
+                  : "https://…  ·  http://host:port/v1"
             }
           />
           <div className="hint">
@@ -545,18 +611,10 @@ export function SettingsModal({ onClose }: Props) {
               <>
                 <button
                   type="button"
+                  className="hint-link"
                   onClick={() => {
                     setCustomBaseUrl(false);
                     field("BASE_URL", "");
-                  }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "var(--accent)",
-                    cursor: "pointer",
-                    padding: 0,
-                    font: "inherit",
-                    textDecoration: "underline",
                   }}
                 >
                   Reset to built-in endpoint
@@ -573,37 +631,35 @@ export function SettingsModal({ onClose }: Props) {
       <div className="settings-row">
         <label>Model</label>
         <div className="settings-model-row-inner">
-        {modelSelectList ? (
-          <SearchableModelSelect
-            models={modelSelectList}
-            value={s.MODEL}
-            onChange={(m) => field("MODEL", m)}
-            placeholder={isOllama ? "Pick an installed model" : "Pick a model"}
-            currentNotInList={s.MODEL.trim() !== "" && !modelSelectList.includes(s.MODEL)}
-          />
-        ) : (
-          <input
-            value={s.MODEL}
-            onChange={(e) => field("MODEL", e.target.value)}
-            placeholder={
-              isChatgpt ? "gpt-4o-mini"
-              : isOllama ? "llama3.2  ·  qwen2.5-coder  ·  …"
-              : "model id from your server"
-            }
-            style={{ flex: 1, minWidth: 0 }}
-          />
-        )}
-        {(isOllama || openAiShaped) && (
-          <button
-            type="button"
-            className="settings-load-models"
-            disabled={saving || modelListLoading}
-            onClick={() => void refreshModelList()}
-            title="Re-fetch models from the server. If you just pasted an API key, it is saved first."
-          >
-            {modelListLoading ? "Loading…" : "Load models"}
-          </button>
-        )}
+          {modelSelectList ? (
+            <SearchableModelSelect
+              models={modelSelectList}
+              value={s.MODEL}
+              onChange={(m) => field("MODEL", m)}
+              placeholder={isOllama ? "Pick an installed model" : "Pick a model"}
+              currentNotInList={s.MODEL.trim() !== "" && !modelSelectList.includes(s.MODEL)}
+            />
+          ) : (
+            <Input
+              value={s.MODEL}
+              onChange={(e) => field("MODEL", e.target.value)}
+              placeholder={
+                isChatgpt ? "gpt-4o-mini"
+                  : isOllama ? "llama3.2  ·  qwen2.5-coder  ·  …"
+                    : "model id from your server"
+              }
+            />
+          )}
+          {(isOllama || openAiShaped) && (
+            <Button
+              size="small"
+              disabled={saving || modelListLoading}
+              onClick={() => void refreshModelList()}
+              title="Re-fetch models from the server. If you just pasted an API key, it is saved first."
+            >
+              {modelListLoading ? "Loading…" : "Load models"}
+            </Button>
+          )}
         </div>
         {isOllama && (
           <div className="hint">
@@ -640,12 +696,12 @@ export function SettingsModal({ onClose }: Props) {
 
         <div className="settings-row">
           <label>Max context files</label>
-          <input
-            type="number"
-            min="1"
-            max="200"
+          <InputNumber
+            min={1}
+            max={200}
             value={s.MAX_CONTEXT_FILES}
-            onChange={(e) => field("MAX_CONTEXT_FILES", Number(e.target.value))}
+            onChange={(v) => field("MAX_CONTEXT_FILES", v ?? 1)}
+            style={{ width: "100%" }}
           />
           <div className="hint">
             How many <strong>existing workspace files</strong> are ranked and injected into the prompt as context each turn — not how many new files are written in parallel, and not extra LLM calls.
@@ -655,12 +711,12 @@ export function SettingsModal({ onClose }: Props) {
 
         <div className="settings-row">
           <label>Max iterations</label>
-          <input
-            type="number"
-            min="1"
-            max="1000"
+          <InputNumber
+            min={1}
+            max={1000}
             value={s.MAX_ITERATIONS}
-            onChange={(e) => field("MAX_ITERATIONS", Number(e.target.value))}
+            onChange={(v) => field("MAX_ITERATIONS", v ?? 1)}
+            style={{ width: "100%" }}
           />
           <div className="hint">
             Hard cap on the ReAct loop (THOUGHT → ACTION steps). Use <code>30–100</code> for complex multi-file projects,
@@ -670,16 +726,13 @@ export function SettingsModal({ onClose }: Props) {
 
         <div className="settings-row">
           <label>Max completion tokens</label>
-          <input
-            type="number"
+          <InputNumber
             min={64}
             max={131072}
             placeholder="Auto"
-            value={s.LLM_MAX_TOKENS && s.LLM_MAX_TOKENS > 0 ? s.LLM_MAX_TOKENS : ""}
-            onChange={(e) => {
-              const raw = e.target.value;
-              field("LLM_MAX_TOKENS", raw === "" ? 0 : Number(raw));
-            }}
+            value={s.LLM_MAX_TOKENS && s.LLM_MAX_TOKENS > 0 ? s.LLM_MAX_TOKENS : null}
+            onChange={(v) => field("LLM_MAX_TOKENS", v ?? 0)}
+            style={{ width: "100%" }}
           />
           <div className="hint">
             Per-call output budget (<code>max_tokens</code>). Leave empty for auto (mode-derived). Recommended: <code>4096</code>–<code>16384</code> for complex coding tasks. Lower for slow TPM providers like Groq (<code>512</code>).
@@ -688,16 +741,11 @@ export function SettingsModal({ onClose }: Props) {
 
         <div className="settings-row">
           <label>Prompt mode</label>
-          <select
+          <Select
             value={normalizePromptModeUi(s.PROMPT_MODE)}
-            onChange={(e) => field("PROMPT_MODE", normalizePromptModeUi(e.target.value))}
-          >
-            <option value="minimal">Ultra-frugal (fewest tokens)</option>
-            <option value="economical">Economical</option>
-            <option value="balanced">Balanced (default)</option>
-            <option value="detailed">Advanced (more context)</option>
-            <option value="verbose">Maximum detail (full instructions)</option>
-          </select>
+            onChange={(v) => field("PROMPT_MODE", normalizePromptModeUi(v))}
+            options={PROMPT_MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          />
           <div className="hint">
             Controls system prompt length and how much file/history context is attached each turn — higher levels use more tokens but give the model fuller instructions (good for difficult multi-file work).
           </div>
@@ -755,6 +803,8 @@ export function SettingsModal({ onClose }: Props) {
           regardless of this flag (SSRF guard). Same per-workspace policy file as above.
         </div>
       </div>
+      </div>
+      </ConfigProvider>
     </Modal>
   );
 }

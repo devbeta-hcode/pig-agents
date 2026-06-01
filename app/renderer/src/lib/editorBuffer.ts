@@ -10,6 +10,8 @@ export interface FileBuffer {
 }
 
 const buffers = new Map<string, FileBuffer>();
+/** Paths cleared by invalidate — block writes until the next disk load. */
+const invalidatedPaths = new Set<string>();
 
 /** Ignore CRLF vs LF; Monaco may normalize on programmatic load. */
 export function normalizeEditorText(s: string): string {
@@ -25,6 +27,7 @@ export function getFileBuffer(path: string): FileBuffer | undefined {
 }
 
 export function writeFileBuffer(path: string, content: string, original: string): void {
+  if (invalidatedPaths.has(path)) return;
   buffers.set(path, { content, original });
 }
 
@@ -34,8 +37,18 @@ export function isPathDirtyInBuffer(path: string): boolean {
 }
 
 export function invalidateEditorBuffer(path?: string): void {
-  if (path) buffers.delete(path);
-  else buffers.clear();
+  if (path) {
+    buffers.delete(path);
+    invalidatedPaths.add(path);
+  } else {
+    buffers.clear();
+    invalidatedPaths.clear();
+  }
+}
+
+/** Allow buffering again after a fresh disk read (e.g. reopen after discard). */
+export function reviveEditorBuffer(path: string): void {
+  invalidatedPaths.delete(path);
 }
 
 export function hasFileBuffer(path: string): boolean {

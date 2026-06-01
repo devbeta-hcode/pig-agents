@@ -11,3 +11,4 @@ app/llm-profiles.json
 app/electron/dist/
 app/core/dist/
 app/renderer/dist/
+tmp_app_js/

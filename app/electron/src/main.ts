@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, Menu, shell } from "electron";
 import { getAppIcon } from "./appIcon.js";
-import { registerIpc } from "./ipc/register.js";
+import { cleanupTerminals, registerIpc } from "./ipc/register.js";
 import { loadDesktopEnv } from "./env.js";
 import { getUiZoomPercent } from "./uiPrefs.js";
 import { applyWindowZoom } from "./zoom.js";
@@ -35,9 +35,8 @@ function wireWindowChrome(win: BrowserWindow): void {
   win.on("unmaximize", () => sendMax(false));
 }
 
-async function createWindow(): Promise<void> {
+async function createWindow() {
   const appIcon = getAppIcon();
-
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -45,9 +44,8 @@ async function createWindow(): Promise<void> {
     minHeight: 600,
     show: false,
     frame: false,
-    // Opaque on Windows — transparent frameless windows misalign BrowserView bounds.
-    transparent: process.platform !== "win32",
-    backgroundColor: process.platform === "win32" ? "#121218" : "#00000000",
+    transparent: true,
+    backgroundColor: "#00000000",
     roundedCorners: true,
     hasShadow: true,
     title: "Pig Agents",
@@ -61,47 +59,60 @@ async function createWindow(): Promise<void> {
       webviewTag: true,
     },
   });
-
   wireWindowChrome(mainWindow);
   mainWindow.webContents.on("did-finish-load", () => {
     applyWindowZoom(mainWindow, getUiZoomPercent());
   });
   mainWindow.on("ready-to-show", () => mainWindow?.show());
-
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
   });
-
   if (isDev) {
     await mainWindow.loadURL(RENDERER_DEV_URL);
     mainWindow.webContents.openDevTools({ mode: "detach" });
     log.info("window loaded (dev)", { url: RENDERER_DEV_URL });
-  } else {
+  }
+  else {
     await mainWindow.loadFile(rendererIndexPath());
     log.info("window loaded (prod)", { file: rendererIndexPath() });
   }
 }
-
-app.whenReady().then(async () => {
-  if (process.platform === "win32") {
-    app.setAppUserModelId("com.devbeta.pig-agents-desktop");
-  }
-  const dockIcon = getAppIcon();
-  if (process.platform === "darwin" && !dockIcon.isEmpty()) {
-    app.dock?.setIcon(dockIcon);
-  }
-  Menu.setApplicationMenu(null);
-  loadDesktopEnv();
-  registerIpc(() => mainWindow);
-
-  await createWindow();
-
-  app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) await createWindow();
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
+else {
+  app.on("second-instance", () => {
+    // Someone tried to run a second instance, we should focus our window.
+    if (mainWindow) {
+      if (mainWindow.isMinimized())
+        mainWindow.restore();
+      mainWindow.focus();
+    }
   });
-});
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+  app.whenReady().then(async () => {
+    if (process.platform === "win32") {
+      app.setAppUserModelId("com.devbeta.pig-agents-desktop");
+    }
+    const dockIcon = getAppIcon();
+    if (process.platform === "darwin" && !dockIcon.isEmpty()) {
+      app.dock?.setIcon(dockIcon);
+    }
+    Menu.setApplicationMenu(null);
+    loadDesktopEnv();
+    registerIpc(() => mainWindow);
+    await createWindow();
+    app.on("activate", async () => {
+      if (BrowserWindow.getAllWindows().length === 0)
+        await createWindow();
+    });
+  });
+  app.on("before-quit", () => {
+    cleanupTerminals();
+  });
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin")
+      app.quit();
+  });
+}

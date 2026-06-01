@@ -195,7 +195,7 @@ export default function App() {
       if (localStorage.getItem(flag) === "1") return;
       for (const k of Object.keys(localStorage)) {
         if (k.startsWith("react-resizable-panels:ba-main-v2") ||
-            k.startsWith("react-resizable-panels:ba-center-v2")) {
+          k.startsWith("react-resizable-panels:ba-center-v2")) {
           localStorage.removeItem(k);
         }
       }
@@ -654,8 +654,8 @@ export default function App() {
         const sessions: ChatSession[] = Array.isArray(parsed)
           ? parsed
           : Array.isArray(parsed?.sessions)
-          ? parsed.sessions
-          : [];
+            ? parsed.sessions
+            : [];
         if (sessions.length === 0) {
           await dlg.alert("No sessions found in this file.");
           return;
@@ -1003,526 +1003,526 @@ export default function App() {
 
   return (
     <div className={`app-shell${winMaximized ? " app-shell--maximized" : ""}`}>
-    <div className="app">
-      <div
-        className="titlebar"
-        onDoubleClick={(e) => {
-          if ((e.target as HTMLElement).closest(".window-controls, button, .ws-path")) return;
-          void pig.windowMaximize();
-        }}
-      >
-        <span className="title">Pig Agents</span>
-        <span className="ws-path" title="Click to change workspace" onClick={() => setPickerOpen(true)}>
-          <IconFolderOpen size={13} style={{ opacity: 0.7, marginRight: 4 }} />{workspace || "(no workspace)"}
-        </span>
-        <div className="spacer" />
-        <button
-          type="button"
-          tabIndex={-1}
-          title="Reset layout"
-          onClick={() => {
-            try {
-              for (const k of Object.keys(localStorage)) {
-                if (k.startsWith("react-resizable-panels")) localStorage.removeItem(k);
-              }
-            } catch { /* noop */ }
-            location.reload();
-          }}
-        ><IconRefreshCw size={13} style={{ marginRight: 5 }} />Reset layout</button>
-        <button
-          type="button"
-          tabIndex={-1}
-          className={bottomCollapsed ? "" : "active"}
-          title={bottomCollapsed ? "Show terminal" : "Hide terminal"}
-          onClick={() => {
-            if (bottomCollapsed) showBottom("terminal");
-            else toggleBottom();
+      <div className="app">
+        <div
+          className="titlebar"
+          onDoubleClick={(e) => {
+            if ((e.target as HTMLElement).closest(".window-controls, button, .ws-path")) return;
+            void pig.windowMaximize();
           }}
         >
-          <IconTerminal size={14} style={{ marginRight: 5 }} />Terminal
-        </button>
-        <button
-          type="button"
-          tabIndex={-1}
-          className={active === BROWSER_TAB_PATH ? "active" : ""}
-          title="Browser"
-          onClick={() => {
-            const exists = tabs.find((t) => t.path === BROWSER_TAB_PATH);
-            if (!exists) setTabs((prev) => [...prev, { path: BROWSER_TAB_PATH, kind: "browser" as const, dirty: false }]);
-            setActive(BROWSER_TAB_PATH);
-          }}
-        >
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ marginRight: 5, verticalAlign: "middle" }}>
-            <circle cx="12" cy="12" r="10" />
-            <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-          </svg>Browser
-        </button>
-        <WorkspaceManager 
-          currentWorkspace={workspace}
-          onSwitchWorkspace={(ws) => {
-            void pickWorkspace(ws);
-          }}
-          onSelectSession={(ws, sessionId) => {
-            if (ws === workspace) {
-              setActiveSessionId(sessionId);
-            } else {
-              void pickWorkspace(ws, sessionId);
-            }
-          }}
-        />
-        <WindowControls />
-      </div>
-
-      <div className="workbench">
-        <div className="activity">
-          <button type="button" tabIndex={-1} className={view === "explorer" ? "active" : ""} title="Explorer" onClick={() => setView("explorer")}><IconFolderOpen size={18} /></button>
-          <button type="button" tabIndex={-1} className={view === "search" ? "active" : ""} title="Search" onClick={() => setView("search")}><IconSearch size={18} /></button>
+          <span className="title">Pig Agents</span>
+          <span className="ws-path" title="Click to change workspace" onClick={() => setPickerOpen(true)}>
+            <IconFolderOpen size={13} style={{ opacity: 0.7, marginRight: 4 }} />{workspace || "(no workspace)"}
+          </span>
+          <div className="spacer" />
           <button
             type="button"
             tabIndex={-1}
-            className={`activity-source${view === "source" ? " active" : ""}`}
-            title="Source Control"
-            onClick={() => setView("source")}
+            title="Reset layout"
+            onClick={() => {
+              try {
+                for (const k of Object.keys(localStorage)) {
+                  if (k.startsWith("react-resizable-panels")) localStorage.removeItem(k);
+                }
+              } catch { /* noop */ }
+              location.reload();
+            }}
+          ><IconRefreshCw size={13} style={{ marginRight: 5 }} />Reset layout</button>
+          <button
+            type="button"
+            tabIndex={-1}
+            className={bottomCollapsed ? "" : "active"}
+            title={bottomCollapsed ? "Show terminal" : "Hide terminal"}
+            onClick={() => {
+              if (bottomCollapsed) showBottom("terminal");
+              else toggleBottom();
+            }}
           >
-            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden>
-              <path
-                d="M11.75 2.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zM4.25 13.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zM4.25 2.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5z"
-                fill="currentColor"
-              />
-              <path d="M4.25 6v4M11.75 6v.75A3.75 3.75 0 0 1 8 10.5H4.25" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-            </svg>
-            {gitChangeCount > 0 ? <span className="activity-badge">{gitChangeCount > 99 ? "99+" : gitChangeCount}</span> : null}
+            <IconTerminal size={14} style={{ marginRight: 5 }} />Terminal
           </button>
-          <div className="spacer" />
-          <button type="button" tabIndex={-1} title="Settings" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
+          <button
+            type="button"
+            tabIndex={-1}
+            className={active === BROWSER_TAB_PATH ? "active" : ""}
+            title="Browser"
+            onClick={() => {
+              const exists = tabs.find((t) => t.path === BROWSER_TAB_PATH);
+              if (!exists) setTabs((prev) => [...prev, { path: BROWSER_TAB_PATH, kind: "browser" as const, dirty: false }]);
+              setActive(BROWSER_TAB_PATH);
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ marginRight: 5, verticalAlign: "middle" }}>
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>Browser
+          </button>
+          <WorkspaceManager
+            currentWorkspace={workspace}
+            onSwitchWorkspace={(ws) => {
+              void pickWorkspace(ws);
+            }}
+            onSelectSession={(ws, sessionId) => {
+              if (ws === workspace) {
+                setActiveSessionId(sessionId);
+              } else {
+                void pickWorkspace(ws, sessionId);
+              }
+            }}
+          />
+          <WindowControls />
         </div>
 
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-          <PanelGroup direction="horizontal" autoSaveId="ba-main-v3">
-            <Panel defaultSize={18} minSize={12}>
-              <div className="sidebar">
-                {!workspace ? (
-                  <div className="ws-empty">
-                    <div className="ws-empty-title">No folder opened</div>
-                    <div className="ws-empty-msg">
-                      Pick a folder to start exploring, editing, and chatting.
+        <div className="workbench">
+          <div className="activity">
+            <button type="button" tabIndex={-1} className={view === "explorer" ? "active" : ""} title="Explorer" onClick={() => setView("explorer")}><IconFolderOpen size={18} /></button>
+            <button type="button" tabIndex={-1} className={view === "search" ? "active" : ""} title="Search" onClick={() => setView("search")}><IconSearch size={18} /></button>
+            <button
+              type="button"
+              tabIndex={-1}
+              className={`activity-source${view === "source" ? " active" : ""}`}
+              title="Source Control"
+              onClick={() => setView("source")}
+            >
+              <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden>
+                <path
+                  d="M11.75 2.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5zM4.25 13.5a1.75 1.75 0 1 0 0-3.5 1.75 1.75 0 0 0 0 3.5zM4.25 2.5a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5z"
+                  fill="currentColor"
+                />
+                <path d="M4.25 6v4M11.75 6v.75A3.75 3.75 0 0 1 8 10.5H4.25" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+              </svg>
+              {gitChangeCount > 0 ? <span className="activity-badge">{gitChangeCount > 99 ? "99+" : gitChangeCount}</span> : null}
+            </button>
+            <div className="spacer" />
+            <button type="button" tabIndex={-1} title="Settings" onClick={() => setSettingsOpen(true)}><IconSettings size={18} /></button>
+          </div>
+
+          <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+            <PanelGroup direction="horizontal" autoSaveId="ba-main-v3">
+              <Panel defaultSize={18} minSize={12}>
+                <div className="sidebar">
+                  {!workspace ? (
+                    <div className="ws-empty">
+                      <div className="ws-empty-title">No folder opened</div>
+                      <div className="ws-empty-msg">
+                        Pick a folder to start exploring, editing, and chatting.
+                      </div>
+                      <button className="ws-empty-btn" onClick={() => setPickerOpen(true)}><IconFolderOpen size={14} style={{ marginRight: 6 }} />Open folder…</button>
                     </div>
-                    <button className="ws-empty-btn" onClick={() => setPickerOpen(true)}><IconFolderOpen size={14} style={{ marginRight: 6 }} />Open folder…</button>
-                  </div>
-                ) : (
-                  <>
-                    {view === "explorer" && (
-                      <FileTree
-                        selected={active}
-                        workspace={workspace}
-                        onOpen={(p) => openFile(p)}
-                        refreshKey={refreshKey}
-                        onPathsDeleted={closeTabsForDeletedPaths}
-                        onRevealInTerminal={(p) => terminalsRef.current?.reveal(p.startsWith("/") ? p : `${workspace}/${p}`)}
-                      />
-                    )}
-                    {view === "search" && <SearchPanel onOpen={openFile} active />}
-                    {view === "source" && (
-                      <GitPanel
-                        workspace={workspace}
-                        refreshKey={refreshKey}
-                        onOpenGitDiff={openGitDiff}
-                      />
-                    )}
+                  ) : (
+                    <>
+                      {view === "explorer" && (
+                        <FileTree
+                          selected={active}
+                          workspace={workspace}
+                          onOpen={(p) => openFile(p)}
+                          refreshKey={refreshKey}
+                          onPathsDeleted={closeTabsForDeletedPaths}
+                          onRevealInTerminal={(p) => terminalsRef.current?.reveal(p.startsWith("/") ? p : `${workspace}/${p}`)}
+                        />
+                      )}
+                      {view === "search" && <SearchPanel onOpen={openFile} active />}
+                      {view === "source" && (
+                        <GitPanel
+                          workspace={workspace}
+                          refreshKey={refreshKey}
+                          onOpenGitDiff={openGitDiff}
+                        />
+                      )}
 
-                  </>
-                )}
-              </div>
-            </Panel>
-            <PanelResizeHandle />
+                    </>
+                  )}
+                </div>
+              </Panel>
+              <PanelResizeHandle />
 
-            <Panel minSize={20}>
-              <div className="center">
-                <PanelGroup direction="vertical" autoSaveId="ba-center-v3">
-                  <Panel minSize={20} defaultSize={65}>
-                    <div className="editor-area" style={activeTab?.kind === "browser" ? { overflow: "hidden" } : undefined}>
-                      <div className="editor-tabs">
-                        <div
-                          className="editor-tabs-list"
-                          onDragLeave={(e) => {
-                            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-                            setTabDropTarget(null);
-                          }}
-                        >
-                          {tabs.map((t) => {
-                            const isDiff = t.kind === "diff";
-                            const isBrowser = t.kind === "browser";
-                            const isFile = !isDiff && !isBrowser;
-                            const display = isDiff
-                              ? (t.displayPath?.split("/").pop() || "diff")
-                              : isBrowser ? "Browser"
-                              : t.path.split("/").pop();
-                            const showDirty = isFile && t.dirty;
-                            const dropBefore =
-                              tabDropTarget?.path === t.path && tabDropTarget.before;
-                            const dropAfter =
-                              tabDropTarget?.path === t.path && !tabDropTarget.before;
-                            return (
-                              <div
-                                key={t.path}
-                                className={[
-                                  "editor-tab",
-                                  active === t.path ? "active" : "",
-                                  isDiff ? "is-diff" : "",
-                                  showDirty ? "is-dirty" : "",
-                                  tabDragPath === t.path ? "is-dragging" : "",
-                                  dropBefore ? "tab-drop-before" : "",
-                                  dropAfter ? "tab-drop-after" : "",
-                                ].filter(Boolean).join(" ")}
-                                onClick={() => {
-                                  setActive(t.path);
-                                  if (isFile) setDirty(t.path, isPathDirtyInBuffer(t.path));
-                                }}
-                                draggable
-                                onDragStart={(e) => {
-                                  e.dataTransfer.setData("application/x-ba-tab", t.path);
-                                  if (isFile) {
-                                    e.dataTransfer.setData("application/x-ba-file", t.path);
-                                    e.dataTransfer.setData("text/plain", `@${t.path}`);
-                                  }
-                                  e.dataTransfer.effectAllowed = "move";
-                                  setTabDragPath(t.path);
-                                }}
-                                onDragEnd={() => {
-                                  setTabDragPath(null);
-                                  setTabDropTarget(null);
-                                }}
-                                onDragOver={(e) => {
-                                  if (!e.dataTransfer.types.includes("application/x-ba-tab")) return;
-                                  e.preventDefault();
-                                  e.dataTransfer.dropEffect = "move";
-                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                  const before = e.clientX < rect.left + rect.width / 2;
-                                  setTabDropTarget({ path: t.path, before });
-                                }}
-                                onDrop={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  const from = e.dataTransfer.getData("application/x-ba-tab");
-                                  if (!from || from === t.path) return;
-                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                  const before = e.clientX < rect.left + rect.width / 2;
-                                  reorderTabs(from, t.path, before);
-                                  setTabDragPath(null);
-                                  setTabDropTarget(null);
-                                }}
-                              >
-                                {isDiff && <span className="tab-tag">DIFF</span>}
-                                {isBrowser ? (
-                                  <span className="tab-icon" style={{ display: "flex", alignItems: "center" }}>
-                                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                                  </span>
-                                ) : (
-                                  <span className="tab-icon"><FileIcon name={display || ""} size={14} /></span>
-                                )}
-                                <span className="tab-label">{display}</span>
-                                <span
-                                  className="tab-status"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void requestCloseTab(t.path);
+              <Panel minSize={20}>
+                <div className="center">
+                  <PanelGroup direction="vertical" autoSaveId="ba-center-v3">
+                    <Panel minSize={20} defaultSize={65}>
+                      <div className="editor-area" style={activeTab?.kind === "browser" ? { overflow: "hidden" } : undefined}>
+                        <div className="editor-tabs">
+                          <div
+                            className="editor-tabs-list"
+                            onDragLeave={(e) => {
+                              if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                              setTabDropTarget(null);
+                            }}
+                          >
+                            {tabs.map((t) => {
+                              const isDiff = t.kind === "diff";
+                              const isBrowser = t.kind === "browser";
+                              const isFile = !isDiff && !isBrowser;
+                              const display = isDiff
+                                ? (t.displayPath?.split("/").pop() || "diff")
+                                : isBrowser ? "Browser"
+                                  : t.path.split("/").pop();
+                              const showDirty = isFile && t.dirty;
+                              const dropBefore =
+                                tabDropTarget?.path === t.path && tabDropTarget.before;
+                              const dropAfter =
+                                tabDropTarget?.path === t.path && !tabDropTarget.before;
+                              return (
+                                <div
+                                  key={t.path}
+                                  className={[
+                                    "editor-tab",
+                                    active === t.path ? "active" : "",
+                                    isDiff ? "is-diff" : "",
+                                    showDirty ? "is-dirty" : "",
+                                    tabDragPath === t.path ? "is-dragging" : "",
+                                    dropBefore ? "tab-drop-before" : "",
+                                    dropAfter ? "tab-drop-after" : "",
+                                  ].filter(Boolean).join(" ")}
+                                  onClick={() => {
+                                    setActive(t.path);
+                                    if (isFile) setDirty(t.path, isPathDirtyInBuffer(t.path));
                                   }}
-                                  title="Close"
+                                  draggable
+                                  onDragStart={(e) => {
+                                    e.dataTransfer.setData("application/x-ba-tab", t.path);
+                                    if (isFile) {
+                                      e.dataTransfer.setData("application/x-ba-file", t.path);
+                                      e.dataTransfer.setData("text/plain", `@${t.path}`);
+                                    }
+                                    e.dataTransfer.effectAllowed = "move";
+                                    setTabDragPath(t.path);
+                                  }}
+                                  onDragEnd={() => {
+                                    setTabDragPath(null);
+                                    setTabDropTarget(null);
+                                  }}
+                                  onDragOver={(e) => {
+                                    if (!e.dataTransfer.types.includes("application/x-ba-tab")) return;
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = "move";
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                    const before = e.clientX < rect.left + rect.width / 2;
+                                    setTabDropTarget({ path: t.path, before });
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const from = e.dataTransfer.getData("application/x-ba-tab");
+                                    if (!from || from === t.path) return;
+                                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                    const before = e.clientX < rect.left + rect.width / 2;
+                                    reorderTabs(from, t.path, before);
+                                    setTabDragPath(null);
+                                    setTabDropTarget(null);
+                                  }}
                                 >
-                                  {showDirty && (
-                                    <span className="dirty-indicator" aria-hidden="true">
-                                      <IconDot size={8} />
+                                  {isDiff && <span className="tab-tag">DIFF</span>}
+                                  {isBrowser ? (
+                                    <span className="tab-icon" style={{ display: "flex", alignItems: "center" }}>
+                                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
                                     </span>
+                                  ) : (
+                                    <span className="tab-icon"><FileIcon name={display || ""} size={14} /></span>
                                   )}
-                                  <span className="close" aria-label="Close tab">
-                                    <IconX size={12} />
+                                  <span className="tab-label">{display}</span>
+                                  <span
+                                    className="tab-status"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void requestCloseTab(t.path);
+                                    }}
+                                    title="Close"
+                                  >
+                                    {showDirty && (
+                                      <span className="dirty-indicator" aria-hidden="true">
+                                        <IconDot size={8} />
+                                      </span>
+                                    )}
+                                    <span className="close" aria-label="Close tab">
+                                      <IconX size={12} />
+                                    </span>
                                   </span>
-                                </span>
-                              </div>
-                            );
-                          })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {activeTab && activeTab.kind !== "diff" && activeTab.kind !== "browser" && (
+                            <div className="editor-tabs-actions">
+                              <button
+                                className="editor-save-btn"
+                                disabled={!activeTab.dirty}
+                                title="Save (Ctrl/⌘+S)"
+                                onClick={() => { void editorRef.current?.save(); }}
+                              >
+                                {activeTab.dirty ? <><IconDot size={6} style={{ marginRight: 4 }} />Save</> : "Saved"}
+                              </button>
+                            </div>
+                          )}
                         </div>
-                        {activeTab && activeTab.kind !== "diff" && activeTab.kind !== "browser" && (
-                          <div className="editor-tabs-actions">
-                            <button
-                              className="editor-save-btn"
-                              disabled={!activeTab.dirty}
-                              title="Save (Ctrl/⌘+S)"
-                              onClick={() => { void editorRef.current?.save(); }}
-                            >
-                              {activeTab.dirty ? <><IconDot size={6} style={{ marginRight: 4 }} />Save</> : "Saved"}
-                            </button>
+                        {tabs.some(t => t.kind === "browser") && (
+                          <div
+                            className="editor-pane editor-pane--browser"
+                            style={
+                              activeTab?.kind === "browser"
+                                ? { display: "flex", flex: 1, width: "100%", height: "100%" }
+                                : { position: "absolute", left: 0, top: 0, width: "100%", height: "100%", opacity: 0, pointerEvents: "none", zIndex: -1 }
+                            }
+                          >
+                            <BrowserPanel
+                              onAddToChat={(text) => { setPendingChatInject(text); }}
+                              onAddPageImage={(dataUrl) => { setPendingChatImage(dataUrl); }}
+                              onAddElementToChat={(pick: BrowserElementPickDetail) => {
+                                dispatchBrowserElementPick(pick);
+                              }}
+                            />
                           </div>
                         )}
-                      </div>
-                      {tabs.some(t => t.kind === "browser") && (
-                        <div 
-                          className="editor-pane editor-pane--browser"
-                          style={
-                            activeTab?.kind === "browser"
-                              ? { display: "flex", flex: 1, width: "100%", height: "100%" }
-                              : { position: "absolute", left: 0, top: 0, width: "100%", height: "100%", opacity: 0, pointerEvents: "none", zIndex: -1 }
-                          }
-                        >
-                          <BrowserPanel
-                            onAddToChat={(text) => { setPendingChatInject(text); }}
-                            onAddPageImage={(dataUrl) => { setPendingChatImage(dataUrl); }}
-                            onAddElementToChat={(pick: BrowserElementPickDetail) => {
-                              dispatchBrowserElementPick(pick);
-                            }}
-                          />
-                        </div>
-                      )}
-                      {activeTab && activeTab.kind !== "browser" ? (
-                        activeTab.kind === "diff" ? (
-                          <div className="editor-pane">
-                            {(() => {
-                              const diffId = activeTab.diffId || "";
-                              const gitCtx: "staged" | "unstaged" | null =
-                                diffId.startsWith("git:idx:") ? "staged"
-                                : diffId.startsWith("git:wt:") ? "unstaged"
-                                : null;
-                              const displayPath = activeTab.displayPath || "";
-                              const diffTabKey = activeTab.path;
-                              const isAgentDiff = !gitCtx && !!activeTab.diffId;
-                              return (
-                                <DiffEditorView
-                                  key={diffTabKey}
-                                  path={displayPath}
-                                  diff={activeTab.diff || ""}
-                                  reverted={diffs.find((d) => d.id === activeTab.diffId)?.reverted}
-                                  gitContext={gitCtx}
-                                  onHunkAction={gitCtx ? async (mode, patch) => {
-                                    try {
-                                      await api.gitApply(patch, mode);
-                                    } catch (err) {
-                                      void dlg.alert((err as Error).message);
-                                      return;
-                                    }
-                                    // Bump refresh key so GitPanel + activity-bar badge update.
-                                    setRefreshKey((k) => k + 1);
-                                    // Re-fetch the diff for this tab; close it if nothing remains.
-                                    try {
-                                      const res = await api.gitDiff(displayPath, { staged: gitCtx === "staged" });
-                                      if (!res.diff || !res.diff.trim()) {
-                                        void requestCloseTab(diffTabKey);
-                                      } else {
-                                        setTabs((cur) => cur.map((t) =>
-                                          t.path === diffTabKey ? { ...t, diff: res.diff } : t,
-                                        ));
-                                      }
-                                    } catch {
-                                      // Non-fatal: worst case the stale diff stays until next poll.
-                                    }
-                                  } : undefined}
-                                  onClose={() => { void requestCloseTab(diffTabKey); }}
-                                  onOpenFile={(p) => {
-                                    // Replace the diff tab with the file tab so we
-                                    // don't end up with both side-by-side. Cursor /
-                                    // VSCode behaves the same way for "Edit file".
-                                    openFile(p);
-                                    void requestCloseTab(diffTabKey);
-                                  }}
-                                  onRevert={isAgentDiff ? async () => {
-                                    if (!activeTab.diffId) return;
-                                    try {
-                                      await api.revertDiff(activeTab.diff || "");
-                                      removeDiffId(activeTab.diffId);
-                                    } catch (err) {
-                                      if (revertTargetFileMissing(err)) {
-                                        removeDiffId(activeTab.diffId);
+                        {activeTab && activeTab.kind !== "browser" ? (
+                          activeTab.kind === "diff" ? (
+                            <div className="editor-pane">
+                              {(() => {
+                                const diffId = activeTab.diffId || "";
+                                const gitCtx: "staged" | "unstaged" | null =
+                                  diffId.startsWith("git:idx:") ? "staged"
+                                    : diffId.startsWith("git:wt:") ? "unstaged"
+                                      : null;
+                                const displayPath = activeTab.displayPath || "";
+                                const diffTabKey = activeTab.path;
+                                const isAgentDiff = !gitCtx && !!activeTab.diffId;
+                                return (
+                                  <DiffEditorView
+                                    key={diffTabKey}
+                                    path={displayPath}
+                                    diff={activeTab.diff || ""}
+                                    reverted={diffs.find((d) => d.id === activeTab.diffId)?.reverted}
+                                    gitContext={gitCtx}
+                                    onHunkAction={gitCtx ? async (mode, patch) => {
+                                      try {
+                                        await api.gitApply(patch, mode);
+                                      } catch (err) {
+                                        void dlg.alert((err as Error).message);
                                         return;
                                       }
-                                      void dlg.alert((err as Error).message);
-                                    }
-                                  } : undefined}
-                                />
-                              );
-                            })()}
-                          </div>
-                        ) : (
-                          <div className="editor-pane">
-                            {(() => {
-                              const pending = activePendingDiff;
-                              return pending ? (
-                                <div className="pending-diff-bar">
-                                  <span className="pdb-tag">PENDING</span>
-                                  <span className="pdb-msg">Agent changes — Keep / Undo per hunk inline, or all at once below.</span>
-                                  <span className="pdb-stats">
-                                    {pending.adds > 0 && <span className="add">+{pending.adds}</span>}
-                                    {pending.dels > 0 && <span className="del">−{pending.dels}</span>}
-                                  </span>
-                                  <span className="spacer" />
-                                  <button
-                                    className="pdb-btn"
-                                    onClick={() => {
-                                      if (pending.item) openDiff(pending.item, activeTab.path);
-                                    }}
-                                    title="Open side-by-side DIFF view"
-                                  ><IconEye size={12} style={{ marginRight: 4 }} />Diff view</button>
-                                  <button
-                                    className="pdb-btn"
-                                    onClick={() => {
-                                      if (!pending.item) return;
-                                      setDiffs((cur) => cur.filter((d) => d.id !== pending.item.id));
-                                    }}
-                                    title="Accept these changes — remove from list, keep file as-is"
-                                  ><IconCheck size={12} style={{ marginRight: 4 }} />Keep</button>
-                                  <button
-                                    className="pdb-btn warn"
-                                    onClick={async () => {
-                                      if (!pending.item) return;
+                                      // Bump refresh key so GitPanel + activity-bar badge update.
+                                      setRefreshKey((k) => k + 1);
+                                      // Re-fetch the diff for this tab; close it if nothing remains.
                                       try {
-                                        await api.revertDiff(pending.item.diff);
-                                        invalidateEditorCache(activeTab.path);
-                                        removeDiffId(pending.item.id);
+                                        const res = await api.gitDiff(displayPath, { staged: gitCtx === "staged" });
+                                        if (!res.diff || !res.diff.trim()) {
+                                          void requestCloseTab(diffTabKey);
+                                        } else {
+                                          setTabs((cur) => cur.map((t) =>
+                                            t.path === diffTabKey ? { ...t, diff: res.diff } : t,
+                                          ));
+                                        }
+                                      } catch {
+                                        // Non-fatal: worst case the stale diff stays until next poll.
+                                      }
+                                    } : undefined}
+                                    onClose={() => { void requestCloseTab(diffTabKey); }}
+                                    onOpenFile={(p) => {
+                                      // Replace the diff tab with the file tab so we
+                                      // don't end up with both side-by-side. Cursor /
+                                      // VSCode behaves the same way for "Edit file".
+                                      openFile(p);
+                                      void requestCloseTab(diffTabKey);
+                                    }}
+                                    onRevert={isAgentDiff ? async () => {
+                                      if (!activeTab.diffId) return;
+                                      try {
+                                        await api.revertDiff(activeTab.diff || "");
+                                        removeDiffId(activeTab.diffId);
                                       } catch (err) {
                                         if (revertTargetFileMissing(err)) {
-                                          removeDiffId(pending.item.id);
+                                          removeDiffId(activeTab.diffId);
                                           return;
                                         }
                                         void dlg.alert((err as Error).message);
                                       }
-                                    }}
-                                    title="Undo these changes on disk"
-                                  ><IconRotateCcw size={12} style={{ marginRight: 4 }} />Undo</button>
-                                </div>
-                              ) : null;
-                            })()}
-                            <FileEditor
-                              ref={editorRef}
-                              key={activeTab.path}
-                              path={activeTab.path}
-                              gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
-                              onSaved={() => setRefreshKey((k) => k + 1)}
-                              onDirtyChange={(filePath, d) => setDirty(filePath, d)}
-                              pendingDiff={activePendingDiff?.item.diff ?? null}
-                              pendingDiffId={activePendingDiff?.item.id ?? null}
-                              reloadPath={editorReloadPath}
-                              reloadSeq={editorReloadSeq}
-                              onMissing={() => closeTabPath(activeTab.path)}
-                            />
-                          </div>
-                        )
-                      ) : !activeTab ? (
-                        <EditorWelcome
+                                    } : undefined}
+                                  />
+                                );
+                              })()}
+                            </div>
+                          ) : (
+                            <div className="editor-pane">
+                              {(() => {
+                                const pending = activePendingDiff;
+                                return pending ? (
+                                  <div className="pending-diff-bar">
+                                    <span className="pdb-tag">PENDING</span>
+                                    <span className="pdb-msg">Agent changes — Keep / Undo per hunk inline, or all at once below.</span>
+                                    <span className="pdb-stats">
+                                      {pending.adds > 0 && <span className="add">+{pending.adds}</span>}
+                                      {pending.dels > 0 && <span className="del">−{pending.dels}</span>}
+                                    </span>
+                                    <span className="spacer" />
+                                    <button
+                                      className="pdb-btn"
+                                      onClick={() => {
+                                        if (pending.item) openDiff(pending.item, activeTab.path);
+                                      }}
+                                      title="Open side-by-side DIFF view"
+                                    ><IconEye size={12} style={{ marginRight: 4 }} />Diff view</button>
+                                    <button
+                                      className="pdb-btn"
+                                      onClick={() => {
+                                        if (!pending.item) return;
+                                        setDiffs((cur) => cur.filter((d) => d.id !== pending.item.id));
+                                      }}
+                                      title="Accept these changes — remove from list, keep file as-is"
+                                    ><IconCheck size={12} style={{ marginRight: 4 }} />Keep</button>
+                                    <button
+                                      className="pdb-btn warn"
+                                      onClick={async () => {
+                                        if (!pending.item) return;
+                                        try {
+                                          await api.revertDiff(pending.item.diff);
+                                          invalidateEditorCache(activeTab.path);
+                                          removeDiffId(pending.item.id);
+                                        } catch (err) {
+                                          if (revertTargetFileMissing(err)) {
+                                            removeDiffId(pending.item.id);
+                                            return;
+                                          }
+                                          void dlg.alert((err as Error).message);
+                                        }
+                                      }}
+                                      title="Undo these changes on disk"
+                                    ><IconRotateCcw size={12} style={{ marginRight: 4 }} />Undo</button>
+                                  </div>
+                                ) : null;
+                              })()}
+                              <FileEditor
+                                ref={editorRef}
+                                key={activeTab.path}
+                                path={activeTab.path}
+                                gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
+                                onSaved={() => setRefreshKey((k) => k + 1)}
+                                onDirtyChange={(filePath, d) => setDirty(filePath, d)}
+                                pendingDiff={activePendingDiff?.item.diff ?? null}
+                                pendingDiffId={activePendingDiff?.item.id ?? null}
+                                reloadPath={editorReloadPath}
+                                reloadSeq={editorReloadSeq}
+                                onMissing={() => closeTabPath(activeTab.path)}
+                              />
+                            </div>
+                          )
+                        ) : !activeTab ? (
+                          <EditorWelcome
+                            workspace={workspace}
+                            recentsVersion={recentsVersion}
+                            onOpenFolder={() => setPickerOpen(true)}
+                            onOpenFile={openFile}
+                            onShowSearch={() => setView("search")}
+                            onToggleTerminal={toggleBottom}
+                          />
+                        ) : null}
+                      </div>
+                    </Panel>
+                    <PanelResizeHandle />
+                    <Panel
+                      ref={bottomPanelRef}
+                      minSize={15}
+                      defaultSize={35}
+                      collapsible
+                      collapsedSize={0}
+                      onCollapse={() => setBottomCollapsed(true)}
+                      onExpand={() => setBottomCollapsed(false)}
+                    >
+                      <div className={`bottom-panel ${bottomCollapsed ? "collapsed" : ""}`}>
+                        <Terminals
+                          registerHandle={(h) => { terminalsRef.current = h; }}
+                          onClose={() => bottomPanelRef.current?.collapse()}
                           workspace={workspace}
-                          recentsVersion={recentsVersion}
-                          onOpenFolder={() => setPickerOpen(true)}
-                          onOpenFile={openFile}
-                          onShowSearch={() => setView("search")}
-                          onToggleTerminal={toggleBottom}
                         />
-                      ) : null}
-                    </div>
-                  </Panel>
-                  <PanelResizeHandle />
-                  <Panel
-                    ref={bottomPanelRef}
-                    minSize={15}
-                    defaultSize={35}
-                    collapsible
-                    collapsedSize={0}
-                    onCollapse={() => setBottomCollapsed(true)}
-                    onExpand={() => setBottomCollapsed(false)}
-                  >
-                    <div className={`bottom-panel ${bottomCollapsed ? "collapsed" : ""}`}>
-                      <Terminals
-                        registerHandle={(h) => { terminalsRef.current = h; }}
-                        onClose={() => bottomPanelRef.current?.collapse()}
-                        workspace={workspace}
-                      />
-                    </div>
-                  </Panel>
-                </PanelGroup>
-              </div>
-            </Panel>
-            <PanelResizeHandle />
-
-            <Panel defaultSize={28} minSize={20}>
-              {!workspace ? (
-                <div className="chat">
-                  <div className="ws-empty">
-                    <div className="ws-empty-title">No folder opened</div>
-                    <div className="ws-empty-msg">
-                      Open a folder to start chatting with the agent.
-                    </div>
-                    <button className="ws-empty-btn" onClick={() => setPickerOpen(true)}><IconFolderOpen size={14} style={{ marginRight: 6 }} />Open folder…</button>
-                  </div>
+                      </div>
+                    </Panel>
+                  </PanelGroup>
                 </div>
-              ) : activeSession ? (
-                <Chat
-                  key={activeSession.id}
-                  session={activeSession}
-                  onUpdate={updateSession}
-                  onDiffs={appendDiffs}
-                  onAfterRun={() => setRefreshKey((k) => k + 1)}
-                  refreshKey={refreshKey}
-                  diffs={diffs}
-                  onUpdateDiff={updateDiff}
-                  onClearDiffs={() => setDiffs([])}
-                  onRemoveDiff={removeDiffId}
-                  onOpenFile={(p) => openFile(p)}
-                  onOpenDiff={(item, path) => openDiff(item, path)}
-                  activeFile={active}
-                  modelLabel={settings?.MODEL || undefined}
-                  llmSettings={settings}
-                  onModelChange={async (model) => {
-                    // Optimistic: paint the new label instantly so the menu
-                    // (which closes synchronously after this call) doesn't
-                    // hang for the duration of two network roundtrips. If the
-                    // server rejects we'll just re-paint with whatever it
-                    // returns; the worst case is a brief flicker, which is
-                    // far better than the UI freezing on every model switch.
-                    setSettings((cur) => (cur ? { ...cur, MODEL: model } : cur));
-                    try {
-                      await api.saveSettings({ MODEL: model });
-                      const fresh = await api.getSettings();
-                      setSettings(fresh);
-                    } catch (err) {
-                      // Re-fetch to recover the truth from the server.
-                      try { setSettings(await api.getSettings()); } catch { /* noop */ }
-                      console.warn("[App] saveSettings(MODEL) failed:", err);
-                    }
-                  }}
-                  onOpenSettings={() => setSettingsOpen(true)}
-                  onNewChat={newChat}
-                  workspace={workspace}
-                  chatList={chatList}
-                  onSelectChat={setActiveSessionId}
-                  onDeleteChat={deleteChat}
-                  onRenameChat={renameChat}
-                  onExportChats={exportChats}
-                  onImportChats={importChatsFromFile}
-                  pendingInject={pendingChatInject || undefined}
-                  onInjectConsumed={() => setPendingChatInject("")}
-                  pendingInjectImage={pendingChatImage || undefined}
-                  onInjectImageConsumed={() => setPendingChatImage("")}
-                />
-              ) : (
-                <div className="chat"><div className="chat-empty">Loading…</div></div>
-              )}
-            </Panel>
-          </PanelGroup>
+              </Panel>
+              <PanelResizeHandle />
+
+              <Panel defaultSize={28} minSize={20}>
+                {!workspace ? (
+                  <div className="chat">
+                    <div className="ws-empty">
+                      <div className="ws-empty-title">No folder opened</div>
+                      <div className="ws-empty-msg">
+                        Open a folder to start chatting with the agent.
+                      </div>
+                      <button className="ws-empty-btn" onClick={() => setPickerOpen(true)}><IconFolderOpen size={14} style={{ marginRight: 6 }} />Open folder…</button>
+                    </div>
+                  </div>
+                ) : activeSession ? (
+                  <Chat
+                    key={activeSession.id}
+                    session={activeSession}
+                    onUpdate={updateSession}
+                    onDiffs={appendDiffs}
+                    onAfterRun={() => setRefreshKey((k) => k + 1)}
+                    refreshKey={refreshKey}
+                    diffs={diffs}
+                    onUpdateDiff={updateDiff}
+                    onClearDiffs={() => setDiffs([])}
+                    onRemoveDiff={removeDiffId}
+                    onOpenFile={(p) => openFile(p)}
+                    onOpenDiff={(item, path) => openDiff(item, path)}
+                    activeFile={active}
+                    modelLabel={settings?.MODEL || undefined}
+                    llmSettings={settings}
+                    onModelChange={async (model) => {
+                      // Optimistic: paint the new label instantly so the menu
+                      // (which closes synchronously after this call) doesn't
+                      // hang for the duration of two network roundtrips. If the
+                      // server rejects we'll just re-paint with whatever it
+                      // returns; the worst case is a brief flicker, which is
+                      // far better than the UI freezing on every model switch.
+                      setSettings((cur) => (cur ? { ...cur, MODEL: model } : cur));
+                      try {
+                        await api.saveSettings({ MODEL: model });
+                        const fresh = await api.getSettings();
+                        setSettings(fresh);
+                      } catch (err) {
+                        // Re-fetch to recover the truth from the server.
+                        try { setSettings(await api.getSettings()); } catch { /* noop */ }
+                        console.warn("[App] saveSettings(MODEL) failed:", err);
+                      }
+                    }}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                    onNewChat={newChat}
+                    workspace={workspace}
+                    chatList={chatList}
+                    onSelectChat={setActiveSessionId}
+                    onDeleteChat={deleteChat}
+                    onRenameChat={renameChat}
+                    onExportChats={exportChats}
+                    onImportChats={importChatsFromFile}
+                    pendingInject={pendingChatInject || undefined}
+                    onInjectConsumed={() => setPendingChatInject("")}
+                    pendingInjectImage={pendingChatImage || undefined}
+                    onInjectImageConsumed={() => setPendingChatImage("")}
+                  />
+                ) : (
+                  <div className="chat"><div className="chat-empty">Loading…</div></div>
+                )}
+              </Panel>
+            </PanelGroup>
+          </div>
         </div>
-      </div>
 
-      <div className="statusbar">
-        <span><IconDot size={6} style={{ marginRight: 4 }} />{workspace || "no workspace"}</span>
-        <span>{tabs.length} open</span>
-        <span>{diffs.filter((d) => !d.reverted).length} diff{diffs.filter((d) => !d.reverted).length === 1 ? "" : "s"}</span>
-        <span className="right">© 2026 DEV BETA., JSC · Pig Agents</span>
-      </div>
+        <div className="statusbar">
+          <span><IconDot size={6} style={{ marginRight: 4 }} />{workspace || "no workspace"}</span>
+          <span>{tabs.length} open</span>
+          <span>{diffs.filter((d) => !d.reverted).length} diff{diffs.filter((d) => !d.reverted).length === 1 ? "" : "s"}</span>
+          <span className="right">© 2026 DEV BETA., JSC · Pig Agents</span>
+        </div>
 
-      {pickerOpen && (
-        <FolderPicker
-          initialPath={workspace}
-          onClose={() => setPickerOpen(false)}
-          onSelect={pickWorkspace}
-        />
-      )}
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
-    </div>
+        {pickerOpen && (
+          <FolderPicker
+            initialPath={workspace}
+            onClose={() => setPickerOpen(false)}
+            onSelect={pickWorkspace}
+          />
+        )}
+        {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      </div>
     </div>
   );
 }

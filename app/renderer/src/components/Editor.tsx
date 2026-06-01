@@ -14,6 +14,8 @@ import {
 
   isEditorDirty,
 
+  reviveEditorBuffer,
+
   shouldApplyDiskRead,
 
   writeFileBuffer,
@@ -332,6 +334,8 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
 
   const applySnapshot = useCallback((snapshot: string, fromDisk: boolean) => {
 
+    if (fromDisk) reviveEditorBuffer(path);
+
     if (fromDisk) applyingFromDiskRef.current = true;
 
     writeFileBuffer(path, snapshot, snapshot);
@@ -355,6 +359,8 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
 
 
   const applyBuffer = useCallback((buf: FileBuffer, fromDisk: boolean) => {
+
+    if (fromDisk) reviveEditorBuffer(path);
 
     if (fromDisk) applyingFromDiskRef.current = true;
 
