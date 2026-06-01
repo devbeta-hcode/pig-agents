@@ -435,7 +435,10 @@ export default function App() {
         } else {
           const sorted = r.sessions.slice().sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
           setChatList(sorted);
-          setActiveSessionId(sorted[0].id);
+          setActiveSessionId((current) => {
+            if (current && sorted.some((s) => s.id === current)) return current;
+            return sorted[0].id;
+          });
         }
       } catch (err) {
         console.warn("listChats failed:", err);
@@ -931,11 +934,12 @@ export default function App() {
     return () => window.removeEventListener("ba:hunk-action", onHunkAction as EventListener);
   }, [diffs, dlg]);
 
-  async function pickWorkspace(p: string) {
+  async function pickWorkspace(p: string, targetSessionId?: string) {
     try {
       const r = await api.setWorkspace(p);
       setSessionWorkspace(r.workspace);
       setWorkspace(r.workspace);
+      if (targetSessionId) setActiveSessionId(targetSessionId);
       invalidateEditorCache();
       if (tabsRef.current.some((t) => t.path === BROWSER_TAB_PATH)) {
         try {
@@ -1056,8 +1060,14 @@ export default function App() {
         <WorkspaceManager 
           currentWorkspace={workspace}
           onSwitchWorkspace={(ws) => {
-            setWorkspace(ws);
-            setSessionWorkspace(ws);
+            void pickWorkspace(ws);
+          }}
+          onSelectSession={(ws, sessionId) => {
+            if (ws === workspace) {
+              setActiveSessionId(sessionId);
+            } else {
+              void pickWorkspace(ws, sessionId);
+            }
           }}
         />
         <WindowControls />
@@ -1245,8 +1255,15 @@ export default function App() {
                           </div>
                         )}
                       </div>
-                      {activeTab && activeTab.kind === "browser" ? (
-                        <div className="editor-pane editor-pane--browser">
+                      {tabs.some(t => t.kind === "browser") && (
+                        <div 
+                          className="editor-pane editor-pane--browser"
+                          style={
+                            activeTab?.kind === "browser"
+                              ? { display: "flex", flex: 1, width: "100%", height: "100%" }
+                              : { position: "absolute", left: 0, top: 0, width: "100%", height: "100%", opacity: 0, pointerEvents: "none", zIndex: -1 }
+                          }
+                        >
                           <BrowserPanel
                             onAddToChat={(text) => { setPendingChatInject(text); }}
                             onAddPageImage={(dataUrl) => { setPendingChatImage(dataUrl); }}
@@ -1255,136 +1272,139 @@ export default function App() {
                             }}
                           />
                         </div>
-                      ) : activeTab && activeTab.kind === "diff" ? (
-                        <div className="editor-pane">
-                          {(() => {
-                            const diffId = activeTab.diffId || "";
-                            const gitCtx: "staged" | "unstaged" | null =
-                              diffId.startsWith("git:idx:") ? "staged"
-                              : diffId.startsWith("git:wt:") ? "unstaged"
-                              : null;
-                            const displayPath = activeTab.displayPath || "";
-                            const diffTabKey = activeTab.path;
-                            const isAgentDiff = !gitCtx && !!activeTab.diffId;
-                            return (
-                              <DiffEditorView
-                                key={diffTabKey}
-                                path={displayPath}
-                                diff={activeTab.diff || ""}
-                                reverted={diffs.find((d) => d.id === activeTab.diffId)?.reverted}
-                                gitContext={gitCtx}
-                                onHunkAction={gitCtx ? async (mode, patch) => {
-                                  try {
-                                    await api.gitApply(patch, mode);
-                                  } catch (err) {
-                                    void dlg.alert((err as Error).message);
-                                    return;
-                                  }
-                                  // Bump refresh key so GitPanel + activity-bar badge update.
-                                  setRefreshKey((k) => k + 1);
-                                  // Re-fetch the diff for this tab; close it if nothing remains.
-                                  try {
-                                    const res = await api.gitDiff(displayPath, { staged: gitCtx === "staged" });
-                                    if (!res.diff || !res.diff.trim()) {
-                                      void requestCloseTab(diffTabKey);
-                                    } else {
-                                      setTabs((cur) => cur.map((t) =>
-                                        t.path === diffTabKey ? { ...t, diff: res.diff } : t,
-                                      ));
-                                    }
-                                  } catch {
-                                    // Non-fatal: worst case the stale diff stays until next poll.
-                                  }
-                                } : undefined}
-                                onClose={() => { void requestCloseTab(diffTabKey); }}
-                                onOpenFile={(p) => {
-                                  // Replace the diff tab with the file tab so we
-                                  // don't end up with both side-by-side. Cursor /
-                                  // VSCode behaves the same way for "Edit file".
-                                  openFile(p);
-                                  void requestCloseTab(diffTabKey);
-                                }}
-                                onRevert={isAgentDiff ? async () => {
-                                  if (!activeTab.diffId) return;
-                                  try {
-                                    await api.revertDiff(activeTab.diff || "");
-                                    removeDiffId(activeTab.diffId);
-                                  } catch (err) {
-                                    if (revertTargetFileMissing(err)) {
-                                      removeDiffId(activeTab.diffId);
+                      )}
+                      {activeTab && activeTab.kind !== "browser" ? (
+                        activeTab.kind === "diff" ? (
+                          <div className="editor-pane">
+                            {(() => {
+                              const diffId = activeTab.diffId || "";
+                              const gitCtx: "staged" | "unstaged" | null =
+                                diffId.startsWith("git:idx:") ? "staged"
+                                : diffId.startsWith("git:wt:") ? "unstaged"
+                                : null;
+                              const displayPath = activeTab.displayPath || "";
+                              const diffTabKey = activeTab.path;
+                              const isAgentDiff = !gitCtx && !!activeTab.diffId;
+                              return (
+                                <DiffEditorView
+                                  key={diffTabKey}
+                                  path={displayPath}
+                                  diff={activeTab.diff || ""}
+                                  reverted={diffs.find((d) => d.id === activeTab.diffId)?.reverted}
+                                  gitContext={gitCtx}
+                                  onHunkAction={gitCtx ? async (mode, patch) => {
+                                    try {
+                                      await api.gitApply(patch, mode);
+                                    } catch (err) {
+                                      void dlg.alert((err as Error).message);
                                       return;
                                     }
-                                    void dlg.alert((err as Error).message);
-                                  }
-                                } : undefined}
-                              />
-                            );
-                          })()}
-                        </div>
-                      ) : activeTab ? (
-                        <div className="editor-pane">
-                          {(() => {
-                            const pending = activePendingDiff;
-                            return pending ? (
-                              <div className="pending-diff-bar">
-                                <span className="pdb-tag">PENDING</span>
-                                <span className="pdb-msg">Agent changes — Keep / Undo per hunk inline, or all at once below.</span>
-                                <span className="pdb-stats">
-                                  {pending.adds > 0 && <span className="add">+{pending.adds}</span>}
-                                  {pending.dels > 0 && <span className="del">−{pending.dels}</span>}
-                                </span>
-                                <span className="spacer" />
-                                <button
-                                  className="pdb-btn"
-                                  onClick={() => {
-                                    if (pending.item) openDiff(pending.item, activeTab.path);
-                                  }}
-                                  title="Open side-by-side DIFF view"
-                                ><IconEye size={12} style={{ marginRight: 4 }} />Diff view</button>
-                                <button
-                                  className="pdb-btn"
-                                  onClick={() => {
-                                    if (!pending.item) return;
-                                    setDiffs((cur) => cur.filter((d) => d.id !== pending.item.id));
-                                  }}
-                                  title="Accept these changes — remove from list, keep file as-is"
-                                ><IconCheck size={12} style={{ marginRight: 4 }} />Keep</button>
-                                <button
-                                  className="pdb-btn warn"
-                                  onClick={async () => {
-                                    if (!pending.item) return;
+                                    // Bump refresh key so GitPanel + activity-bar badge update.
+                                    setRefreshKey((k) => k + 1);
+                                    // Re-fetch the diff for this tab; close it if nothing remains.
                                     try {
-                                      await api.revertDiff(pending.item.diff);
-                                      invalidateEditorCache(activeTab.path);
-                                      removeDiffId(pending.item.id);
+                                      const res = await api.gitDiff(displayPath, { staged: gitCtx === "staged" });
+                                      if (!res.diff || !res.diff.trim()) {
+                                        void requestCloseTab(diffTabKey);
+                                      } else {
+                                        setTabs((cur) => cur.map((t) =>
+                                          t.path === diffTabKey ? { ...t, diff: res.diff } : t,
+                                        ));
+                                      }
+                                    } catch {
+                                      // Non-fatal: worst case the stale diff stays until next poll.
+                                    }
+                                  } : undefined}
+                                  onClose={() => { void requestCloseTab(diffTabKey); }}
+                                  onOpenFile={(p) => {
+                                    // Replace the diff tab with the file tab so we
+                                    // don't end up with both side-by-side. Cursor /
+                                    // VSCode behaves the same way for "Edit file".
+                                    openFile(p);
+                                    void requestCloseTab(diffTabKey);
+                                  }}
+                                  onRevert={isAgentDiff ? async () => {
+                                    if (!activeTab.diffId) return;
+                                    try {
+                                      await api.revertDiff(activeTab.diff || "");
+                                      removeDiffId(activeTab.diffId);
                                     } catch (err) {
                                       if (revertTargetFileMissing(err)) {
-                                        removeDiffId(pending.item.id);
+                                        removeDiffId(activeTab.diffId);
                                         return;
                                       }
                                       void dlg.alert((err as Error).message);
                                     }
-                                  }}
-                                  title="Undo these changes on disk"
-                                ><IconRotateCcw size={12} style={{ marginRight: 4 }} />Undo</button>
-                              </div>
-                            ) : null;
-                          })()}
-                          <FileEditor
-                            ref={editorRef}
-                            key={activeTab.path}
-                            path={activeTab.path}
-                            gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
-                            onSaved={() => setRefreshKey((k) => k + 1)}
-                            onDirtyChange={(filePath, d) => setDirty(filePath, d)}
-                            pendingDiff={activePendingDiff?.item.diff ?? null}
-                            pendingDiffId={activePendingDiff?.item.id ?? null}
-                            reloadPath={editorReloadPath}
-                            reloadSeq={editorReloadSeq}
-                            onMissing={() => closeTabPath(activeTab.path)}
-                          />
-                        </div>
-                      ) : (
+                                  } : undefined}
+                                />
+                              );
+                            })()}
+                          </div>
+                        ) : (
+                          <div className="editor-pane">
+                            {(() => {
+                              const pending = activePendingDiff;
+                              return pending ? (
+                                <div className="pending-diff-bar">
+                                  <span className="pdb-tag">PENDING</span>
+                                  <span className="pdb-msg">Agent changes — Keep / Undo per hunk inline, or all at once below.</span>
+                                  <span className="pdb-stats">
+                                    {pending.adds > 0 && <span className="add">+{pending.adds}</span>}
+                                    {pending.dels > 0 && <span className="del">−{pending.dels}</span>}
+                                  </span>
+                                  <span className="spacer" />
+                                  <button
+                                    className="pdb-btn"
+                                    onClick={() => {
+                                      if (pending.item) openDiff(pending.item, activeTab.path);
+                                    }}
+                                    title="Open side-by-side DIFF view"
+                                  ><IconEye size={12} style={{ marginRight: 4 }} />Diff view</button>
+                                  <button
+                                    className="pdb-btn"
+                                    onClick={() => {
+                                      if (!pending.item) return;
+                                      setDiffs((cur) => cur.filter((d) => d.id !== pending.item.id));
+                                    }}
+                                    title="Accept these changes — remove from list, keep file as-is"
+                                  ><IconCheck size={12} style={{ marginRight: 4 }} />Keep</button>
+                                  <button
+                                    className="pdb-btn warn"
+                                    onClick={async () => {
+                                      if (!pending.item) return;
+                                      try {
+                                        await api.revertDiff(pending.item.diff);
+                                        invalidateEditorCache(activeTab.path);
+                                        removeDiffId(pending.item.id);
+                                      } catch (err) {
+                                        if (revertTargetFileMissing(err)) {
+                                          removeDiffId(pending.item.id);
+                                          return;
+                                        }
+                                        void dlg.alert((err as Error).message);
+                                      }
+                                    }}
+                                    title="Undo these changes on disk"
+                                  ><IconRotateCcw size={12} style={{ marginRight: 4 }} />Undo</button>
+                                </div>
+                              ) : null;
+                            })()}
+                            <FileEditor
+                              ref={editorRef}
+                              key={activeTab.path}
+                              path={activeTab.path}
+                              gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
+                              onSaved={() => setRefreshKey((k) => k + 1)}
+                              onDirtyChange={(filePath, d) => setDirty(filePath, d)}
+                              pendingDiff={activePendingDiff?.item.diff ?? null}
+                              pendingDiffId={activePendingDiff?.item.id ?? null}
+                              reloadPath={editorReloadPath}
+                              reloadSeq={editorReloadSeq}
+                              onMissing={() => closeTabPath(activeTab.path)}
+                            />
+                          </div>
+                        )
+                      ) : !activeTab ? (
                         <EditorWelcome
                           workspace={workspace}
                           recentsVersion={recentsVersion}
@@ -1393,7 +1413,7 @@ export default function App() {
                           onShowSearch={() => setView("search")}
                           onToggleTerminal={toggleBottom}
                         />
-                      )}
+                      ) : null}
                     </div>
                   </Panel>
                   <PanelResizeHandle />

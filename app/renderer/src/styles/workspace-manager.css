@@ -499,19 +499,7 @@
   background: transparent;
 }
 
-.browser-webview {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border: none;
-  display: inline-flex;
-}
 
-.browser-webview--hidden {
-  visibility: hidden;
-  pointer-events: none;
-}
 
 .browser-frozen-shot {
   position: absolute;
@@ -633,6 +621,26 @@
   flex: 1;
   min-height: 0;
 }
+
+.browser-webview {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+}
+
+.browser-webview--hidden {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
 
 .browser-viewport--inspect .browser-focus-hint {
   display: none;

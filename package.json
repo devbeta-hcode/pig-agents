@@ -1,17 +1,26 @@
 {
   "name": "pig-agents-desktop",
   "private": true,
-  "version": "0.1.0",
-  "description": "Native Pig Agents IDE (Electron) — Windows, Linux, macOS",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pig Agents",
+  "author": "DEV BETA.,JSC",
+  "repository": "github:devbeta-hcode/pig-agents/tree/desktop",
   "workspaces": [
     "app/core",
     "app/electron",
     "app/renderer"
   ],
+  "dependencies": {
+    "@pig-agents/core": "0.1.0",
+    "dotenv": "16.4.7",
+    "electron-store": "10.0.0",
+    "node-pty": "1.1.0"
+  },
   "scripts": {
     "dev": "npm run dev --workspace @pig-agents/electron",
     "build": "npm run build --workspace @pig-agents/core && npm run build --workspace @pig-agents/renderer && npm run build --workspace @pig-agents/electron",
-    "package:win": "npm run build && npm run package:win --workspace @pig-agents/electron",
+    "package:win": "npm run build && electron-builder --config builder-effective-config.yaml --win --x64",
     "sync-icon": "npm run sync-icon --workspace @pig-agents/electron",
     "audit:deps": "npm audit --workspaces",
     "rebuild:native": "node scripts/rebuild-native.mjs",

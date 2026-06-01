@@ -96,6 +96,7 @@ function parsedJsonToAction(
       input = { query: json.input };
     } else if (json.type === "run_command") {
       input = { cmd: json.input };
+      if (json.background) input.background = true;
     } else {
       input = { value: json.input };
     }
@@ -165,7 +166,8 @@ function detectToolIntent(text: string): { type: string; input: Record<string, u
   const cmdMatch = text.match(/(?:run|execute|chạy|thực thi)\s+[`"']?([^`"'\n]+)[`"']?/i) ||
                    text.match(/```(?:bash|sh|shell)?\s*\n?([^\n]+)\n?```/i);
   if (cmdMatch && !cmdMatch[1].includes("{") && cmdMatch[1].length < 200) {
-    return { type: "run_command", input: { cmd: cmdMatch[1].trim() } };
+    const isBg = /(?:background|chạy ngầm|ẩn)/i.test(text);
+    return { type: "run_command", input: { cmd: cmdMatch[1].trim(), ...(isBg ? { background: true } : {}) } };
   }
   
   // Detect codebase_map intent

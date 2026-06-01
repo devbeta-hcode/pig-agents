@@ -449,10 +449,11 @@
   bottom: calc(100% + 6px);
   left: 0;
   min-width: 240px;
-  background: var(--bg-2);
+  background: rgba(22, 22, 26, 0.75);
+  backdrop-filter: blur(12px);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
   padding: 4px;
   z-index: 50;
   display: flex; flex-direction: column; gap: 1px;
@@ -491,10 +492,11 @@
   width: auto;
   min-width: 200px;
   max-width: 350px;
-  background: var(--bg-2);
+  background: rgba(22, 22, 26, 0.75);
+  backdrop-filter: blur(12px);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -673,12 +675,13 @@
   bottom: 100%;
   left: 8px; right: 8px;
   margin-bottom: 4px;
-  background: #2c2c2c;
+  background: rgba(44, 44, 44, 0.75);
+  backdrop-filter: blur(12px);
   border: 1px solid #454545;
-  border-radius: 4px;
+  border-radius: 8px;
   max-height: 180px; overflow: auto;
   z-index: 50;
-  box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.4);
   animation: ui-pop-in 0.24s var(--ease-out-expo) both;
   transform-origin: bottom center;
 }

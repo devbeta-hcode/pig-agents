@@ -85,7 +85,24 @@ export function formatPriorTurnsForAgentTask(turns: ChatTurn[], maxTotalChars = 
     } else {
       a = "(no assistant reply)";
     }
-    blocks.push(`[USER]\n${u}\n\n[ASSISTANT]\n${a}`);
+    
+    const files = new Set<string>();
+    for (const e of turn.events) {
+      if (e.type === "action" && "tool" in e && typeof e.tool === "string" && e.input && typeof e.input === "object") {
+        const inp = e.input as Record<string, unknown>;
+        if (e.tool === "create_file" && typeof inp.path === "string") files.add(inp.path);
+        if (e.tool === "write_patch") {
+          if (typeof inp.path === "string") files.add(inp.path);
+          if (typeof inp.patches === "string") {
+            const m = /FILE:\s*([^\n]+)/g;
+            let match;
+            while ((match = m.exec(inp.patches)) !== null) files.add(match[1].trim());
+          }
+        }
+      }
+    }
+    const modifiedPrefix = files.size > 0 ? `(Modified files: ${Array.from(files).join(", ")})\n` : "";
+    blocks.push(`[USER]\n${u}\n\n[ASSISTANT]\n${modifiedPrefix}${a}`);
   }
   const header =
     "CONVERSATION SO FAR — the user's latest message is under “CURRENT TASK” at the end; treat that as the active request.\n\n";

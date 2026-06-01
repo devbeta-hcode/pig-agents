@@ -275,6 +275,7 @@ export async function executeTool(
         try {
           r = await runSmartCommand(cmd, {
             cwd: getWorkspace(),
+            forceLongRunning: input.background === true,
             onChildSpawn: (pid) => cmdHandle.setPid(pid),
             onStreamChunk: (stream, text) => {
               if (stream === "out") qOut += text;

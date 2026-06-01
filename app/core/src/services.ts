@@ -1012,7 +1012,24 @@ async function chatsAtomicWrite(p: string, data: string) {
   await chatsEnsureDir(path.dirname(p));
   const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
   await fsp.writeFile(tmp, data, "utf8");
-  await fsp.rename(tmp, p);
+  try {
+    await fsp.rename(tmp, p);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EPERM" || (err as NodeJS.ErrnoException).code === "EACCES") {
+      // On Windows, rename over an existing file can throw EPERM if it's locked by antivirus
+      // or briefly held by another process. Wait a bit and try once more.
+      await new Promise(r => setTimeout(r, 100));
+      try {
+        await fsp.rename(tmp, p);
+      } catch (err2) {
+        // Fallback: copy file and delete tmp
+        await fsp.copyFile(tmp, p);
+        await fsp.unlink(tmp).catch(() => {});
+      }
+    } else {
+      throw err;
+    }
+  }
 }
 
 function isValidId(id: string): boolean {

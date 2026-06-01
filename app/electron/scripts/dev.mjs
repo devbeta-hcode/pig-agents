@@ -1,7 +1,7 @@
 /**
  * Dev launcher — starts Vite renderer, waits until it responds, then Electron.
  */
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,7 +60,7 @@ try {
   console.log("[dev] Vite is up — starting Electron");
 } catch (err) {
   console.error("[dev]", err.message);
-  renderer.kill();
+  killTree(renderer);
   process.exit(1);
 }
 
@@ -71,10 +71,26 @@ const electron = spawn(npmCmd, ["run", "start", "--workspace", "@pig-agents/elec
   env: devEnv,
 });
 
+function killTree(proc) {
+  if (!proc || !proc.pid) return;
+  if (process.platform === "win32") {
+    try {
+      execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: "ignore" });
+    } catch (e) {}
+  } else {
+    proc.kill();
+  }
+}
+
+let isShuttingDown = false;
 function shutdown() {
-  renderer.kill();
-  electron.kill();
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  killTree(renderer);
+  killTree(electron);
   process.exit(0);
 }
+
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+electron.on("close", shutdown);

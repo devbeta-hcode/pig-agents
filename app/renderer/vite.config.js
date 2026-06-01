@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 /** Renderer-only dev server — no API proxy (desktop uses IPC). */
 export default defineConfig({
+    base: "./",
     plugins: [react()],
     server: {
         port: 5190,

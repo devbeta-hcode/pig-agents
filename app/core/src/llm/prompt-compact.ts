@@ -67,14 +67,22 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
   const t = activeUserTaskSlice(task);
   if (t.length < 5) return false;
   // How-to patterns
-  if (/^(làm\s*sao|cách\s*(nào|để)|how\s+(do|can|to)\s+|what('s|\s+is)\s+the\s+(way|method)\s+to)/i.test(t)) return true;
+  const viHowTo = /^(làm\s*sao|cách\s*(nào|để))/i.test(t);
+  const enHowTo = /^(how\s+(do|can|to)\s+|what('s|\s+is)\s+the\s+(way|method)\s+to)/i.test(t);
   // Explanation patterns
-  if (/^(what\s+(is|are|does)|why\s+(is|does)|explain|describe|tại\s*sao|vì\s*sao|tìm\s*hiểu|cho\s*biết|nói\s*(về|cho|thêm)|phân\s*tích|đánh\s*giá|tóm\s*tắt|review|mô\s*tả)/i.test(t)) return true;
+  const viExplain = /^(tại\s*sao|vì\s*sao|tìm\s*hiểu|cho\s*biết|nói\s*(về|cho|thêm)|phân\s*tích|đánh\s*giá|tóm\s*tắt|review|mô\s*tả)/i.test(t);
+  const enExplain = /^(what\s+(is|are|does)|why\s+(is|does)|explain|describe)/i.test(t);
   // Short questions
-  if (t.length < 80 && /\?\s*$/.test(t)) return true;
+  const shortQuestion = t.length < 80 && /\?\s*$/.test(t);
   // VI informal yes/no on short messages
-  if (t.length < 120 && /(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t)) return true;
-  return false;
+  const viInformalShort =
+    t.length < 120 &&
+    /(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t);
+
+  const viCodeQuestions =
+    /(file|thư\s*mục|cái\s*này|hàm|code|đoạn\s*này).*?(là\s*(gì|file\s*gì)|để\s*làm\s*gì|có\s*tác\s*dụng\s*gì|xóa\s*được\s*không|có\s*nên\s*xóa|dùng\s*để)/i.test(t);
+
+  return viHowTo || viExplain || enHowTo || enExplain || shortQuestion || viInformalShort || viCodeQuestions;
 }
 
 /**
@@ -100,7 +108,7 @@ TOOLS:
 - list_files: {"type":"list_files","input":{"dir":"src"}}
 - search_code: {"type":"search_code","input":{"query":"function name"}}
 - glob: {"type":"glob","input":{"pattern":"**/*.ts"}}
-- run_command: {"type":"run_command","input":{"cmd":"npm test"}} — runs with cwd = workspace root (see WORKSPACE_PATH below). Do NOT prefix with "cd /workspace", "cd /data/workspace", or any imagined absolute path — they don't exist; the command will fail with "No such file or directory". For sub-folders use relative "cd ./sub && ...".
+- run_command: {"type":"run_command","input":{"cmd":"npm test","background":true}} — runs with cwd = workspace root (see WORKSPACE_PATH below). Set "background": true to force detach long-running servers. Do NOT prefix with "cd /workspace", "cd /data/workspace", or any imagined absolute path — they don't exist; the command will fail with "No such file or directory". For sub-folders use relative "cd ./sub && ...".
 - write_patch: {"type":"write_patch","input":{"patches":"FILE:path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND"}} — after FILE: rel/path the next line must be SEARCH then REPLACE (never raw file body under FILE:); new file = SEARCH\\n\\nREPLACE\\n<content>\\nEND. Or {"path":"x.ts","patches":"SEARCH\\n..."} only.
 - create_file: {"type":"create_file","input":{"path":"src/new.ts","content":"// file content"}} — content is written verbatim. Do NOT add END/EOF/END_OF_FILE markers; those belong to write_patch and will end up as literal text breaking the file.
 - web_search: {"type":"web_search","input":{"query":"react useEffect cleanup"}} — DDG HTML scrape, top results (title/url/snippet). Each call needs user approval unless auto-allow is on.

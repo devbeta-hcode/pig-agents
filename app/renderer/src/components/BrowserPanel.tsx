@@ -580,7 +580,6 @@ export default function BrowserPanel({
         </div>
       </div>
 
-      {overlayHidden && <div data-suppress-browser-overlay hidden aria-hidden />}
 
       <div
         className={`browser-viewport${inspecting ? " browser-viewport--inspect" : ""}${ready ? " browser-viewport--live" : ""}`}

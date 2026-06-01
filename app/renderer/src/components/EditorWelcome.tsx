@@ -106,7 +106,7 @@ export function EditorWelcome({
             <div className="ew-brand-mark" aria-hidden>
               <img
                 className="ew-brand-icon"
-                src="/icon.png"
+                src="./icon.png"
                 width={44}
                 height={44}
                 alt=""

@@ -75,7 +75,11 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
     t.length < 120 &&
     /(^|[\s,;:])(k|ko|kh|hông|hok|hk|khg|khong|không)\s*[?.!]?\s*$/i.test(t);
   
-  return viHowTo || viExplain || enHowTo || enExplain || shortQuestion || viInformalShort;
+  // Specific questions about files, code, or architecture
+  const viCodeQuestions =
+    /(file|thư\s*mục|cái\s*này|hàm|code|đoạn\s*này).*?(là\s*(gì|file\s*gì)|để\s*làm\s*gì|có\s*tác\s*dụng\s*gì|xóa\s*được\s*không|có\s*nên\s*xóa|dùng\s*để)/i.test(t);
+
+  return viHowTo || viExplain || enHowTo || enExplain || shortQuestion || viInformalShort || viCodeQuestions;
 }
 
 export const SYSTEM_PROMPT = `You are an autonomous coding agent embedded in a real developer tool.
@@ -107,7 +111,7 @@ Available tools (set "type" to one of these):
 - "list_files"    input: { "dir": "rel/dir" }
 - "search_code"   input: { "query": "text" }
 - "glob"          input: { "pattern": "**/*.ts" }  — find files matching a glob pattern (** = any depth, * = within segment).
-- "run_command"   input: { "cmd": "shell command" }  — Executes shell commands. Long-running processes (servers, watchers, builds) auto-detect and return immediately when ready. See "Execution Intelligence" below.
+- "run_command"   input: { "cmd": "shell command", "background"?: boolean }  — Executes shell commands. Set "background": true for long-running servers/watchers to detach them immediately. Otherwise, auto-detects based on output patterns.
   - **Working directory is ALREADY the workspace root.** Every \`run_command\` runs with \`cwd\` set to the workspace path shown in the WORKSPACE section below. Do NOT prefix commands with \`cd /workspace\`, \`cd /data/workspace\`, \`cd ~/project\`, or any other absolute path you imagine — those paths do not exist and the command will fail with "No such file or directory". Use \`pwd\` if you need to verify. To run inside a sub-folder use \`cd ./subdir && ...\` with a *relative* path only.
   - **Windows desktop:** commands run via \`cmd.exe\` (or Git Bash if installed). Avoid bash-only syntax (\`export VAR=…\`, \`source\`, \`$\(\)\`); use \`set VAR=…\` or PowerShell if needed. \`python\`, \`npm\`, \`npx\`, and \`&&\` chains work as usual.
 - "write_patch"   input: { "patches": "FILE: path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND\\n..." } — optional { "path": "rel/path", "patches": "SEARCH\\n..." } for single-file edits only (body must start with SEARCH).

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { ipcMain, dialog, type BrowserWindow, type OpenDialogOptions, type WebContents } from "electron";
+import { app, ipcMain, dialog, type BrowserWindow, type OpenDialogOptions, type WebContents } from "electron";
 import { getUiZoomPercent, setUiZoomPercent, stepUiZoomPercent } from "../uiPrefs.js";
 import { applyWindowZoom } from "../zoom.js";
 import { registerBrowser } from "../browser/register.js";
@@ -22,6 +22,16 @@ import {
 } from "@pig-agents/core";
 
 type Send = (msg: unknown) => void;
+
+// Global map to track active PTY instances so we can clean them up gracefully on app quit.
+const terminals = new Map<string, PtyLike>();
+
+export function cleanupTerminals(): void {
+  for (const pty of terminals.values()) {
+    try { pty.kill(); } catch { /* noop */ }
+  }
+  terminals.clear();
+}
 
 /** Wire one streaming subscription. Returns a cleanup function. */
 function startStream(kind: string, params: Record<string, any>, send: Send): () => void {
@@ -137,9 +147,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return { ok: true as const };
   });
 
-  // ---- Terminal (PTY) ------------------------------------------------------
-  const terminals = new Map<string, PtyLike>();
-
   ipcMain.handle("pig:terminal:create", async (e, params: { cols?: number; rows?: number; workspace?: string }) => {
     const id = randomUUID();
     const cwd = params.workspace && params.workspace.trim() ? params.workspace.trim() : getWorkspace();
@@ -178,7 +185,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     else win.maximize();
   });
   ipcMain.handle("pig:window:close", () => {
-    getWindow()?.close();
+    const win = getWindow();
+    if (win && !win.isDestroyed()) {
+      win.destroy(); // Forcefully destroy the window to bypass any beforeunload handlers
+    }
+    app.quit();
   });
   ipcMain.handle("pig:window:isMaximized", () => getWindow()?.isMaximized() ?? false);
 

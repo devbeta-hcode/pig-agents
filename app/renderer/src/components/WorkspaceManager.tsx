@@ -6,6 +6,7 @@ import { useVisibleInterval } from "../lib/useVisibleInterval";
 interface WorkspaceManagerProps {
   currentWorkspace: string;
   onSwitchWorkspace: (workspace: string) => void;
+  onSelectSession?: (workspace: string, sessionId: string) => void;
 }
 
 interface WorkspaceGroup {
@@ -18,7 +19,7 @@ interface WorkspaceGroup {
  * Clicking opens a dropdown to see all running sessions and optionally
  * switch workspaces or abort sessions.
  */
-export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace }: WorkspaceManagerProps) {
+export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace, onSelectSession }: WorkspaceManagerProps) {
   const [runningSessions, setRunningSessions] = useState<AgentSession[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -154,7 +155,17 @@ export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace }: Worksp
               </div>
               
               {group.sessions.map((session) => (
-                <div key={session.id} className="session-item">
+                <div
+                  key={session.id}
+                  className="session-item"
+                  onClick={() => {
+                    if (onSelectSession) {
+                      onSelectSession(group.workspace, session.id);
+                      setIsOpen(false);
+                    }
+                  }}
+                  style={onSelectSession ? { cursor: "pointer" } : undefined}
+                >
                   <div className="session-info">
                     <span className="session-task" title={session.task}>
                       {session.task.length > 50 ? session.task.slice(0, 50) + "..." : session.task}

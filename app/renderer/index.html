@@ -3,11 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="icon" type="image/png" href="./icon.png" />
     <title>Pig Agents</title>
+    <style>
+      body { margin: 0; background: #121218; color: #8a8a93; font-family: system-ui, -apple-system, sans-serif; }
+      .startup-loader { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; width: 100vw; gap: 16px; }
+      .startup-spinner { width: 24px; height: 24px; border: 2px solid #2a2a35; border-top-color: #8b5cf6; border-radius: 50%; animation: spin 1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="startup-loader">
+        <div class="startup-spinner"></div>
+        <div>Loading Pig Agents...</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

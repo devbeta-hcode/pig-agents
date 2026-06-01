@@ -3,7 +3,7 @@ import { ChevronExpand } from "./ChevronExpand";
 import { FileIcon } from "./FileIcon";
 import { api, type GitFileEntry, type GitLogEntry, type GitStatus } from "../lib/api";
 import { useDialogs } from "./DialogProvider";
-import { IconCheck, IconRefreshCw, IconRotateCcw } from "./Icons";
+import { IconCheck, IconRefreshCw, IconRotateCcw, IconPlus, IconMinus } from "./Icons";
 
 // VSCode-style colors for the status badge (M / A / D / U / R …). Kept in
 // sync with the codes git emits in `--porcelain=v1`. The fallback is a
@@ -258,12 +258,12 @@ export function GitPanel({ workspace, onOpenGitDiff, refreshKey }: Props) {
         onClick={viewDiff}
         rowActions={(f) => (
           <>
-            <RowBtn title="Unstage" onClick={() => unstage([f.path])}>−</RowBtn>
+            <RowBtn title="Unstage" onClick={() => unstage([f.path])}><IconMinus size={12} /></RowBtn>
           </>
         )}
         bulkActions={
           staged.length > 0 ? (
-            <RowBtn title="Unstage all" onClick={() => unstage(staged.map((f) => f.path))}>−</RowBtn>
+            <RowBtn title="Unstage all" onClick={() => unstage(staged.map((f) => f.path))}><IconMinus size={12} /></RowBtn>
           ) : null
         }
       />
@@ -277,14 +277,14 @@ export function GitPanel({ workspace, onOpenGitDiff, refreshKey }: Props) {
         rowActions={(f) => (
           <>
             <RowBtn title="Discard changes" onClick={() => discard([f.path])}><IconRotateCcw size={12} /></RowBtn>
-            <RowBtn title="Stage changes" onClick={() => stage([f.path])}>＋</RowBtn>
+            <RowBtn title="Stage changes" onClick={() => stage([f.path])}><IconPlus size={12} /></RowBtn>
           </>
         )}
         bulkActions={
           unstaged.length > 0 ? (
             <>
               <RowBtn title="Discard all" onClick={() => discard(unstaged.map((f) => f.path))}><IconRotateCcw size={12} /></RowBtn>
-              <RowBtn title="Stage all" onClick={() => stage(unstaged.map((f) => f.path))}>＋</RowBtn>
+              <RowBtn title="Stage all" onClick={() => stage(unstaged.map((f) => f.path))}><IconPlus size={12} /></RowBtn>
             </>
           ) : null
         }
@@ -299,11 +299,11 @@ export function GitPanel({ workspace, onOpenGitDiff, refreshKey }: Props) {
           onClick={viewDiff}
           rowActions={(f) => (
             <>
-              <RowBtn title="Stage" onClick={() => stage([f.path])}>＋</RowBtn>
+              <RowBtn title="Stage" onClick={() => stage([f.path])}><IconPlus size={12} /></RowBtn>
             </>
           )}
           bulkActions={
-            <RowBtn title="Stage all untracked" onClick={() => stage(untracked.map((f) => f.path))}>＋</RowBtn>
+            <RowBtn title="Stage all untracked" onClick={() => stage(untracked.map((f) => f.path))}><IconPlus size={12} /></RowBtn>
           }
         />
       ) : null}

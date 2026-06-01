@@ -1,0 +1,53 @@
+directories:
+  output: dist
+  buildResources: app/electron/resources
+
+appId: com.devbeta.pig-agents-desktop
+productName: Pig Agents
+
+# node-pty (native module) has issues inside asar archives
+asar: false
+
+# Rebuild native modules (node-pty) against the packaged Electron version
+npmRebuild: true
+
+# Override fields in the root package.json for the packaged app:
+#   main  → entry point after files mapping copies electron/dist/* to ./
+#   type  → main process compiles to ESM (tsconfig.main module:Node16 + "type":"module")
+#   Electron always loads preload scripts as CJS regardless of this field.
+extraMetadata:
+  main: main.js
+  type: module
+
+extraResources:
+  - from: app/electron/resources/icon.png
+    to: icon.png
+
+# electron-builder reads "dependencies" from root package.json and auto-installs
+# only production deps into the output node_modules (including workspace packages
+# like @pig-agents/core which are copied from their workspace directory).
+# Do NOT add "node_modules/**" here — that would include ALL hoisted deps
+# (typescript, vite, react, etc.) and bloat the installer by hundreds of MB.
+files:
+  - package.json
+  - from: app/electron/dist
+    to: ./
+  - from: app/renderer/dist
+    to: renderer
+  - "!node_modules/@pig-agents/core/src"
+  - "!node_modules/@pig-agents/core/tsconfig.json"
+
+win:
+  target:
+    - nsis
+  icon: app/electron/resources/icon.png
+
+linux:
+  target:
+    - AppImage
+  icon: app/electron/resources/icon.png
+
+mac:
+  target:
+    - dmg
+  icon: app/electron/resources/icon.png

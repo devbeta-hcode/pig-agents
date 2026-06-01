@@ -1676,6 +1676,26 @@ export function Chat({
     // Scroll to bottom when switching sessions / workspace.
     return scrollToBottom();
   }, [session.id, workspace, scrollToBottom]);
+
+  const isAutoScrollingRef = useRef(true);
+
+  // Bulletproof smart auto-scroller for streaming chat
+  // Virtuoso's followOutput is flaky for continuous token streams.
+  // We use RAF to snap to bottom, BUT we respect a small atBottomThreshold
+  // to let the user escape the auto-scroll trap if they scroll up.
+  useEffect(() => {
+    if (!running) return;
+
+    const frame = requestAnimationFrame(() => {
+      if (!isAutoScrollingRef.current) return;
+      const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
+      if (!scroller) return;
+      scroller.scrollTop = scroller.scrollHeight;
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [thinking?.partial, running, session.turns.length]);
+
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
   const [attachedImages, setAttachedImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
@@ -2671,8 +2691,12 @@ export function Chat({
             className="chat-log"
             data={session.turns}
             initialTopMostItemIndex={session.turns.length - 1}
-            followOutput={(isAtBottom) => isAtBottom ? "auto" : false}
-            atBottomStateChange={(atBottom) => setAutoScroll(atBottom)}
+            atBottomThreshold={15}
+            atBottomStateChange={(atBottom) => {
+              setAutoScroll(atBottom);
+              isAutoScrollingRef.current = atBottom;
+            }}
+            components={{ Footer: () => <div style={{ height: 24 }} /> }}
             itemContent={(index, turn) => {
               const isLast = index === session.turns.length - 1;
               const isStreaming = isLast && running;
@@ -2761,7 +2785,7 @@ export function Chat({
             </div>
           )}
           {/* Lower block: textarea + footer toolbar (stacked like Cursor composer). */}
-          <div className="composer-lower" onPaste={handlePaste}>
+          <div className={`composer-lower ${running ? "running-led" : ""}`} onPaste={handlePaste}>
             <div className="composer-input">
               <ComposerHeader
                 mentions={composerMentions}

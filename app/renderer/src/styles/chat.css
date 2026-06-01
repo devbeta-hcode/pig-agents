@@ -271,15 +271,16 @@
   gap: 4px;
 }
 .msg-user .msg-bubble {
-  background: color-mix(in srgb, var(--bg-3) 88%, var(--accent) 4%);
-  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  background: color-mix(in srgb, var(--bg-4) 85%, var(--accent) 8%);
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
   color: var(--fg);
-  border-radius: 10px;
-  padding: 7px 12px;
+  border-radius: 12px;
+  padding: 10px 14px;
   max-width: 88%;
   word-wrap: break-word;
   font-size: 13px;
   line-height: 1.55;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 .msg-user .msg-text { white-space: pre-wrap; word-break: break-word; }
 .msg-user .msg-text.msg-text--with-chips {
@@ -1987,6 +1988,45 @@ kbd {
   box-shadow: var(--shadow-glow), var(--shadow-md);
 }
 
+@property --led-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes led-chase-spin {
+  0% { --led-angle: 0deg; }
+  100% { --led-angle: 360deg; }
+}
+
+.composer-lower.running-led::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: calc(var(--radius-lg) + 0.5px);
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--led-angle),
+    transparent 0%,
+    transparent 60%,
+    rgba(255, 0, 0, 0.2) 65%,
+    rgba(255, 140, 0, 0.5) 72%,
+    rgba(255, 215, 0, 0.7) 79%,
+    rgba(0, 255, 0, 0.9) 86%,
+    rgba(0, 191, 255, 1) 93%,
+    rgba(138, 43, 226, 1) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: led-chase-spin 2s linear infinite;
+  pointer-events: none;
+  z-index: 10;
+  opacity: 1;
+}
+
 /* ── Chat visual polish (no background fills, no border-radius changes) ── */
 
 /* Turns fade+slide in */
@@ -2013,6 +2053,13 @@ kbd {
 .assistant-action-accent--terminal  { border-left-color: #34d399; }
 .assistant-action-accent--search    { border-left-color: #fbbf24; }
 .assistant-action-accent--map       { border-left-color: #f472b6; }
+
+/* Subtle gradient headers for tool accordions */
+.assistant-action-accent--mutate-fs > .assistant-action-fold-sum { background: linear-gradient(to right, rgba(167, 139, 250, 0.12), transparent); }
+.assistant-action-accent--read-fs > .assistant-action-fold-sum   { background: linear-gradient(to right, rgba(56, 189, 248, 0.12), transparent); }
+.assistant-action-accent--terminal > .assistant-action-fold-sum  { background: linear-gradient(to right, rgba(52, 211, 153, 0.12), transparent); }
+.assistant-action-accent--search > .assistant-action-fold-sum    { background: linear-gradient(to right, rgba(251, 191, 36, 0.12), transparent); }
+.assistant-action-accent--map > .assistant-action-fold-sum       { background: linear-gradient(to right, rgba(244, 114, 182, 0.12), transparent); }
 
 /* Action group header: slightly brighter text + accent count */
 .assistant-action-group-sum {

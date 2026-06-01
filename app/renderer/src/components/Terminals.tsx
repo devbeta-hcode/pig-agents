@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlayTriangle } from "./ChevronExpand";
-import { IconX, IconMenu, IconZap, IconAlertTriangle, IconTrash } from "./Icons";
+import { IconX, IconMenu, IconZap, IconAlertTriangle, IconTrash, IconPlus, IconMoreHorizontal } from "./Icons";
 import { TerminalView } from "./Terminal";
 import { AgentTerminalView } from "./AgentTerminalView";
 import { api, type AgentCommandSummary } from "../lib/api";
@@ -239,13 +239,7 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
         <span className="terminals-title">TERMINAL</span>
         <span className="terminals-current" title={headerLabel}>{headerLabel}</span>
         <div className="terminals-spacer" />
-        <button
-          className="terminals-action"
-          title="New terminal"
-          onClick={newShell}
-        >
-          +
-        </button>
+
         {onClose && (
           <button
             className="terminals-action close"
@@ -267,7 +261,7 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
             <div className="terminals-section">
               <div className="terminals-section-head">
                 <span>Shells</span>
-                <button className="terminals-section-btn" title="New terminal" onClick={newShell}>+</button>
+                <button className="terminals-section-btn" title="New terminal" onClick={newShell}><IconPlus size={13} /></button>
               </div>
               {shells.map((s) => (
                 <div
@@ -312,7 +306,7 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
                     <IconZap size={13} />
                   </span>
                   <span className="terminals-item-name">{r.cmd.length > 30 ? r.cmd.slice(0, 30) + "…" : r.cmd}</span>
-                  <span className="terminals-item-meta" style={{ color: "var(--warn)" }}>…</span>
+                  <span className="terminals-item-meta" style={{ color: "var(--warn)", display: "flex", alignItems: "center" }}><IconMoreHorizontal size={14} /></span>
                 </div>
               ))}
               {agents.map((r) => (

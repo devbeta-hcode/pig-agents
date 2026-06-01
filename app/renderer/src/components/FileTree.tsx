@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef, type MouseEvent } from "react
 import { api, type FileEntry } from "../lib/api";
 import { ContextMenu, type MenuItem, type MenuSeparator } from "./ContextMenu";
 import { useDialogs } from "./DialogProvider";
-import { IconFolderOpen, IconRefreshCw } from "./Icons";
+import { IconFolderOpen, IconRefreshCw, IconPlus } from "./Icons";
 import { ChevronExpand } from "./ChevronExpand";
 import { FileIcon } from "./FileIcon";
 
@@ -659,7 +659,7 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onPathsDelet
         <span>Explorer</span>
         <div className="sidebar-actions">
           {(operating || (busy && root.length > 0)) && <span className="explorer-spinner" title="Working…" />}
-          <button title="New file (root)" onClick={() => void startNew("file", "")} disabled={operating}>＋</button>
+          <button title="New file (root)" onClick={() => void startNew("file", "")} disabled={operating}><IconPlus size={13} /></button>
           <button title="New folder (root)" onClick={() => void startNew("dir", "")} disabled={operating}><IconFolderOpen size={13} /></button>
           <button title="Refresh" onClick={load} disabled={busy || operating}><IconRefreshCw size={13} /></button>
         </div>

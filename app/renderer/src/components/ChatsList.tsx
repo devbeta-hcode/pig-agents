@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { api, type ChatSessionMeta } from "../lib/api";
 import { useDialogs } from "./DialogProvider";
-import { IconX } from "./Icons";
+import { IconX, IconPlus, IconUpload, IconDownload } from "./Icons";
 
 interface Hit {
   id: string;
@@ -128,9 +128,9 @@ const ChatsListInner = memo(function ChatsListInner({
       <div className="sidebar-header">
         <span>Chats</span>
         <div className="sidebar-actions">
-          <button title="Import chats from JSON" onClick={onImport}>⬆</button>
-          <button title="Export all chats" onClick={onExport}>⬇</button>
-          <button title="New chat" onClick={onNew}>＋</button>
+          <button title="Import chats from JSON" onClick={onImport}><IconUpload size={13} /></button>
+          <button title="Export all chats" onClick={onExport}><IconDownload size={13} /></button>
+          <button title="New chat" onClick={onNew}><IconPlus size={13} /></button>
         </div>
       </div>
       <div className="chats-search">

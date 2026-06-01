@@ -340,6 +340,10 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
 
     setOriginal(snapshot);
 
+    contentRef.current = snapshot;
+
+    originalRef.current = snapshot;
+
     setLoading(false);
 
     reportDirty(snapshot, snapshot);
@@ -359,6 +363,10 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
     setContent(buf.content);
 
     setOriginal(buf.original);
+
+    contentRef.current = buf.content;
+
+    originalRef.current = buf.original;
 
     setLoading(false);
 

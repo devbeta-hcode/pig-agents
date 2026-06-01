@@ -49,7 +49,7 @@ function stripAnsi(str: string): string {
 const LONG_RUNNING_PATTERNS = [
   // npm/yarn/pnpm dev servers
   /\b(npm|yarn|pnpm)\s+(run\s+)?(dev|start|serve|watch|preview)\b/i,
-  /\bnpx\s+(vite|next|nuxt|remix|astro)\b/i,
+  /\bnpx\s+(vite|next|nuxt|remix|astro|serve|http-server)\b/i,
   /\b(vite|next|nuxt|remix|astro|webpack|parcel)\s*(dev|start|serve)?\b/i,
   
   // Python servers
@@ -248,7 +248,7 @@ export async function runSmartCommand(
   const spawnCb = opts.onChildSpawn;
   const cwd = opts.cwd ?? getWorkspace();
   const maxBytes = opts.maxBytes ?? 256 * 1024;
-  const isLongRunning = opts.forceLongRunning || isLongRunningCommand(trimmed);
+  let isLongRunning = opts.forceLongRunning || isLongRunningCommand(trimmed);
   const installLike = isInstallLikeCommand(trimmed);
 
   const readyTimeoutMs =
@@ -342,6 +342,21 @@ export async function runSmartCommand(
               }
             }, 500);
             return;
+          }
+        }
+      }
+
+      // Auto-detect ANY custom command as a server if it explicitly outputs a listening URL/port
+      if (!isLongRunning) {
+        const SERVER_PATTERNS = [
+          /\b(listening|running|started|ready|live|serving)\b.*\b(on|at)\s*(port|:)?\s*\d+/i,
+          /\blocal(host)?:\s*https?:\/\/[^\s]+/i,
+          /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?/i,
+        ];
+        for (const pattern of SERVER_PATTERNS) {
+          if (combined.match(pattern)) {
+            isLongRunning = true;
+            break;
           }
         }
       }
