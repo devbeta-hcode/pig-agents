@@ -51,7 +51,7 @@ import {
   getStats as getSessionStats,
 } from "./agent/sessionManager.js";
 import { cursorListModels } from "./llm/cursorClient.js";
-import { LLM_INTEGRATIONS, resolveIntegrationBaseUrl } from "./llm/integrations.js";
+import { LLM_INTEGRATIONS, resolveIntegrationBaseUrl, isStrictCloudHost } from "./llm/integrations.js";
 import { normalizePromptMode } from "./llm/prompt-mode.js";
 import {
   buildMergedProfiles,
@@ -59,6 +59,7 @@ import {
   ensureProfilesSeededFromEnv,
   mergeProfile,
   migrateLegacyEnvApiKeyIntoProfiles,
+  LLM_PROVIDER_IDS,
   normalizeLlmProviderId,
   profileApiKeySet,
   profilesFilePath,
@@ -589,6 +590,7 @@ export function settingsGet() {
     ENV_FILE: envFilePath(),
     PROFILES_FILE: profilesFilePath(),
     INTEGRATIONS: LLM_INTEGRATIONS,
+    PROVIDER_IDS: LLM_PROVIDER_IDS,
   };
 }
 
@@ -696,7 +698,7 @@ function authHeadersForModelsList(listUrl: string): Record<string, string> {
     if (!key) return {};
     return { "x-api-key": key, "anthropic-version": process.env.ANTHROPIC_API_VERSION?.trim() || "2023-06-01" };
   }
-  const strictCloud = /openai\.com|googleapis\.com|openrouter\.ai|api\.groq\.com/i.test(listUrl);
+  const strictCloud = isStrictCloudHost(listUrl);
   if (strictCloud) {
     if (!key) return {};
     return { Authorization: `Bearer ${key}` };
@@ -719,7 +721,7 @@ export async function openaiCompatibleModels(base?: string) {
   }
   const listUrl = openAiCompatibleModelsListUrl(raw);
   const headers = authHeadersForModelsList(listUrl);
-  const needsCloudKey = /openai\.com|googleapis\.com|openrouter\.ai|anthropic\.com|api\.groq\.com/i.test(listUrl);
+  const needsCloudKey = isStrictCloudHost(listUrl);
   if (needsCloudKey && Object.keys(headers).length === 0) {
     return { ok: false as const, error: "OPENAI_API_KEY not set", base: listUrl };
   }

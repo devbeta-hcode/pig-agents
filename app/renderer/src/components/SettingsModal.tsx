@@ -5,16 +5,29 @@ import { pig } from "../lib/pig.js";
 import { Modal } from "./Modal";
 import { IconCheck, IconChevronDown } from "./Icons";
 
-const PROVIDER_OPTIONS = [
-  { value: "chatgpt", label: "ChatGPT" },
-  { value: "gemini", label: "Gemini" },
-  { value: "openroute", label: "OpenRouter" },
-  { value: "claude", label: "Claude" },
+const FALLBACK_PROVIDER_OPTIONS = [
+  { value: "chatgpt", label: "ChatGPT (OpenAI)" },
+  { value: "gemini", label: "Gemini (Google)" },
+  { value: "claude", label: "Claude (Anthropic)" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "mistral", label: "Mistral AI" },
+  { value: "xai", label: "xAI (Grok)" },
+  { value: "moonshot", label: "Moonshot (Kimi)" },
+  { value: "qwen", label: "Qwen (DashScope)" },
   { value: "groq", label: "Groq" },
+  { value: "together", label: "Together AI" },
+  { value: "fireworks", label: "Fireworks AI" },
+  { value: "cohere", label: "Cohere" },
+  { value: "perplexity", label: "Perplexity" },
+  { value: "openroute", label: "OpenRouter" },
   { value: "cursor", label: "Cursor (Cloud Agents API)" },
   { value: "ollama", label: "Ollama" },
-  { value: "local", label: "OpenAI-compatible" },
+  { value: "local", label: "OpenAI-compatible (local)" },
 ] as const;
+
+function isOpenAiShapedProvider(p: string): boolean {
+  return p !== "ollama";
+}
 
 const PROMPT_MODE_OPTIONS = [
   { value: "minimal", label: "Ultra-frugal (fewest tokens)" },
@@ -170,10 +183,6 @@ function SearchableModelSelect({
 }
 
 /** Uses `GET /v1/models` (or provider-specific `/openai/models`) — not Ollama native. */
-const OPENAI_SHAPED_PROVIDERS = ["chatgpt", "gemini", "openroute", "claude", "groq", "cursor", "local"] as const;
-function isOpenAiShapedProvider(p: string): boolean {
-  return (OPENAI_SHAPED_PROVIDERS as readonly string[]).includes(p);
-}
 
 interface Props {
   onClose: () => void;
@@ -322,6 +331,15 @@ export function SettingsModal({ onClose }: Props) {
     return () => window.clearTimeout(t);
   }, [s?.LLM_PROVIDER, s?.BASE_URL, modelListRefreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const providerOptions = useMemo(() => {
+    const ids = s?.PROVIDER_IDS?.length ? s.PROVIDER_IDS : FALLBACK_PROVIDER_OPTIONS.map((o) => o.value);
+    return ids.map((id) => {
+      const meta = s?.INTEGRATIONS?.[id];
+      const fallback = FALLBACK_PROVIDER_OPTIONS.find((o) => o.value === id);
+      return { value: id, label: meta?.label ?? fallback?.label ?? id };
+    });
+  }, [s?.PROVIDER_IDS, s?.INTEGRATIONS]);
+
   if (!s) return <Modal title="Settings" onClose={onClose}><div>Loading…</div></Modal>;
 
   function syncApiKey(value: string) {
@@ -464,7 +482,7 @@ export function SettingsModal({ onClose }: Props) {
   const integ = s.INTEGRATIONS?.[s.LLM_PROVIDER];
   const managedCloud =
     integ?.kind === "managed_cloud" ||
-    (!s.INTEGRATIONS && ["chatgpt", "gemini", "openroute", "claude", "cursor"].includes(s.LLM_PROVIDER));
+    (!s.INTEGRATIONS && s.LLM_PROVIDER !== "ollama" && s.LLM_PROVIDER !== "local");
   const showBaseUrlInput = isOllama || !managedCloud || customBaseUrl;
 
   const modelSelectList =
@@ -533,7 +551,7 @@ export function SettingsModal({ onClose }: Props) {
         <Select
           value={s.LLM_PROVIDER}
           onChange={pickProvider}
-          options={PROVIDER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          options={providerOptions}
         />
         <div className="hint">
           {managedCloud && !customBaseUrl && (

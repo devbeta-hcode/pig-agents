@@ -1,9 +1,7 @@
 import fs from "node:fs";
-import {
-  legacyRepoProfilesPath,
-  setProfileStorage,
-  type LlmProfilesFile,
-} from "@pig-agents/core";
+import path from "node:path";
+import url from "node:url";
+import { setProfileStorage, type LlmProfilesFile } from "@pig-agents/core";
 import {
   llmProfilesStorePath,
   readLlmProfilesFromStore,
@@ -11,6 +9,12 @@ import {
 } from "./llmProfilesStore.js";
 
 const MIGRATION_FLAG = "llm-profiles.migrated-from-repo.v1";
+
+/** One-time migration source: old dev file at `app/llm-profiles.json`. */
+function legacyRepoProfilesPath(): string {
+  const here = path.dirname(url.fileURLToPath(import.meta.url));
+  return path.resolve(here, "../../llm-profiles.json");
+}
 
 function readLegacyFile(filePath: string): LlmProfilesFile | null {
   try {

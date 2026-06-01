@@ -50,7 +50,6 @@ export {
 } from "./llm/profileStorage.js";
 export {
   hydrateEnvFromProfiles,
-  legacyRepoProfilesPath,
   profilesStorageLocation,
   type LlmProfilesFile,
   type ProfileSlot,

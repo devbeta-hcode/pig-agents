@@ -1,4 +1,5 @@
 # Pig Agents Desktop
+![alt text](image.png)
 
 Native IDE + AI agent for **Windows** (first), **Linux**, and **macOS**.
 

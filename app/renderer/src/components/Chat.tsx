@@ -3073,7 +3073,7 @@ function ComposerHeader({
 
 async function fetchModelListForSettings(s: SettingsPayload): Promise<string[]> {
   try {
-    const openAiShaped = ["chatgpt", "gemini", "openroute", "claude", "groq", "cursor", "local"].includes(s.LLM_PROVIDER);
+    const openAiShaped = s.LLM_PROVIDER !== "ollama";
     if (openAiShaped) {
       const base = s.BASE_URL?.trim() || s.INTEGRATIONS?.[s.LLM_PROVIDER]?.defaultBaseUrl;
       const r = await api.openaiCompatibleModels(base || undefined);

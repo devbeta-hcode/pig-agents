@@ -1,20 +1,26 @@
-import fs from "node:fs";
-import path from "node:path";
-import url from "node:url";
 import {
   type LlmProviderId,
   resolveIntegrationBaseUrl,
 } from "./integrations.js";
-import { getProfileStorage, isProfileStorageReady } from "./profileStorage.js";
+import { getProfileStorage } from "./profileStorage.js";
 
 export type { LlmProviderId } from "./integrations.js";
 
 export const LLM_PROVIDER_IDS: LlmProviderId[] = [
   "chatgpt",
   "gemini",
-  "openroute",
   "claude",
+  "deepseek",
+  "mistral",
+  "xai",
+  "moonshot",
+  "qwen",
   "groq",
+  "together",
+  "fireworks",
+  "cohere",
+  "perplexity",
+  "openroute",
   "cursor",
   "ollama",
   "local",
@@ -32,8 +38,18 @@ export interface ProfileSlot {
 export const DEFAULT_PROFILES: Record<LlmProviderId, { baseUrl: string; model: string }> = {
   chatgpt: { baseUrl: "", model: "" },
   gemini: { baseUrl: "", model: "" },
+  claude: { baseUrl: "", model: "" },
+  deepseek: { baseUrl: "", model: "deepseek-chat" },
+  mistral: { baseUrl: "", model: "mistral-large-latest" },
+  xai: { baseUrl: "", model: "grok-3-mini" },
+  moonshot: { baseUrl: "", model: "moonshot-v1-8k" },
+  qwen: { baseUrl: "", model: "qwen-plus" },
+  groq: { baseUrl: "", model: "llama-3.3-70b-versatile" },
+  together: { baseUrl: "", model: "" },
+  fireworks: { baseUrl: "", model: "" },
+  cohere: { baseUrl: "", model: "command-r-plus-08-2024" },
+  perplexity: { baseUrl: "", model: "sonar" },
   openroute: { baseUrl: "", model: "" },
-  claude: { baseUrl: "", model: "" },  groq: { baseUrl: "", model: "llama-3.3-70b-versatile" },
   cursor: { baseUrl: "", model: "composer-2" },
   ollama: { baseUrl: "", model: "llama3.2" },
   local: { baseUrl: "", model: "" },
@@ -44,47 +60,29 @@ export interface LlmProfilesFile {
   profiles: Partial<Record<LlmProviderId, ProfileSlot>>;
 }
 
-export function legacyRepoProfilesPath(): string {
-  const here = path.dirname(url.fileURLToPath(import.meta.url));
-  return path.resolve(here, "../../../llm-profiles.json");
-}
-
 /** @deprecated Prefer `profilesStorageLocation()`. */
 export function profilesFilePath(): string {
   return profilesStorageLocation();
 }
 
 export function profilesStorageLocation(): string {
-  if (isProfileStorageReady()) return getProfileStorage().location();
-  return legacyRepoProfilesPath();
+  return getProfileStorage().location();
 }
 
 export function readProfilesFile(): LlmProfilesFile {
-  if (isProfileStorageReady()) return getProfileStorage().read();
-  try {
-    const txt = fs.readFileSync(legacyRepoProfilesPath(), "utf8");
-    const j = JSON.parse(txt) as LlmProfilesFile;
-    if (j?.version !== 1 || typeof j.profiles !== "object" || j.profiles === null) {
-      return { version: 1, profiles: {} };
-    }
-    return j;
-  } catch {
-    return { version: 1, profiles: {} };
-  }
+  return getProfileStorage().read();
 }
 
 export function writeProfilesFile(data: LlmProfilesFile): void {
-  if (isProfileStorageReady()) {
-    getProfileStorage().write(data);
-    return;
-  }
-  fs.mkdirSync(path.dirname(legacyRepoProfilesPath()), { recursive: true });
-  fs.writeFileSync(legacyRepoProfilesPath(), JSON.stringify(data, null, 2) + "\n", "utf8");
+  getProfileStorage().write(data);
 }
 
 export function normalizeLlmProviderId(raw: string | undefined): LlmProviderId {
   const p = (raw || "chatgpt").toLowerCase();
   if (p === "openai") return "chatgpt";
+  if (p === "grok") return "xai";
+  if (p === "kimi") return "moonshot";
+  if (p === "dashscope" || p === "alibaba") return "qwen";
   if ((LLM_PROVIDER_IDS as string[]).includes(p)) return p as LlmProviderId;
   return "chatgpt";
 }

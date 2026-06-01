@@ -1,5 +1,5 @@
 import { logger } from "../utils/logger.js";
-import { resolveIntegrationBaseUrl } from "./integrations.js";
+import { resolveIntegrationBaseUrl, isStrictCloudHost } from "./integrations.js";
 import { normalizeLlmProviderId } from "./profiles.js";
 import { cursorChat, cursorChatStream } from "./cursorClient.js";
 
@@ -88,8 +88,7 @@ function anthropicOpenAiOmitsTemperature(): boolean {
 
 /** Official clouds that reject placeholder Bearer tokens. */
 function isStrictCloudEndpoint(): boolean {
-  const u = endpoint();
-  return /openai\.com|googleapis\.com|openrouter\.ai|anthropic\.com|api\.groq\.com/i.test(u);
+  return isStrictCloudHost(endpoint());
 }
 
 function model(): string {

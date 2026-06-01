@@ -158,6 +158,7 @@ export interface LlmProfileSlot {
 export interface IntegrationMeta {
   defaultBaseUrl: string;
   kind: "managed_cloud" | "self_hosted";
+  label?: string;
   description: string;
 }
 
@@ -167,6 +168,7 @@ export interface SettingsPayload {
   MODEL: string;
   PROFILES?: Record<string, LlmProfileSlot>;
   INTEGRATIONS?: Record<string, IntegrationMeta>;
+  PROVIDER_IDS?: string[];
   MAX_CONTEXT_FILES: number;
   MAX_ITERATIONS: number;
   PROMPT_MODE?: "minimal" | "economical" | "balanced" | "detailed" | "verbose";
