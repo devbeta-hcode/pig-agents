@@ -1,6 +1,7 @@
 import { logger } from "../utils/logger.js";
 import { resolveIntegrationBaseUrl } from "./integrations.js";
 import { normalizeLlmProviderId } from "./profiles.js";
+import { cursorChat, cursorChatStream } from "./cursorClient.js";
 
 /** A simple text content part. */
 export interface TextContentPart {
@@ -36,14 +37,19 @@ export interface LLMOptions {
   onUsage?: (usage: LLMUsage) => void;
 }
 
-type Provider = "openai" | "local" | "ollama";
+type Provider = "openai" | "local" | "ollama" | "cursor";
 
 /** Wire protocol: chatgpt / gemini / openroute / claude → OpenAI-compatible HTTP. */
 function provider(): Provider {
   const p = normalizeLlmProviderId(process.env.LLM_PROVIDER);
+  if (p === "cursor") return "cursor";
   if (p === "ollama") return "ollama";
   if (p === "local") return "local";
   return "openai";
+}
+
+function isCursorProvider(): boolean {
+  return provider() === "cursor";
 }
 
 /**
@@ -189,6 +195,7 @@ function backoffMsFrom429Error(err: unknown): number {
 }
 
 export async function chat(messages: ChatMessage[], opts: LLMOptions = {}): Promise<string> {
+  if (isCursorProvider()) return cursorChat(messages, opts);
   let lastErr: Error | undefined;
   for (let attempt = 0; attempt < MAX_429_ATTEMPTS; attempt++) {
     try {
@@ -445,6 +452,10 @@ export async function* chatStream(
   messages: ChatMessage[],
   opts: LLMOptions = {},
 ): AsyncGenerator<string, void, void> {
+  if (isCursorProvider()) {
+    yield* cursorChatStream(messages, opts);
+    return;
+  }
   let attempt = 0;
   let anyYielded = false;
   for (;;) {

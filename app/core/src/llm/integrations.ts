@@ -3,7 +3,7 @@
  * The HTTP client in `client.ts` still speaks one wire format; routing is by URL + model id.
  */
 
-export type LlmProviderId = "chatgpt" | "gemini" | "openroute" | "claude" | "groq" | "ollama" | "local";
+export type LlmProviderId = "chatgpt" | "gemini" | "openroute" | "claude" | "groq" | "ollama" | "local" | "cursor";
 
 export type IntegrationKind = "managed_cloud" | "self_hosted";
 
@@ -58,6 +58,11 @@ export const LLM_INTEGRATIONS: Record<LlmProviderId, IntegrationDef> = {
     kind: SELF,
     description: "Local OpenAI-compatible server (LM Studio, vLLM, …)",
   },
+  cursor: {
+    defaultBaseUrl: "https://api.cursor.com/v1",
+    kind: CLOUD,
+    description: "Cursor Cloud Agents API (not OpenAI chat/completions)",
+  },
 };
 
 export function integrationFor(pid: LlmProviderId): IntegrationDef {
@@ -67,7 +72,13 @@ export function integrationFor(pid: LlmProviderId): IntegrationDef {
 /** Effective base: non-empty stored value wins; otherwise integration default. */
 export function resolveIntegrationBaseUrl(pid: LlmProviderId, storedBaseUrl: string | undefined): string {
   const t = (storedBaseUrl ?? "").trim();
-  if (t) return t.replace(/\/$/, "");
+  if (t) {
+    const cleaned = t.replace(/\/$/, "");
+    if (pid === "cursor") {
+      return cleaned.replace(/\/agents$/i, "").replace(/\/$/, "") || LLM_INTEGRATIONS.cursor.defaultBaseUrl;
+    }
+    return cleaned;
+  }
   return LLM_INTEGRATIONS[pid].defaultBaseUrl.replace(/\/$/, "");
 }
 

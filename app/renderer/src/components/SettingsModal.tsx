@@ -11,6 +11,7 @@ const PROVIDER_OPTIONS = [
   { value: "openroute", label: "OpenRouter" },
   { value: "claude", label: "Claude" },
   { value: "groq", label: "Groq" },
+  { value: "cursor", label: "Cursor (Cloud Agents API)" },
   { value: "ollama", label: "Ollama" },
   { value: "local", label: "OpenAI-compatible" },
 ] as const;
@@ -169,7 +170,7 @@ function SearchableModelSelect({
 }
 
 /** Uses `GET /v1/models` (or provider-specific `/openai/models`) — not Ollama native. */
-const OPENAI_SHAPED_PROVIDERS = ["chatgpt", "gemini", "openroute", "claude", "groq", "local"] as const;
+const OPENAI_SHAPED_PROVIDERS = ["chatgpt", "gemini", "openroute", "claude", "groq", "cursor", "local"] as const;
 function isOpenAiShapedProvider(p: string): boolean {
   return (OPENAI_SHAPED_PROVIDERS as readonly string[]).includes(p);
 }
@@ -458,11 +459,12 @@ export function SettingsModal({ onClose }: Props) {
 
   const isOllama = s.LLM_PROVIDER === "ollama";
   const isChatgpt = s.LLM_PROVIDER === "chatgpt";
+  const isCursor = s.LLM_PROVIDER === "cursor";
   const openAiShaped = isOpenAiShapedProvider(s.LLM_PROVIDER);
   const integ = s.INTEGRATIONS?.[s.LLM_PROVIDER];
   const managedCloud =
     integ?.kind === "managed_cloud" ||
-    (!s.INTEGRATIONS && ["chatgpt", "gemini", "openroute", "claude"].includes(s.LLM_PROVIDER));
+    (!s.INTEGRATIONS && ["chatgpt", "gemini", "openroute", "claude", "cursor"].includes(s.LLM_PROVIDER));
   const showBaseUrlInput = isOllama || !managedCloud || customBaseUrl;
 
   const modelSelectList =
@@ -549,6 +551,17 @@ export function SettingsModal({ onClose }: Props) {
         </div>
       </div>
 
+      {isCursor && (
+        <div className="settings-row">
+          <div className="hint" style={{ gridColumn: "1 / -1" }}>
+            <strong>Cursor Cloud Agents API</strong> — not OpenAI <code>/chat/completions</code>.
+            Base URL must be <code>https://api.cursor.com/v1</code> (do <em>not</em> paste <code>/agents</code>).
+            Each LLM call creates a short-lived cloud agent (no GitHub repo) and streams the reply.
+            Slower than direct chat APIs; local file tools still run in Pig Agents, not on Cursor cloud.
+          </div>
+        </div>
+      )}
+
       {!isOllama && (
         <div className="settings-row">
           <label>API key</label>
@@ -574,7 +587,7 @@ export function SettingsModal({ onClose }: Props) {
             }}
             onPaste={() => setApiKeyTouched(true)}
             placeholder={
-              isChatgpt ? "sk-…" : "API key for this Base URL (OpenAI, Google AI, OpenRouter, …)"
+              isChatgpt ? "sk-…" : isCursor ? "Cursor API key (Dashboard → API Keys)" : "API key for this Base URL (OpenAI, Google AI, OpenRouter, …)"
             }
             visibilityToggle={!showSavedApiKeyMask}
           />
@@ -595,9 +608,11 @@ export function SettingsModal({ onClose }: Props) {
             placeholder={
               isOllama
                 ? "http://localhost:11434  (Ollama default)"
-                : isChatgpt
-                  ? "https://api.openai.com/v1"
-                  : "https://…  ·  http://host:port/v1"
+                : isCursor
+                  ? "https://api.cursor.com/v1"
+                  : isChatgpt
+                    ? "https://api.openai.com/v1"
+                    : "https://…  ·  http://host:port/v1"
             }
           />
           <div className="hint">

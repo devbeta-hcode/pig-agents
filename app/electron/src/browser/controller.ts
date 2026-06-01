@@ -254,29 +254,73 @@ function normalizeUrl(url: string): string {
   return `https://${u}`;
 }
 
+function isNavigationAborted(code: number, message: string): boolean {
+  if (code === -3) return true;
+  return /ERR_ABORTED|\(-3\)/i.test(message);
+}
+
+const NAV_TIMEOUT_MS = 45_000;
+
 export async function browserNavigate(url: string): Promise<void> {
   const contents = requireGuest();
   const target = normalizeUrl(url);
+
   await new Promise<void>((resolve, reject) => {
-    const onFinish = () => {
+    let settled = false;
+
+    const settleOk = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
       resolve();
     };
-    const onFail = (_event: unknown, code: number, desc: string) => {
+
+    const settleErr = (err: Error) => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      reject(new Error(`Navigation failed (${code}): ${desc}`));
+      reject(err);
     };
+
+    const timer = setTimeout(() => {
+      settleErr(new Error(`Navigation timed out after ${NAV_TIMEOUT_MS}ms: ${target}`));
+    }, NAV_TIMEOUT_MS);
+
+    const onFinish = () => {
+      const cur = contents.getURL();
+      if (cur === "about:blank" && target !== "about:blank") return;
+      settleOk();
+    };
+
+    const onFail = (
+      _event: unknown,
+      errorCode: number,
+      errorDescription: string,
+      validatedURL: string,
+      isMainFrame?: boolean,
+    ) => {
+      if (isMainFrame === false) return;
+      if (isNavigationAborted(errorCode, errorDescription)) return;
+      settleErr(new Error(`Navigation failed (${errorCode}): ${errorDescription} (${validatedURL || target})`));
+    };
+
     const cleanup = () => {
+      clearTimeout(timer);
       contents.removeListener("did-finish-load", onFinish);
       contents.removeListener("did-fail-load", onFail);
     };
-    contents.once("did-finish-load", onFinish);
-    contents.once("did-fail-load", onFail);
-    void contents.loadURL(target).catch((err) => {
-      cleanup();
-      reject(err);
+
+    contents.on("did-finish-load", onFinish);
+    contents.on("did-fail-load", onFail);
+
+    void contents.loadURL(target).catch((err: unknown) => {
+      const e = err instanceof Error ? err : new Error(String(err));
+      const code = (err as { errno?: number })?.errno;
+      if (isNavigationAborted(code ?? 0, e.message)) return;
+      settleErr(e);
     });
   });
+
   await waitForPageSettled(contents);
   browserFocus();
   notifyRenderer();

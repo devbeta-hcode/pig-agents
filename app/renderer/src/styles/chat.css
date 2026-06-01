@@ -5,6 +5,8 @@
   border-left: 1px solid var(--border-subtle);
   width: 100%; height: 100%; overflow: hidden;
   position: relative;
+  container-type: inline-size;
+  container-name: chat;
 }
 .chat-toolbar {
   display: flex; align-items: center; gap: 6px;
@@ -124,6 +126,8 @@
   display: flex; align-items: center; gap: 8px;
   position: relative;
   z-index: 20;
+  min-width: 0;
+  overflow: visible;
 }
 .chat-status-main {
   display: flex;
@@ -131,10 +135,12 @@
   gap: 4px;
   min-width: 0;
   flex: 1;
+  overflow: hidden;
 }
 .chat-status-context-wrap {
-  position: relative;
   flex-shrink: 0;
+  /* Panel positions against .chat-status (position: relative), not this narrow wrap. */
+  position: static;
 }
 .context-usage-trigger {
   display: inline-flex;
@@ -163,14 +169,18 @@
 .context-usage-panel {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
-  width: min(320px, calc(100vw - 24px));
+  right: 10px;
+  left: auto;
+  width: min(320px, calc(100% - 20px));
+  max-width: calc(100% - 20px);
   padding: 12px 14px;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: var(--shadow-lg), 0 12px 40px rgba(0, 0, 0, 0.45);
   z-index: 100;
+  box-sizing: border-box;
+  overflow: hidden;
   animation: ui-pop-in 0.22s var(--ease-out-expo) both;
 }
 .context-usage-panel-head {
@@ -204,9 +214,11 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin-bottom: 6px;
   font-size: 12px;
+  min-width: 0;
 }
 .context-usage-panel-badge {
   font-weight: 600;
@@ -218,7 +230,9 @@
 .context-usage-panel-total {
   color: var(--fg-dim);
   font-size: 11px;
-  white-space: nowrap;
+  min-width: 0;
+  text-align: right;
+  line-height: 1.35;
 }
 .context-usage-panel-model {
   font-size: 10px;
@@ -250,10 +264,17 @@
 }
 .context-usage-legend li {
   display: grid;
-  grid-template-columns: 10px 1fr auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   font-size: 11px;
+  min-width: 0;
+}
+.context-usage-legend-label {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-usage-legend-dot {
   width: 8px;
@@ -261,20 +282,36 @@
   border-radius: 2px;
   flex-shrink: 0;
 }
-.context-usage-legend-label {
-  color: var(--fg-dim);
-}
 .context-usage-legend-val {
   color: var(--fg);
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
   font-size: 10px;
+  flex-shrink: 0;
 }
 .context-usage-hint {
   margin: 10px 0 0;
   font-size: 10px;
   line-height: 1.45;
   color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+@container chat (max-width: 280px) {
+  .context-usage-trigger-pct {
+    display: none;
+  }
+  .context-usage-panel {
+    padding: 10px 12px;
+  }
+  .context-usage-panel-summary {
+    font-size: 11px;
+  }
+  .context-usage-panel-total {
+    font-size: 10px;
+    flex-basis: 100%;
+    text-align: left;
+  }
 }
 .chat-status.running { color: var(--accent-2); }
 .chat-status.error { color: var(--bad); }

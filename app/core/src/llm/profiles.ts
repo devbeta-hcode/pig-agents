@@ -15,6 +15,7 @@ export const LLM_PROVIDER_IDS: LlmProviderId[] = [
   "openroute",
   "claude",
   "groq",
+  "cursor",
   "ollama",
   "local",
 ];
@@ -32,7 +33,9 @@ export const DEFAULT_PROFILES: Record<LlmProviderId, { baseUrl: string; model: s
   chatgpt: { baseUrl: "", model: "" },
   gemini: { baseUrl: "", model: "" },
   openroute: { baseUrl: "", model: "" },
-  claude: { baseUrl: "", model: "" },  groq: { baseUrl: "", model: "llama-3.3-70b-versatile" },  ollama: { baseUrl: "", model: "llama3.2" },
+  claude: { baseUrl: "", model: "" },  groq: { baseUrl: "", model: "llama-3.3-70b-versatile" },
+  cursor: { baseUrl: "", model: "composer-2" },
+  ollama: { baseUrl: "", model: "llama3.2" },
   local: { baseUrl: "", model: "" },
 };
 

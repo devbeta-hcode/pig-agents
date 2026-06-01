@@ -50,6 +50,7 @@ import {
   deleteSession,
   getStats as getSessionStats,
 } from "./agent/sessionManager.js";
+import { cursorListModels } from "./llm/cursorClient.js";
 import { LLM_INTEGRATIONS, resolveIntegrationBaseUrl } from "./llm/integrations.js";
 import { normalizePromptMode } from "./llm/prompt-mode.js";
 import {
@@ -704,9 +705,16 @@ function authHeadersForModelsList(listUrl: string): Record<string, string> {
 }
 
 export async function openaiCompatibleModels(base?: string) {
+  let prov = normalizeLlmProviderId(process.env.LLM_PROVIDER);
   let raw = String(base ?? process.env.BASE_URL ?? "").trim();
+  if (/api\.cursor\.com/i.test(raw)) prov = "cursor";
+  if (prov === "cursor") {
+    const data = readProfilesFile();
+    const cursorKey = data.profiles.cursor?.apiKey?.trim();
+    const resolvedBase = resolveIntegrationBaseUrl("cursor", raw || undefined);
+    return cursorListModels(resolvedBase, cursorKey);
+  }
   if (!raw) {
-    const prov = normalizeLlmProviderId(process.env.LLM_PROVIDER);
     raw = resolveIntegrationBaseUrl(prov, "");
   }
   const listUrl = openAiCompatibleModelsListUrl(raw);

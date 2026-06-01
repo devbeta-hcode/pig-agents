@@ -8,6 +8,7 @@ import { decide as policyDecide, trust as policyTrust, loadPolicy as loadAgentPo
 import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approvals.js";
 import { webFetch, webSearch } from "../tools/web.js";
 import { browserSession } from "../browser/session.js";
+import { externalBrowserLaunchHint } from "../tools/browserGuard.js";
 
 export interface ToolOutcome {
   ok: boolean;
@@ -171,6 +172,11 @@ export async function executeTool(
       case "run_command": {
         const requestedCmd = String(input.cmd || "");
         if (!requestedCmd) return { ok: false, summary: "run_command: missing 'cmd'" };
+
+        const browserHack = externalBrowserLaunchHint(requestedCmd);
+        if (browserHack) {
+          return { ok: false, summary: `run_command rejected: ${browserHack}` };
+        }
 
         // ── Policy gate ────────────────────────────────────────────────────
         // Three outcomes: hard-deny, auto-allow, ask-the-user. Asking blocks
@@ -451,13 +457,49 @@ export async function executeTool(
           data: result,
         };
       }
+      case "browser_show": {
+        await browserSession.ensureStarted();
+        if (!browserSession.hasPageLoaded()) {
+          try {
+            await browserSession.navigate("about:blank");
+          } catch {
+            /* panel visible is enough */
+          }
+        }
+        const url = browserSession.currentUrl();
+        return {
+          ok: true,
+          summary:
+            "Browser panel opened (embedded webview in the app — not Chrome/Edge). " +
+            `Current URL: ${url || "about:blank"}. ` +
+            'Use browser_navigate with {"url":"https://..."} to load a site.',
+          data: { url, panelOpen: true },
+        };
+      }
       case "browser_navigate": {
-        const url = String(input.url || "").trim();
-        if (!url) return { ok: false, summary: "browser_navigate: missing 'url'" };
+        const rawUrl = String(input.url ?? "").trim();
+        await browserSession.ensureStarted();
+        if (!rawUrl || rawUrl === "about:blank") {
+          if (!browserSession.hasPageLoaded()) {
+            try {
+              await browserSession.navigate("about:blank");
+            } catch {
+              /* noop */
+            }
+          }
+          const url = browserSession.currentUrl();
+          return {
+            ok: true,
+            summary:
+              "Browser panel opened (embedded webview). " +
+              `URL: ${url || "about:blank"}. Load a page with browser_navigate + a https URL.`,
+            data: { url, panelOpen: true },
+          };
+        }
+        const url = rawUrl;
         const approved = await gateWebApproval(ctx, "browser", url);
         if (!approved.ok) return { ok: false, summary: approved.reason };
         const targetUrl = approved.value.trim() || url;
-        await browserSession.ensureStarted();
         await browserSession.navigate(targetUrl);
         const finalUrl = browserSession.currentUrl();
         const title = await browserSession.getTitle();
