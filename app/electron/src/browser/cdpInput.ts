@@ -50,7 +50,7 @@ export async function cdpPointerClick(contents: WebContents, x: number, y: numbe
     button: "none",
     clickCount: 0,
   });
-  await sleep(40);
+  await sleep(80);
   await cdpCommand(contents, "Input.dispatchMouseEvent", {
     type: "mousePressed",
     x: cx,
@@ -58,7 +58,7 @@ export async function cdpPointerClick(contents: WebContents, x: number, y: numbe
     button: "left",
     clickCount: 1,
   });
-  await sleep(60);
+  await sleep(80);
   await cdpCommand(contents, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x: cx,
@@ -85,6 +85,29 @@ export async function pointerClick(contents: WebContents, x: number, y: number):
     await cdpPointerClick(contents, x, y);
   } catch (err) {
     log.warn("CDP pointer click failed, using sendInputEvent", err);
+    await osPointerClick(contents, x, y);
+  }
+}
+
+/** Hover briefly before click — closer to human / Playwright pointer behavior. */
+export async function pointerClickWithHover(contents: WebContents, x: number, y: number): Promise<void> {
+  contents.focus();
+  const cx = Math.round(x);
+  const cy = Math.round(y);
+  try {
+    await cdpCommand(contents, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: cx,
+      y: cy,
+      button: "none",
+      clickCount: 0,
+    });
+    await sleep(120);
+    await cdpPointerClick(contents, x, y);
+  } catch (err) {
+    log.warn("CDP hover+click failed, using sendInputEvent", err);
+    contents.sendInputEvent({ type: "mouseMove", x: cx, y: cy });
+    await sleep(120);
     await osPointerClick(contents, x, y);
   }
 }

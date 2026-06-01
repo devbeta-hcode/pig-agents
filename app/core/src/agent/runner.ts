@@ -25,6 +25,8 @@ import { createCheckpoint, type Checkpoint } from "../utils/checkpoints.js";
 import { cancelAllForRun } from "../utils/approvals.js";
 import { getWorkspace } from "../utils/workspace.js";
 import { loadProjectRules } from "../utils/projectRules.js";
+import { measureContextUsage } from "./contextMeasure.js";
+import type { LLMUsage } from "../llm/client.js";
 
 /** Per-iteration LLM call ceiling — without this, a stalled model/stream leaves the agent run open forever. */
 function readLlmTimeoutMs(): number {
@@ -81,7 +83,21 @@ export type AgentEvent =
   | { type: "policy_ask"; askId: string; cmd: string; suggestedAllow: string }
   // Outcome of the policy gate, including auto-allow / hard-deny outcomes.
   | { type: "policy_decision"; decision: "allow_once" | "allow_always" | "allow_auto" | "deny";
-      cmd: string; originalCmd?: string; matched?: string; reason?: string };
+      cmd: string; originalCmd?: string; matched?: string; reason?: string }
+  | {
+      type: "context_usage";
+      iteration: number;
+      segments: { id: string; label: string; tokens: number; chars: number; color: string }[];
+      inputTokens: number;
+      inputTokensMeasured: number;
+      promptTokensApi?: number;
+      completionTokensApi?: number;
+      limitTokens: number;
+      percent: number;
+      source: "measured" | "api" | "preview";
+      trimmed: boolean;
+      relevantFileCount: number;
+    };
 
 export interface AgentRunOptions {
   task: string;
@@ -316,6 +332,45 @@ function detectStreamingToolPayload(buf: string): { tool: string } | null {
   return null;
 }
 
+function emitContextUsage(
+  emit: (e: AgentEvent) => void,
+  opts: {
+    systemPrompt: string;
+    projectRulesBlock: string;
+    userMsg: string;
+    mode: AgentMode;
+    iteration: number;
+    apiUsage?: LLMUsage;
+    trimmed: boolean;
+    relevantFileCount: number;
+  },
+): void {
+  const snap = measureContextUsage({
+    systemPrompt: opts.systemPrompt,
+    projectRulesBlock: opts.projectRulesBlock,
+    userMsg: opts.userMsg,
+    mode: opts.mode,
+    iteration: opts.iteration,
+    apiUsage: opts.apiUsage,
+    trimmed: opts.trimmed,
+    relevantFileCount: opts.relevantFileCount,
+  });
+  emit({
+    type: "context_usage",
+    iteration: opts.iteration,
+    segments: snap.segments,
+    inputTokens: snap.inputTokens,
+    inputTokensMeasured: snap.inputTokensMeasured,
+    promptTokensApi: snap.promptTokensApi,
+    completionTokensApi: snap.completionTokensApi,
+    limitTokens: snap.limitTokens,
+    percent: snap.percent,
+    source: snap.source,
+    trimmed: snap.trimmed,
+    relevantFileCount: snap.relevantFileCount,
+  });
+}
+
 export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const events: AgentEvent[] = [];
   const emit = (e: AgentEvent) => {
@@ -399,12 +454,23 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       { role: "system", content: systemPrompt },
       { role: "user", content: buildUserContent(userMsg, opts.images) },
     ];
+    emitContextUsage(emit, {
+      systemPrompt,
+      projectRulesBlock,
+      userMsg,
+      mode: "ask",
+      iteration: 1,
+      trimmed: userMsg.length < umBefore - 40,
+      relevantFileCount: relevant.length,
+    });
     let raw: string;
+    let apiUsage: LLMUsage | undefined;
     try {
       raw = await chat(messages, {
         signal: chatAbortSignal(opts.signal),
         maxTokens: maxOutputTokensForMode(promptMode),
         onToken: (delta) => emit({ type: "token", iteration: 1, delta }),
+        onUsage: (u) => { apiUsage = u; },
       });
     } catch (err) {
       if (opts.signal?.aborted) {
@@ -421,6 +487,18 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       const wrapped = new Error(msg);
       (wrapped as Error & { __emitted?: boolean }).__emitted = true;
       throw wrapped;
+    }
+    if (apiUsage) {
+      emitContextUsage(emit, {
+        systemPrompt,
+        projectRulesBlock,
+        userMsg,
+        mode: "ask",
+        iteration: 1,
+        apiUsage,
+        trimmed: userMsg.length < umBefore - 40,
+        relevantFileCount: relevant.length,
+      });
     }
     finalResult = sanitizeFinalOrKeep(raw.trim());
     emit({ type: "final", result: finalResult });
@@ -527,16 +605,28 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     emit({ type: "iter_start", iteration: i });
 
+    emitContextUsage(emit, {
+      systemPrompt,
+      projectRulesBlock,
+      userMsg,
+      mode: "agent",
+      iteration: i,
+      trimmed: userMsg.length < umBefore - 40,
+      relevantFileCount: relevant.length,
+    });
+
     // These are declared per-iteration so each loop pass starts clean.
     let raw = "";
     /** ACTION JSON objects that became complete mid-stream — each tool runs without waiting for later ACTION blocks. */
     const earlyScheduled = new Map<string, EarlyToolExec>();
     let streamingPayloadHintEmitted = false;
+    let apiUsage: LLMUsage | undefined;
 
     try {
       for await (const delta of chatStream(messages, {
         signal: chatAbortSignal(opts.signal),
         maxTokens: maxOutputTokensForMode(promptMode),
+        onUsage: (u) => { apiUsage = u; },
       })) {
         raw += delta;
         emit({ type: "token", iteration: i, delta });
@@ -604,6 +694,19 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       const wrapped = new Error(msg);
       (wrapped as Error & { __emitted?: boolean }).__emitted = true;
       throw wrapped;
+    }
+
+    if (apiUsage) {
+      emitContextUsage(emit, {
+        systemPrompt,
+        projectRulesBlock,
+        userMsg,
+        mode: "agent",
+        iteration: i,
+        apiUsage,
+        trimmed: userMsg.length < umBefore - 40,
+        relevantFileCount: relevant.length,
+      });
     }
 
     // Resolve every tool that started streaming so guardrails see real writes before FINAL checks.

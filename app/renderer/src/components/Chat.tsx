@@ -10,6 +10,7 @@ import { ChevronExpand } from "./ChevronExpand";
 import { DiffViewer, type DiffItem } from "./DiffViewer";
 import { FileIcon } from "./FileIcon";
 import { CommandApprovalModal, type PendingApproval } from "./CommandApprovalModal";
+import { ContextUsagePanel, ContextUsageTrigger } from "./ContextUsagePanel";
 import { useDialogs } from "./DialogProvider";
 import { ToolAccordionHeader, ToolOutput } from "./ToolOutput";
 import {
@@ -41,6 +42,7 @@ import {
   type BrowserElementPickDetail,
   type BrowserElementRef,
 } from "../lib/browserElementRefs.js";
+import { fetchContextPreview, contextUsageFromEvent, type ContextUsage } from "../lib/contextEstimate";
 
 function buildSelectElMeta(
   text: string,
@@ -1636,6 +1638,13 @@ export function Chat({
     onInjectImageConsumed?.();
   }, [pendingInjectImage]); // eslint-disable-line react-hooks/exhaustive-deps
   const [running, setRunning] = useState(false);
+  const [contextUsage, setContextUsage] = useState<ContextUsage>({
+    segments: [],
+    totalTokens: 0,
+    limitTokens: 128_000,
+    percent: 0,
+    source: "preview",
+  });
   /** True after Stop/Esc until the run finishes cleanup (SSE close + abort acknowledged). */
   const [awaitingStop, setAwaitingStop] = useState(false);
   const [thinking, setThinking] = useState<{ iteration: number; partial: string; startedAt: number } | null>(null);
@@ -1916,6 +1925,11 @@ export function Chat({
       thinkingRef.current = null;
       setThinking(null);
     }
+    if (ev.type === "context_usage") {
+      const usage = contextUsageFromEvent(ev as Record<string, unknown>);
+      if (usage) setContextUsage(usage);
+    }
+
     if (ev.type === "policy_ask" && ev.askId && ev.cmd) {
       startTransition(() => {
         setApprovalQueue((q) => [
@@ -1978,7 +1992,7 @@ export function Chat({
       );
       if (ev.type === "observation" && ev.diffs && ev.diffs.length) onDiffs(ev.diffs);
     });
-  }, [onDiffs, flushPendingTokensNow, scheduleTokenRaf, markThoughtStart, finalizeThoughtDuration]);
+  }, [onDiffs, flushPendingTokensNow, scheduleTokenRaf, markThoughtStart, finalizeThoughtDuration, setContextUsage]);
 
   useEffect(() => {
     if (reconnectAttemptedRef.current) return;
@@ -2602,6 +2616,21 @@ export function Chat({
     "● ready";
 
   const [chatsBrowserOpen, setChatsBrowserOpen] = useState(false);
+  const [contextPanelOpen, setContextPanelOpen] = useState(false);
+
+  useEffect(() => {
+    if (running || !workspace) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchContextPreview({ session, taskDraft: task, mode }).then((usage) => {
+        if (!cancelled && usage) setContextUsage(usage);
+      });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [session, task, mode, running, workspace, session.turns, session.updatedAt]);
 
   const showSessionChrome =
     !!workspace &&
@@ -2658,8 +2687,24 @@ export function Chat({
         </div>
       )}
       <div className={`chat-status ${running ? "running" : status} ${showSessionChrome ? "chat-status-no-title" : ""}`}>
-        {statusText}
-        {!showSessionChrome && <span className="chat-status-title">{session.title}</span>}
+        <div className="chat-status-main">
+          {statusText}
+          {!showSessionChrome && <span className="chat-status-title">{session.title}</span>}
+        </div>
+        <div className="chat-status-context-wrap">
+          <ContextUsageTrigger
+            estimate={contextUsage}
+            open={contextPanelOpen}
+            onToggle={() => setContextPanelOpen((v) => !v)}
+          />
+          {contextPanelOpen && (
+            <ContextUsagePanel
+              estimate={contextUsage}
+              modelLabel={modelLabel ?? llmSettings?.MODEL}
+              onClose={() => setContextPanelOpen(false)}
+            />
+          )}
+        </div>
       </div>
 
       {showSessionChrome && chatsBrowserOpen && workspace && (

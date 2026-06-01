@@ -15,6 +15,7 @@ import url from "node:url";
 import crypto from "node:crypto";
 
 import { listFiles, readFile, writeFile, createEntry, deleteEntry, copyEntry, searchCode } from "./tools/file.js";
+import { previewContextUsage } from "./agent/contextMeasure.js";
 import { runCommand } from "./tools/command.js";
 import { BA_DIFF_CREATED_FROM_ABSENT } from "./tools/patch.js";
 import { getWorkspace, setWorkspace, safeJoin } from "./utils/workspace.js";
@@ -1252,6 +1253,10 @@ export async function chatsImport(ws: string, sessionsIn: unknown[]) {
   }
   await writeIndex(ws, idx);
   return { ok: true as const, imported, total: incoming.length };
+}
+
+export async function contextPreview(task: string, mode: "ask" | "agent" = "agent") {
+  return previewContextUsage({ task, mode: mode === "ask" ? "ask" : "agent" });
 }
 
 void url;

@@ -58,7 +58,8 @@ export interface AgentEvent {
     | "run_started"
     | "checkpoint"
     | "policy_ask"
-    | "policy_decision";
+    | "policy_decision"
+    | "context_usage";
   [k: string]: unknown;
 }
 
@@ -212,6 +213,8 @@ export const api = {
     pig.rpc("gitApply", [patch, mode]),
 
   getSettings: (): Promise<SettingsPayload> => pig.rpc("settingsGet", []),
+  contextPreview: (task: string, mode: "ask" | "agent" = "agent") =>
+    pig.rpc("contextPreview", [task, mode]),
   saveSettings: (s: Partial<SettingsPayload>) => pig.rpc("settingsSave", [s]),
 
   ollamaModels: (base?: string): Promise<{ ok: boolean; base?: string; models?: string[]; error?: string }> =>

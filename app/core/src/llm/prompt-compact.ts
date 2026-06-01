@@ -116,9 +116,9 @@ TOOLS:
 - browser_navigate: {"type":"browser_navigate","input":{"url":"https://app.local"}} — drive embedded Electron browser (Browser panel). Use instead of web_fetch when the page needs JS to render. Auto-opens Browser tab.
 - browser_get_text: {"type":"browser_get_text","input":{"selector":"main"}} — visible text of current page (or selector). Run after browser_navigate.
 - browser_get_html: {"type":"browser_get_html","input":{"selector":"#root"}} — outer HTML of current page (or selector).
-- browser_click: {"type":"browser_click","input":{"selector":"button.submit"}} — click matching element (CSS or Playwright "text=Submit").
-- browser_fill: {"type":"browser_fill","input":{"selector":"input[name=q]","value":"hello"}} — type into input/textarea.
-- browser_wait_for: {"type":"browser_wait_for","input":{"selector":".ready","state":"visible"}} — wait for selector before reading.
+- browser_click: {"type":"browser_click","input":{"selector":"button.submit"}} — click element. Selectors: CSS, text=Search, placeholder=Email, aria=Submit, role=button[name=Play], name=search_query. Pierces shadow DOM. Use browser_wait_for first on SPAs.
+- browser_fill: {"type":"browser_fill","input":{"selector":"input[name=q]","value":"hello"}} — fill input/textarea (React-friendly). Same selector dialect as browser_click.
+- browser_wait_for: {"type":"browser_wait_for","input":{"selector":".ready","state":"visible"}} — wait for selector before reading/clicking.
 - browser_eval: {"type":"browser_eval","input":{"js":"document.title"}} — run JS in page, JSON-stringified result. Escape hatch.
 
 Parallel: emit multiple ACTION lines for independent ops (e.g. reading several files at once).

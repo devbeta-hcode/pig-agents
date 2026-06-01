@@ -21,11 +21,19 @@ export interface ChatMessage {
   content: string | ContentPart[];
 }
 
+export interface LLMUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface LLMOptions {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
   onToken?: (delta: string) => void;
+  /** Fired when the provider reports token usage (non-stream JSON or final stream chunk). */
+  onUsage?: (usage: LLMUsage) => void;
 }
 
 type Provider = "openai" | "local" | "ollama";
@@ -225,6 +233,7 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
           messages,
           max_tokens: opts.maxTokens ?? 1500,
           stream,
+          ...(stream ? { stream_options: { include_usage: true } } : {}),
         }
       : {
           model: modelName,
@@ -232,6 +241,7 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
           temperature: opts.temperature ?? 0.2,
           max_tokens: opts.maxTokens ?? 1500,
           stream,
+          ...(stream ? { stream_options: { include_usage: true } } : {}),
         };
 
   let res: Response;
@@ -284,8 +294,11 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
     const data = (await res.json()) as {
       // OpenAI-compatible
       choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
       // Ollama native
       message?: { content?: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
     };
     const content =
       (ollama
@@ -296,14 +309,22 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
       logger.warn("LLM returned empty content", JSON.stringify(data).slice(0, 300));
       throw new Error("LLM returned empty content");
     }
+    const usage = parseLlmUsage(data, ollama);
+    if (usage) {
+      try { opts.onUsage?.(usage); } catch { /* noop */ }
+    }
     return content;
   }
 
   // Streaming path — delegate to shared SSE/NDJSON decoder.
   let full = "";
-  for await (const delta of _sseStream(res, ollama)) {
+  const usageRef: { value?: LLMUsage } = {};
+  for await (const delta of _sseStream(res, ollama, usageRef)) {
     full += delta;
     try { opts.onToken?.(delta); } catch { /* noop */ }
+  }
+  if (usageRef.value) {
+    try { opts.onUsage?.(usageRef.value); } catch { /* noop */ }
   }
   const content = full.trim();
   if (!content) throw new Error("LLM returned empty content");
@@ -314,7 +335,38 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
  * Decodes an HTTP streaming response (OpenAI SSE or Ollama NDJSON) into
  * individual token-delta strings. Shared by `executeChat` and `chatStream`.
  */
-async function* _sseStream(res: Response, ollama: boolean): AsyncGenerator<string, void, void> {
+function parseLlmUsage(
+  data: {
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    prompt_eval_count?: number;
+    eval_count?: number;
+  },
+  ollama: boolean,
+): LLMUsage | undefined {
+  if (ollama) {
+    const prompt = data.prompt_eval_count;
+    const completion = data.eval_count;
+    if (prompt == null && completion == null) return undefined;
+    return {
+      promptTokens: prompt,
+      completionTokens: completion,
+      totalTokens: (prompt ?? 0) + (completion ?? 0),
+    };
+  }
+  const u = data.usage;
+  if (!u) return undefined;
+  return {
+    promptTokens: u.prompt_tokens,
+    completionTokens: u.completion_tokens,
+    totalTokens: u.total_tokens,
+  };
+}
+
+async function* _sseStream(
+  res: Response,
+  ollama: boolean,
+  usageRef?: { value?: LLMUsage },
+): AsyncGenerator<string, void, void> {
   const reader = res.body?.getReader();
   if (!reader) throw new Error("LLM stream returned no body");
   const decoder = new TextDecoder();
@@ -349,7 +401,12 @@ async function* _sseStream(res: Response, ollama: boolean): AsyncGenerator<strin
           }>;
           message?: { content?: string };
           done?: boolean;
+          usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+          prompt_eval_count?: number;
+          eval_count?: number;
         };
+        const usage = parseLlmUsage(obj, ollama);
+        if (usage && usageRef) usageRef.value = usage;
         const delta = ollama
           ? (obj.message?.content ?? "")
           : (() => {
@@ -401,9 +458,21 @@ export async function* chatStream(
         ? { model: modelName, messages, stream: true,
             options: { temperature: opts.temperature ?? 0.2, num_predict: opts.maxTokens ?? 1500 } }
         : skipTemp
-          ? { model: modelName, messages, max_tokens: opts.maxTokens ?? 1500, stream: true }
-          : { model: modelName, messages, temperature: opts.temperature ?? 0.2,
-              max_tokens: opts.maxTokens ?? 1500, stream: true };
+          ? {
+              model: modelName,
+              messages,
+              max_tokens: opts.maxTokens ?? 1500,
+              stream: true,
+              stream_options: { include_usage: true },
+            }
+          : {
+              model: modelName,
+              messages,
+              temperature: opts.temperature ?? 0.2,
+              max_tokens: opts.maxTokens ?? 1500,
+              stream: true,
+              stream_options: { include_usage: true },
+            };
       let res: Response;
       try {
         res = await fetch(url, {
@@ -437,9 +506,13 @@ export async function* chatStream(
         }
         throw new Error(`LLM ${url} returned ${res.status}: ${text.slice(0, 1200)}${suffix}`);
       }
-      for await (const delta of _sseStream(res, ollama)) {
+      const usageRef: { value?: LLMUsage } = {};
+      for await (const delta of _sseStream(res, ollama, usageRef)) {
         anyYielded = true;
         yield delta;
+      }
+      if (usageRef.value) {
+        try { opts.onUsage?.(usageRef.value); } catch { /* noop */ }
       }
       return;
     } catch (err) {

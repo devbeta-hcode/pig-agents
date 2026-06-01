@@ -121,9 +121,9 @@ Available tools (set "type" to one of these):
 - "browser_navigate"  input: { "url": "https://..." }  — Drive the embedded Electron browser (Browser panel). Use this *instead of* web_fetch when the page needs JavaScript to render (SPAs, dashboards, login flows, dev servers you just started, anything where view-source is empty). Auto-opens the Browser tab on first call. Same approval gate as web_fetch.
 - "browser_get_text"  input: { "selector": "main" (optional), "maxChars": 12000 }  — Visible text of the current page (or selector subtree). Use after browser_navigate to read what the page actually rendered.
 - "browser_get_html"  input: { "selector": "#root" (optional) }  — Outer HTML of page or selector. Use when you need DOM structure (attributes, classes) rather than just text.
-- "browser_click"     input: { "selector": "button.submit" }  — Click the first matching element. Selector is CSS (Playwright dialect: also supports "text=Submit").
-- "browser_fill"      input: { "selector": "input[name=q]", "value": "hello" }  — Type into an input/textarea (clears existing value first).
-- "browser_wait_for"  input: { "selector": ".loaded", "state": "visible", "timeoutMs": 10000 }  — Wait for an element. Use after navigate/click on slow pages before reading text.
+- "browser_click"     input: { "selector": "button.submit" }  — Click element. Selectors: CSS, text=Search, placeholder=Email, aria=Submit, role=button[name=Play], name=search_query. Pierces shadow DOM. Call browser_wait_for on SPAs first.
+- "browser_fill"      input: { "selector": "input[name=q]", "value": "hello" }  — Fill input/textarea (React-friendly). Same selector dialect as browser_click.
+- "browser_wait_for"  input: { "selector": ".loaded", "state": "visible", "timeoutMs": 10000 }  — Wait for element before click/fill/read on dynamic pages.
 - "browser_eval"      input: { "js": "document.title" }  — Evaluate JS in the page; result is JSON-stringified. Escape hatch when the dedicated tools above don't fit.
 
 write_patch shape is strict: after every \`FILE: <relative-path>\` line, the next line must be exactly \`SEARCH\`, then the old text, then a line exactly \`REPLACE\`, then the new text, then optional \`END\`. Do not paste a full file right under \`FILE:\` without those markers. New file: empty SEARCH (\`SEARCH\\n\\nREPLACE\\n<full content>\\nEND\`). On failure, OBSERVATION may include bracket codes (\`[WP_FMT_AFTER_FILE]\`, \`[WP_SEARCH_MISS]\`, etc.)—read them and adjust the patch or re-read the file.

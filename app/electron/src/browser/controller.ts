@@ -11,6 +11,17 @@ import {
   typeViaCdp,
 } from "./cdpInput.js";
 import {
+  BROWSER_USER_AGENT,
+  buildClickScript,
+  buildFillScript,
+  buildQueryHtmlScript,
+  buildQuerySelectorScript,
+  buildWaitForScript,
+  buildWaitResolveScript,
+  formatSelectorError,
+  type InPageActionResult,
+} from "./selectorEngine.js";
+import {
   INSPECT_CANCEL_MSG,
   INSPECT_OVERLAY_SCRIPT,
   INSPECT_OVERLAY_STOP_SCRIPT,
@@ -161,6 +172,11 @@ export function registerBrowserGuest(guestId: number): void {
     throw new Error(`Browser guest webContents ${guestId} not found`);
   }
   guestWc = guest;
+  try {
+    guest.session.setUserAgent(BROWSER_USER_AGENT);
+  } catch {
+    /* non-fatal */
+  }
   wireWebContentsEvents(guest);
   started = true;
   log.info("Browser webview registered", { guestId });
@@ -261,8 +277,25 @@ export async function browserNavigate(url: string): Promise<void> {
       reject(err);
     });
   });
+  await waitForPageSettled(contents);
   browserFocus();
   notifyRenderer();
+}
+
+async function waitForPageSettled(contents: WebContents): Promise<void> {
+  try {
+    await contents.executeJavaScript(
+      `(async () => {
+        if (document.readyState !== "complete") {
+          await new Promise((r) => window.addEventListener("load", r, { once: true }));
+        }
+        await new Promise((r) => setTimeout(r, 400));
+      })()`,
+      true,
+    );
+  } catch {
+    await sleep(400);
+  }
 }
 
 export async function browserGoBack(): Promise<void> {
@@ -322,52 +355,59 @@ export async function browserEval<T>(js: string): Promise<T> {
   return contents.executeJavaScript(js, true) as Promise<T>;
 }
 
-async function elementCenterFromSelector(
+async function runInPageAction(script: string): Promise<InPageActionResult> {
+  const contents = requireGuest();
+  return (await contents.executeJavaScript(script, true)) as InPageActionResult;
+}
+
+async function resolveSelectorPoint(
   selector: string,
   timeoutMs: number,
-): Promise<{ x: number; y: number }> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const pt = await browserEval<{ x: number; y: number } | null>(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return null;
-      el.scrollIntoView({ block: "center", inline: "center" });
-      const r = el.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return null;
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    })()`);
-    if (pt) return pt;
-    await sleep(80);
+): Promise<{ x: number; y: number; method?: string }> {
+  const result = await runInPageAction(buildWaitResolveScript(selector, timeoutMs));
+  if (!result.ok) {
+    throw new Error(formatSelectorError(result));
   }
-  throw new Error(`selector not found: ${selector}`);
+  return { x: result.x!, y: result.y!, method: result.method };
 }
 
-export async function browserClickSelector(selector: string, timeoutMs = 10_000): Promise<void> {
+export async function browserClickSelector(selector: string, timeoutMs = 15_000): Promise<void> {
   const contents = requireGuest();
-  const pt = await elementCenterFromSelector(selector, timeoutMs);
-  await pointerClick(contents, pt.x, pt.y);
+  browserFocus();
+  contents.focus();
+
+  const domResult = await runInPageAction(buildClickScript(selector));
+  if (domResult.ok) {
+    await sleep(120);
+    return;
+  }
+  throw new Error(formatSelectorError(domResult));
 }
 
-export async function browserFillSelector(selector: string, value: string, timeoutMs = 10_000): Promise<void> {
+export async function browserFillSelector(selector: string, value: string, timeoutMs = 15_000): Promise<void> {
   const contents = requireGuest();
-  const pt = await elementCenterFromSelector(selector, timeoutMs);
+  browserFocus();
+  contents.focus();
+
+  const domResult = await runInPageAction(buildFillScript(selector, value));
+  if (domResult.ok) return;
+
+  if (!domResult.ok && domResult.error?.startsWith("selector not found")) {
+    throw new Error(formatSelectorError(domResult));
+  }
+
+  const pt = await resolveSelectorPoint(selector, timeoutMs);
   await fillViaPointer(contents, pt.x, pt.y, value);
 }
 
 export async function browserGetPageText(selector?: string, maxChars = 12_000): Promise<string> {
   const cap = Math.max(500, Math.min(50_000, maxChars));
-  const js = selector
-    ? `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return ""; return (el.innerText || el.textContent || "").slice(0, ${cap}); })()`
-    : `(() => (document.body?.innerText || document.body?.textContent || "").slice(0, ${cap}))()`;
-  return String(await browserEval(js));
+  return String(await browserEval(buildQuerySelectorScript(selector, cap)));
 }
 
 export async function browserGetPageHTML(selector?: string, maxChars = 20_000): Promise<string> {
   const cap = Math.max(500, Math.min(60_000, maxChars));
-  const js = selector
-    ? `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return ""; return (el.outerHTML || "").slice(0, ${cap}); })()`
-    : `(() => (document.documentElement?.outerHTML || "").slice(0, ${cap}))()`;
-  return String(await browserEval(js));
+  return String(await browserEval(buildQueryHtmlScript(selector, cap)));
 }
 
 export async function browserWaitForSelector(
@@ -375,20 +415,9 @@ export async function browserWaitForSelector(
   state: string,
   timeoutMs: number,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
   const st = state === "attached" || state === "hidden" ? state : "visible";
-  const sel = JSON.stringify(selector);
-  const checkJs =
-    st === "hidden"
-      ? `!document.querySelector(${sel})`
-      : st === "attached"
-        ? `!!document.querySelector(${sel})`
-        : `(() => { const el = document.querySelector(${sel}); if (!el) return false; const h = el; return h.offsetParent !== null || h === document.body; })()`;
-  while (Date.now() < deadline) {
-    if (await browserEval<boolean>(checkJs)) return;
-    await sleep(100);
-  }
-  throw new Error(`waitForSelector timeout (${selector}, ${state})`);
+  const result = await runInPageAction(buildWaitForScript(selector, st, timeoutMs));
+  if (!result.ok) throw new Error(formatSelectorError(result));
 }
 
 export async function browserGetElementAt(x: number, y: number): Promise<{
