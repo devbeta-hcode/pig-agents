@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, Menu, shell } from "electron";
 import { getAppIcon } from "./appIcon.js";
@@ -23,7 +24,15 @@ function preloadPath(): string {
   return path.join(__dirname, "preload.js");
 }
 
+/** Prod packaged layout: builder-effective-config maps renderer/dist → `renderer/`. */
 function rendererIndexPath(): string {
+  if (isDev) {
+    return path.join(__dirname, "../../renderer/dist/index.html");
+  }
+  if (app.isPackaged) {
+    return path.join(app.getAppPath(), "renderer/index.html");
+  }
+  // Unpackaged prod smoke (`electron .` after build) — monorepo paths still apply.
   return path.join(__dirname, "../../renderer/dist/index.html");
 }
 
@@ -64,19 +73,45 @@ async function createWindow() {
     applyWindowZoom(mainWindow, getUiZoomPercent());
   });
   mainWindow.on("ready-to-show", () => mainWindow?.show());
+  mainWindow.webContents.on("did-fail-load", (_ev, code, desc, url) => {
+    log.error("renderer did-fail-load", { code, desc, url });
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
   });
-  if (isDev) {
-    await mainWindow.loadURL(RENDERER_DEV_URL);
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-    log.info("window loaded (dev)", { url: RENDERER_DEV_URL });
+  try {
+    if (isDev) {
+      await mainWindow.loadURL(RENDERER_DEV_URL);
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+      log.info("window loaded (dev)", { url: RENDERER_DEV_URL });
+    } else {
+      const indexPath = rendererIndexPath();
+      if (!fs.existsSync(indexPath)) {
+        log.error("renderer index.html missing", {
+          indexPath,
+          appPath: app.getAppPath(),
+          dirname: __dirname,
+          isPackaged: app.isPackaged,
+        });
+      }
+      await mainWindow.loadFile(indexPath);
+      log.info("window loaded (prod)", { file: indexPath });
+    }
+  } catch (err) {
+    log.error("Failed to load renderer", err);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
   }
-  else {
-    await mainWindow.loadFile(rendererIndexPath());
-    log.info("window loaded (prod)", { file: rendererIndexPath() });
-  }
+  // If load hangs (bad path, CSP, etc.) avoid a headless process with no window.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      log.warn("forcing window show — ready-to-show did not fire");
+      mainWindow.show();
+    }
+  }, 12_000);
 }
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
