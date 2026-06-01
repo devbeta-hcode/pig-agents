@@ -2,6 +2,9 @@
 
 > © 2026 DEV BETA., JSC. All rights reserved.
 
+<img width="1403" height="906" alt="image" src="https://github.com/user-attachments/assets/a69f91aa-6345-4229-872a-60ac2ea53a90" />
+
+
 A **real** AI coding system: thin React UI + autonomous agent backend. Built per `BUILD_AGENT.md`.
 
 Not a demo. The agent reads/writes real files, runs real commands, and validates real builds.
