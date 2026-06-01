@@ -1,5 +1,5 @@
 import { chat, chatStream, type ChatMessage, type ContentPart } from "../llm/client.js";
-import { SYSTEM_PROMPT, ASK_SYSTEM_PROMPT, buildContextMessage, buildAskMessage, taskSignalsConsultationFirst } from "../llm/prompt.js";
+import { SYSTEM_PROMPT, ASK_SYSTEM_PROMPT, buildContextMessage, buildAskMessage, taskSignalsConsultationFirst, activeUserTaskSlice } from "../llm/prompt.js";
 import {
   SYSTEM_PROMPT_COMPACT,
   SYSTEM_PROMPT_MINIMAL,
@@ -350,8 +350,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
   emit({ type: "log", level: "info", message: `Ranking relevant files and compacting workspace tree` });
+  const taskForRanking = activeUserTaskSlice(opts.task);
   const [relevant, compactTree] = await Promise.all([
-    rankRelevant(opts.task, maxFiles),
+    rankRelevant(taskForRanking, maxFiles),
     buildCompactTree(3, 180).catch(() => ""),
   ]);
   emit({ type: "log", level: "info", message: `Context ready (${relevant.length} relevant file(s))` });

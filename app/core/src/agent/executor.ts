@@ -250,27 +250,6 @@ export async function executeTool(
         // Open a live terminal slot before the command starts so the UI can
         // display streaming output in the Terminals panel in real time.
         const cmdHandle = startAgentCommand(cmd, getWorkspace());
-        let qOut = "";
-        let qErr = "";
-        let streamFlush: ReturnType<typeof setTimeout> | undefined;
-        const flushCommandStream = () => {
-          streamFlush = undefined;
-          if (qOut) {
-            ctx.emit?.({ type: "command_chunk", iteration: iter, stream: "stdout", text: qOut });
-            cmdHandle.appendChunk("stdout", qOut);
-            qOut = "";
-          }
-          if (qErr) {
-            ctx.emit?.({ type: "command_chunk", iteration: iter, stream: "stderr", text: qErr });
-            cmdHandle.appendChunk("stderr", qErr);
-            qErr = "";
-          }
-        };
-        const scheduleStreamFlush = () => {
-          if (streamFlush === undefined) {
-            streamFlush = setTimeout(flushCommandStream, 0);
-          }
-        };
         let r;
         try {
           r = await runSmartCommand(cmd, {
@@ -278,14 +257,14 @@ export async function executeTool(
             forceLongRunning: input.background === true,
             onChildSpawn: (pid) => cmdHandle.setPid(pid),
             onStreamChunk: (stream, text) => {
-              if (stream === "out") qOut += text;
-              else qErr += text;
-              scheduleStreamFlush();
+              if (!text) return;
+              const streamName = stream === "out" ? "stdout" : "stderr";
+              ctx.emit?.({ type: "command_chunk", iteration: iter, stream: streamName, text });
+              cmdHandle.appendChunk(streamName, text);
             },
           });
         } finally {
-          if (streamFlush !== undefined) clearTimeout(streamFlush);
-          flushCommandStream();
+          /* stream flushed per chunk in onStreamChunk */
         }
         const finishedAt = Date.now();
         

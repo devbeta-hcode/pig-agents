@@ -528,6 +528,13 @@ function RunCommandOutput({
   const stderrF = stderr || legacyErr?.[1]?.trim() || "";
   const output = [stdoutF, stderrF].filter(Boolean).join("\n\n");
 
+  const streamPreRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (!streamPreview || observation) return;
+    const el = streamPreRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [streamPreview, observation]);
+
   const statusLabel = isBackground 
     ? "Running" 
     : exitCode === 0 
@@ -555,7 +562,7 @@ function RunCommandOutput({
       {streamPreview && !observation && (
         <div className="tool-command-stream-wrap" aria-live="polite">
           <span className="tool-command-stream-label">Output…</span>
-          <pre className="tool-command-stream">{streamPreview}</pre>
+          <pre ref={streamPreRef} className="tool-command-stream">{streamPreview}</pre>
         </div>
       )}
       {observation && output && (

@@ -234,7 +234,15 @@ export function buildContextMessageCompact(
     ? `\nWORKSPACE_PATH: ${workspacePath} (run_command cwd; do NOT cd to other absolute paths)\n`
     : "";
 
-  return `TASK: ${task}${hint}${workspacePathLine}${workspaceSection}
+  const activeTask = activeUserTaskSlice(task);
+  const priorChat = (() => {
+    if (activeTask === task.trim()) return "";
+    const idx = task.lastIndexOf(activeTask);
+    if (idx <= 0) return "";
+    return task.slice(0, idx).trim();
+  })();
+
+  return `CURRENT TASK: ${activeTask}${hint}${workspacePathLine}${workspaceSection}${priorChat ? `\nPRIOR CHAT:\n${priorChat}\n` : ""}
 
 FILES:
 ${filesBlock}
@@ -392,7 +400,7 @@ export function selectPromptVersion(task: string, _historyLength: number): "comp
   if (process.env.LLM_DISABLE_MINIMAL_PROMPT === "1" || process.env.LLM_DISABLE_MINIMAL_PROMPT === "true") {
     return "compact";
   }
-  const t = task.trim();
+  const t = activeUserTaskSlice(task).trim();
   // One-line “continue” replies only — keeps full instructions for real follow-ups
   if (/^(ok|tiếp|continue|go|do it|làm|làm đi|yes|yep)\s*$/i.test(t)) return "minimal";
   return "compact";

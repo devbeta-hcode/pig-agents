@@ -334,8 +334,16 @@ export function buildContextMessage(
     ? `\nWORKSPACE_PATH: ${workspacePath}\n(All run_command invocations execute with this as cwd. Don't \`cd\` to a different absolute path — it won't exist.)\n`
     : "";
 
-  return `TASK:
-${task}${consultHint}${workspacePathLine}${workspaceSection}
+  const activeTask = activeUserTaskSlice(task);
+  const priorChat = (() => {
+    if (activeTask === task.trim()) return "";
+    const idx = task.lastIndexOf(activeTask);
+    if (idx <= 0) return "";
+    return task.slice(0, idx).trim();
+  })();
+
+  return `CURRENT TASK:
+${activeTask}${consultHint}${workspacePathLine}${workspaceSection}${priorChat ? `\nPRIOR CHAT:\n${priorChat}\n` : ""}
 RELEVANT FILES (truncated previews):
 ${filesBlock}
 

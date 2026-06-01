@@ -65,6 +65,40 @@ export function shortTitle(task: string): string {
   return t.length > 40 ? t.slice(0, 38) + "…" : t || "New chat";
 }
 
+/** Compact trace of tools the agent ran in a turn (for cross-turn memory). */
+function summarizeTurnTrace(events: ChatTurn["events"], maxChars = 2400): string {
+  const lines: string[] = [];
+  for (const e of events) {
+    if (e.type === "action" && typeof e.tool === "string") {
+      const inp = (e.input ?? {}) as Record<string, unknown>;
+      const tool = e.tool;
+      if (tool === "read_file" && typeof inp.path === "string") {
+        lines.push(`- read_file: ${inp.path}`);
+      } else if (tool === "write_patch" || tool === "create_file") {
+        if (typeof inp.path === "string") lines.push(`- ${tool}: ${inp.path}`);
+        else if (typeof inp.patches === "string") {
+          const paths = [...inp.patches.matchAll(/FILE:\s*([^\n]+)/g)].map((m) => m[1].trim());
+          lines.push(`- ${tool}: ${paths.length ? paths.join(", ") : "(multi-file)"}`);
+        } else {
+          lines.push(`- ${tool}`);
+        }
+      } else if (tool === "run_command" && typeof inp.command === "string") {
+        lines.push(`- run_command: ${String(inp.command).slice(0, 100)}`);
+      } else {
+        lines.push(`- ${tool}`);
+      }
+    }
+    if (e.type === "observation" && typeof e.summary === "string" && e.summary.trim()) {
+      const s = e.summary.trim().replace(/\s+/g, " ");
+      lines.push(`  → ${s.length > 220 ? `${s.slice(0, 220)}…` : s}`);
+    }
+  }
+  if (lines.length === 0) return "";
+  let body = lines.join("\n");
+  if (body.length > maxChars) body = `…(trace truncated)\n${body.slice(-maxChars)}`;
+  return `[WORK DONE THIS TURN]\n${body}\n\n`;
+}
+
 /**
  * Summarize prior turns so `/agent/run` receives chat memory. Each agent HTTP
  * request is stateless — without this, a short follow-up like "do it now" has
@@ -85,7 +119,8 @@ export function formatPriorTurnsForAgentTask(turns: ChatTurn[], maxTotalChars = 
     } else {
       a = "(no assistant reply)";
     }
-    
+
+    const trace = turn.mode !== "ask" ? summarizeTurnTrace(turn.events) : "";
     const files = new Set<string>();
     for (const e of turn.events) {
       if (e.type === "action" && "tool" in e && typeof e.tool === "string" && e.input && typeof e.input === "object") {
@@ -102,7 +137,7 @@ export function formatPriorTurnsForAgentTask(turns: ChatTurn[], maxTotalChars = 
       }
     }
     const modifiedPrefix = files.size > 0 ? `(Modified files: ${Array.from(files).join(", ")})\n` : "";
-    blocks.push(`[USER]\n${u}\n\n[ASSISTANT]\n${modifiedPrefix}${a}`);
+    blocks.push(`[USER]\n${u}\n\n[ASSISTANT]\n${trace}${modifiedPrefix}${a}`);
   }
   const header =
     "CONVERSATION SO FAR — the user's latest message is under “CURRENT TASK” at the end; treat that as the active request.\n\n";

@@ -1931,6 +1931,42 @@ export function Chat({
     }
     if (ev.type === "done" || ev.type === "run_started") return;
 
+    if (ev.type === "command_chunk") {
+      const iteration = Number(ev.iteration ?? 1);
+      const stream = ev.stream === "stderr" ? "stderr" : "stdout";
+      const piece = String(ev.text ?? "");
+      if (!piece) return;
+      patchSession((s) => {
+        const turns = s.turns.slice();
+        const idx = turns.findIndex((x) => x.id === turnId);
+        if (idx === -1) return s;
+        const existing = turns[idx].events as UIEvent[];
+        const last = existing[existing.length - 1];
+        const chunkText = stream === "stderr" ? `[stderr] ${piece}` : piece;
+        if (
+          last?.type === "command_chunk" &&
+          Number(last.iteration ?? 1) === iteration
+        ) {
+          const merged: UIEvent = {
+            ...last,
+            text: String(last.text ?? "") + chunkText,
+            ts: Date.now(),
+          };
+          turns[idx] = {
+            ...turns[idx],
+            events: [...existing.slice(0, -1), merged],
+          };
+        } else {
+          turns[idx] = {
+            ...turns[idx],
+            events: [...existing, { type: "command_chunk", iteration, stream, text: chunkText, ts: Date.now() } as UIEvent],
+          };
+        }
+        return { ...s, turns, updatedAt: Date.now() };
+      });
+      return;
+    }
+
     startTransition(() => {
       let stamped: UIEvent = ev;
       if (ev.type === "thought" && stampedThoughtMs != null) {

@@ -17,6 +17,8 @@ export function childSpawnEnv(extra: Record<string, string | undefined> = {}): N
   // Piped stdio is not a TTY — Python (and some other tools) block-buffer without this.
   if (!env.PYTHONUNBUFFERED) env.PYTHONUNBUFFERED = "1";
   if (process.platform === "win32" && !env.PYTHONIOENCODING) env.PYTHONIOENCODING = "utf-8";
+  // Piped stdio: many CLIs (npm, pytest, etc.) flush line-by-line when CI is set.
+  if (!env.CI) env.CI = "1";
   return env;
 }
 
