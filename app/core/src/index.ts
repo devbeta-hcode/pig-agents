@@ -31,6 +31,7 @@ export {
   runWithWorkspace,
 } from "./utils/workspace.js";
 export { workspaceWatcher, type WorkspaceChangesPayload, type FsChangeEvent } from "./utils/watcher.js";
+export { setBeforeDeletePathHook } from "./utils/deleteHooks.js";
 
 // ---- Terminal -------------------------------------------------------------
 export { createPty, type PtyLike } from "./tools/terminal.js";

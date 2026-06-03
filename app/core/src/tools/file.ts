@@ -7,6 +7,7 @@ import { safeJoin, toRel } from "../utils/workspace.js";
 import { workspaceWatcher } from "../utils/watcher.js";
 import { isWindows } from "../utils/shell.js";
 import { cleanupAllBackgroundProcesses } from "./smartCommand.js";
+import { invokeBeforeDeletePath } from "../utils/deleteHooks.js";
 import { windowsClearAttributesRecursive, windowsReleasePathLocks } from "./windowsDelete.js";
 
 function sleep(ms: number): Promise<void> {
@@ -28,11 +29,15 @@ function formatDeleteError(rel: string, err: unknown): Error {
         `Path: ${target}`,
     );
   }
-  if (code === "EPERM" || code === "EACCES" || /access is denied/i.test(msg)) {
+  if (
+    code === "EPERM" ||
+    code === "EACCES" ||
+    /access is denied|being used by another process/i.test(msg)
+  ) {
     return new Error(
-      `Cannot delete "${rel}": permission denied (${code || "access denied"}).\n` +
+      `Cannot delete "${rel}": files are locked (${code || "in use"}).\n` +
         `On Windows, stop Vite/npm dev servers first (they lock esbuild.exe and rollup binaries in node_modules).\n` +
-        `Close Pig Agents Terminals tabs, stop the agent run, then retry.\n` +
+        `Close Pig Agents Terminals tabs (Ctrl+C any npm run dev), stop the agent run, then retry.\n` +
         `Path: ${target}`,
     );
   }
@@ -191,6 +196,7 @@ function releaseLocksForDelete(abs: string): void {
   } catch {
     /* noop */
   }
+  invokeBeforeDeletePath(abs);
   if (isWindows) {
     windowsReleasePathLocks(abs);
     windowsClearAttributesRecursive(abs);

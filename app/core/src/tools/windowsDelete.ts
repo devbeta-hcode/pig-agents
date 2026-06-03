@@ -15,29 +15,52 @@ function sleepSync(ms: number): void {
 }
 
 /**
- * Stop processes whose executable lives under `targetAbs` or whose command line
- * references that path (node/vite holding esbuild.exe, rollup .node files, etc.).
+ * Stop processes whose executable lives under `targetAbs`, whose command line
+ * references that path (incl. 8.3 short paths), or whose cmd references the
+ * folder leaf as a path segment (npm/vite started from a parent shell cwd).
  */
 export function windowsReleasePathLocks(targetAbs: string): number {
   if (!isWindows) return 0;
-  const target = path.resolve(targetAbs);
+  const target = path.resolve(targetAbs).replace(/[\\/]+$/, "");
   const escaped = target.replace(/'/g, "''");
+  const leaf = path.basename(target).replace(/'/g, "''");
 
   const script = `
 $t = [System.IO.Path]::GetFullPath('${escaped}')
-$n = 0
-Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
-  $exe = $_.ExecutablePath
-  $cmd = $_.CommandLine
-  $hit = $false
-  if ($exe -and $exe.StartsWith($t, [System.StringComparison]::OrdinalIgnoreCase)) { $hit = $true }
-  if (-not $hit -and $cmd -and ($cmd -like ('*' + $t + '*'))) { $hit = $true }
-  if ($hit) {
-    try {
-      Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
-      $n++
-    } catch {}
+$leaf = '${leaf}'
+$short = $null
+try {
+  $fso = New-Object -ComObject Scripting.FileSystemObject
+  $short = $fso.GetFolder($t).ShortPath
+} catch {}
+
+function Test-Hit($exe, $cmd) {
+  foreach ($base in @($t, $short)) {
+    if (-not $base) { continue }
+    if ($exe -and $exe.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ($cmd -and ($cmd.IndexOf($base, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) { return $true }
   }
+  if ($cmd -and $leaf -and ($leaf.Length -ge 2)) {
+    $seg = [regex]::Escape($leaf)
+    if ($cmd -match ('[\\\\/]' + $seg + '([\\\\/]|\\s|"|''|$)')) { return $true }
+  }
+  return $false
+}
+
+$pids = [System.Collections.Generic.HashSet[int]]::new()
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+  if (Test-Hit $_.ExecutablePath $_.CommandLine) {
+    [void]$pids.Add([int]$_.ProcessId)
+  }
+}
+Get-Process -ErrorAction SilentlyContinue | Where-Object {
+  $_.Path -and ($_.Path.StartsWith($t, [System.StringComparison]::OrdinalIgnoreCase))
+} | ForEach-Object { [void]$pids.Add($_.Id) }
+
+$n = 0
+foreach ($pid in $pids) {
+  & taskkill.exe /PID $pid /T /F 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { $n++ }
 }
 $n
 `.trim();
@@ -45,16 +68,16 @@ $n
   const r = spawnSync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-    { encoding: "utf8", timeout: 60_000 },
+    { encoding: "utf8", timeout: 90_000 },
   );
 
   let killed = 0;
-  if (r.status === 0 && r.stdout?.trim()) {
-    const n = parseInt(r.stdout.trim(), 10);
+  if (r.stdout?.trim()) {
+    const n = parseInt(r.stdout.trim().split(/\r?\n/).pop() ?? "", 10);
     if (Number.isFinite(n)) killed = n;
   }
 
-  if (killed > 0) sleepSync(600);
+  if (killed > 0) sleepSync(800);
   return killed;
 }
 

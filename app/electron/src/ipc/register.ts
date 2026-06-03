@@ -16,6 +16,7 @@ import {
   getWorkspace,
   setWorkspace,
   createPty,
+  setBeforeDeletePathHook,
   logger,
   type PtyLike,
   type WorkspaceChangesPayload,
@@ -23,12 +24,38 @@ import {
 
 type Send = (msg: unknown) => void;
 
+type TerminalEntry = { pty: PtyLike; cwd: string };
+
 // Global map to track active PTY instances so we can clean them up gracefully on app quit.
-const terminals = new Map<string, PtyLike>();
+const terminals = new Map<string, TerminalEntry>();
+
+function terminalTouchesPath(termCwd: string, targetAbs: string): boolean {
+  const cwd = path.resolve(termCwd);
+  const target = path.resolve(targetAbs);
+  if (cwd === target) return true;
+  const sep = path.sep;
+  if (target.startsWith(cwd + sep)) return true;
+  if (cwd.startsWith(target + sep)) return true;
+  return false;
+}
+
+/** Kill UI terminal tabs that may hold dev servers locking files under `targetAbs`. */
+export function killTerminalsUnderPath(targetAbs: string): number {
+  let n = 0;
+  for (const [id, entry] of terminals) {
+    if (!terminalTouchesPath(entry.cwd, targetAbs)) continue;
+    try {
+      entry.pty.kill();
+      n++;
+    } catch { /* noop */ }
+    terminals.delete(id);
+  }
+  return n;
+}
 
 export function cleanupTerminals(): void {
-  for (const pty of terminals.values()) {
-    try { pty.kill(); } catch { /* noop */ }
+  for (const entry of terminals.values()) {
+    try { entry.pty.kill(); } catch { /* noop */ }
   }
   terminals.clear();
 }
@@ -114,6 +141,9 @@ function startStream(kind: string, params: Record<string, any>, send: Send): () 
 }
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
+  setBeforeDeletePathHook((targetAbs) => {
+    killTerminalsUnderPath(targetAbs);
+  });
   registerBrowser(getWindow);
 
   // ---- Request/response RPC ------------------------------------------------
@@ -151,7 +181,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const id = randomUUID();
     const cwd = params.workspace && params.workspace.trim() ? params.workspace.trim() : getWorkspace();
     const pty = await createPty({ cols: params.cols, rows: params.rows, cwd });
-    terminals.set(id, pty);
+    terminals.set(id, { pty, cwd: path.resolve(cwd) });
     const sender: WebContents = e.sender;
     pty.onData((data) => {
       if (!sender.isDestroyed()) sender.send(`pig:terminal:${id}`, { type: "data", data });
@@ -164,13 +194,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   });
 
   ipcMain.on("pig:terminal:write", (_e, { id, data }: { id: string; data: string }) => {
-    terminals.get(id)?.write(data);
+    terminals.get(id)?.pty.write(data);
   });
   ipcMain.on("pig:terminal:resize", (_e, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
-    terminals.get(id)?.resize(cols, rows);
+    terminals.get(id)?.pty.resize(cols, rows);
   });
   ipcMain.on("pig:terminal:kill", (_e, { id }: { id: string }) => {
-    try { terminals.get(id)?.kill(); } catch { /* noop */ }
+    try { terminals.get(id)?.pty.kill(); } catch { /* noop */ }
     terminals.delete(id);
   });
 

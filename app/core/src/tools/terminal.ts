@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import { createRequire } from "node:module";
 import { getWorkspace } from "../utils/workspace.js";
 import { logger } from "../utils/logger.js";
-import { defaultShell, isWindows } from "../utils/shell.js";
+import { defaultShell, isWindows, killShellProcess } from "../utils/shell.js";
 import { childSpawnEnv } from "./smartCommand.js";
 
 /** node-pty is CJS + a native .node addon; require() is reliable from ESM main. */
@@ -24,6 +24,8 @@ export interface PtyLike {
   onData(cb: (chunk: string) => void): void;
   onExit(cb: (info: { exitCode: number }) => void): void;
   kill(signal?: string): void;
+  /** Shell root PID when available (used to kill dev-server child trees on Windows). */
+  pid?: number;
 }
 
 export async function createPty(opts: { cols?: number; rows?: number; cwd?: string }): Promise<PtyLike> {
@@ -48,13 +50,27 @@ export async function createPty(opts: { cols?: number; rows?: number; cwd?: stri
     term.onData((d: string) => dataHandlers.forEach((cb) => cb(d)));
     term.onExit((e: { exitCode: number }) => exitHandlers.forEach((cb) => cb({ exitCode: e.exitCode })));
 
+    const pid = (term as { pid?: number }).pid;
     logger.info("terminal: using node-pty");
     return {
       write: (d) => term.write(d),
       resize: (c, r) => { try { term.resize(c, r); } catch { /* noop */ } },
       onData: (cb) => { dataHandlers.push(cb); },
       onExit: (cb) => { exitHandlers.push(cb); },
-      kill: (sig) => { try { term.kill(sig); } catch { /* noop */ } },
+      pid,
+      kill: (sig) => {
+        if (pid) {
+          killShellProcess({
+            pid,
+            kill: () => {
+              try { term.kill(sig); return true; } catch { return false; }
+            },
+          }, "SIGKILL");
+        }
+        else {
+          try { term.kill(sig); } catch { /* noop */ }
+        }
+      },
     };
   } catch (err) {
     logger.warn("node-pty unavailable:", (err as Error).message);
@@ -115,6 +131,7 @@ function createScriptPty(cwd: string, cols: number, rows: number): PtyLike {
     dataHandlers.forEach((cb) => cb(`\r\n[shell error] ${e.message}\r\n`));
   });
 
+  const pid = child.pid;
   return {
     write: (d) => { try { child.stdin.write(d); } catch { /* noop */ } },
     resize: (c, r) => {
@@ -127,7 +144,19 @@ function createScriptPty(cwd: string, cols: number, rows: number): PtyLike {
     },
     onData: (cb) => { dataHandlers.push(cb); },
     onExit: (cb) => { exitHandlers.push(cb); },
-    kill: (sig) => { try { child.kill((sig as NodeJS.Signals) ?? "SIGTERM"); } catch { /* noop */ } },
+    pid,
+    kill: (sig) => {
+      if (pid) {
+        killShellProcess({
+          pid,
+          kill: () => {
+            try { return child.kill((sig as NodeJS.Signals) ?? "SIGTERM"); } catch { return false; }
+          },
+        }, "SIGKILL");
+      } else {
+        try { child.kill((sig as NodeJS.Signals) ?? "SIGTERM"); } catch { /* noop */ }
+      }
+    },
   };
 }
 
@@ -169,11 +198,24 @@ function createDumbShell(cwd: string): PtyLike {
     exitHandlers.forEach((cb) => cb({ exitCode: 1 }));
   });
 
+  const pid = child.pid;
   return {
     write: (d) => { try { child.stdin.write(d); } catch { /* noop */ } },
     resize: () => { /* unsupported */ },
     onData: (cb) => { dataHandlers.push(cb); },
     onExit: (cb) => { exitHandlers.push(cb); },
-    kill: (sig) => { try { child.kill((sig as NodeJS.Signals) ?? "SIGTERM"); } catch { /* noop */ } },
+    pid,
+    kill: (sig) => {
+      if (pid) {
+        killShellProcess({
+          pid,
+          kill: () => {
+            try { return child.kill((sig as NodeJS.Signals) ?? "SIGTERM"); } catch { return false; }
+          },
+        }, "SIGKILL");
+      } else {
+        try { child.kill((sig as NodeJS.Signals) ?? "SIGTERM"); } catch { /* noop */ }
+      }
+    },
   };
 }
