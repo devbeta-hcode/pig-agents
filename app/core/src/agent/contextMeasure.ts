@@ -21,6 +21,7 @@ import {
   promptModeToContextTier,
   maxOutputTokensForMode,
 } from "../llm/prompt-mode.js";
+import { taskShapeContextHint } from "./taskShape.js";
 import { rankRelevant } from "../relevance/search.js";
 import { buildCompactTree } from "../tools/file.js";
 import { getWorkspace } from "../utils/workspace.js";
@@ -279,7 +280,7 @@ export async function buildPromptForContextPreview(opts: {
       : "";
 
   const mode = opts.mode;
-  const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
+  const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 3));
   const taskForRanking = activeUserTaskSlice(opts.task);
   const [relevant, compactTree] = await Promise.all([
     rankRelevant(taskForRanking, maxFiles),
@@ -318,7 +319,10 @@ export async function buildPromptForContextPreview(opts: {
     }
     systemPrompt =
       (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) + projectRulesBlock;
-    userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot);
+    userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot, {
+      iteration: 1,
+      extraHint: taskShapeContextHint(opts.task),
+    });
   }
 
   const umBefore = userMsg.length;

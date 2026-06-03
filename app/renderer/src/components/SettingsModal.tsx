@@ -737,8 +737,8 @@ export function SettingsModal({ onClose }: Props) {
             style={{ width: "100%" }}
           />
           <div className="hint">
-            How many <strong>existing workspace files</strong> are ranked and injected into the prompt as context each turn — not how many new files are written in parallel, and not extra LLM calls.
-            Higher = more code visible to the agent, more tokens. Recommended: <code>10–20</code>.
+            Existing files injected into the prompt each turn (previews drop after turn 1 if history has observations).
+            Bug fixes: <code>2–3</code>. Large refactors: <code>8–15</code>. Default <code>3</code> saves tokens.
           </div>
         </div>
 
@@ -780,7 +780,8 @@ export function SettingsModal({ onClose }: Props) {
             options={PROMPT_MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
           />
           <div className="hint">
-            Controls system prompt length and how much file/history context is attached each turn — higher levels use more tokens but give the model fuller instructions (good for difficult multi-file work).
+            <strong>Economical</strong> or <strong>Balanced</strong> for everyday fixes (smaller context, efficiency rules).
+            <strong>Detailed</strong> / <strong>Verbose</strong> only for hard multi-file work. Agent skips file previews on later turns when history already has tool results.
           </div>
         </div>
       </div>

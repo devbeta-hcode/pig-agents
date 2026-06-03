@@ -54,9 +54,21 @@ async function walkAll(rel: string): Promise<string[]> {
   return out;
 }
 
+function pathsInTask(task: string): string[] {
+  const found = new Set<string>();
+  const re = /`([^`\n]+\.[a-zA-Z0-9]{1,8})`|['"]([^'"\n]+\.[a-zA-Z0-9]{1,8})['"]|\b((?:[\w.@+-]+[/\\])+[\w.-]+\.[a-zA-Z0-9]{1,8})\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(task)) !== null) {
+    const p = (m[1] || m[2] || m[3]).replace(/\\/g, "/").replace(/^\.\//, "");
+    if (p.length > 2) found.add(p);
+  }
+  return [...found];
+}
+
 export async function rankRelevant(task: string, maxFiles: number): Promise<ScoredFile[]> {
   const tokens = Array.from(new Set(tokenize(task)));
-  if (tokens.length === 0) return [];
+  const explicitPaths = pathsInTask(task).map((p) => p.toLowerCase());
+  if (tokens.length === 0 && explicitPaths.length === 0) return [];
   const files = await walkAll(".");
   const scored: ScoredFile[] = [];
 
@@ -64,6 +76,10 @@ export async function rankRelevant(task: string, maxFiles: number): Promise<Scor
     let score = 0;
     const rel = toRel(abs);
     const lowerRel = rel.toLowerCase();
+
+    for (const ep of explicitPaths) {
+      if (lowerRel === ep || lowerRel.endsWith("/" + ep) || ep.endsWith(lowerRel)) score += 200;
+    }
 
     for (const tok of tokens) {
       if (lowerRel.includes(tok)) score += 5;

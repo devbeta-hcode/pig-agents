@@ -26,6 +26,11 @@ import { cancelAllForRun } from "../utils/approvals.js";
 import { getWorkspace } from "../utils/workspace.js";
 import { loadProjectRules } from "../utils/projectRules.js";
 import { measureContextUsage } from "./contextMeasure.js";
+import {
+  looksLikeScaffoldTask,
+  looksLikeLocalizedFixTask,
+  taskShapeContextHint,
+} from "./taskShape.js";
 import type { LLMUsage } from "../llm/client.js";
 
 /** Per-iteration LLM call ceiling — without this, a stalled model/stream leaves the agent run open forever. */
@@ -151,15 +156,6 @@ function finalContainsConsultation(result: string): boolean {
   // English confirmation/selection prompts.
   if (/(please\s+(confirm|clarify|choose|select)|let\s+me\s+know\s+(which|if|whether)|which\s+(option|approach)\s+do\s+you|do\s+you\s+want\s+me\s+to)/i.test(r)) return true;
   return false;
-}
-
-function looksLikeScaffoldTask(task: string): boolean {
-  const t = task.toLowerCase();
-  const verbs =
-    /\b(build|create|make|scaffold|generate|write|develop|design|code|xay|xaay|xây|tao|tạo|viet|viết|làm|lam)\b/;
-  const subjects =
-    /\b(web ?site|web ?app|webapp|landing( page)?|portfolio|blog|store|shop|dashboard|admin panel|spa|app|application|game|platform|saas|crud|todo app|chat app|booking|delivery|ecommerce|e-?commerce|marketplace|cms|forum|wiki|trang web|website|ứng ?dụng|ung ?dung)\b/;
-  return verbs.test(t) && subjects.test(t);
 }
 
 function hasSubstantialCodeBlock(text: string): boolean {
@@ -403,7 +399,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const mode: AgentMode = opts.mode === "ask" ? "ask" : "agent";
   // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
-  const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 5));
+  const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 3));
   emit({ type: "log", level: "info", message: `Ranking relevant files and compacting workspace tree` });
   const taskForRanking = activeUserTaskSlice(opts.task);
   const [relevant, compactTree] = await Promise.all([
@@ -541,6 +537,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   /** Same idea for the scaffold-too-shallow guardrail. */
   let scaffoldNudgeUsed = false;
   const scaffoldExpected = looksLikeScaffoldTask(opts.task);
+  const localizedFix = looksLikeLocalizedFixTask(opts.task);
+  let overCreateNudgeUsed = false;
 
   /** Stuck detection: consecutive parse errors */
   let consecutiveParseErrors = 0;
@@ -587,7 +585,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
       systemPrompt =
         (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) + projectRulesBlock;
-      userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot);
+      userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot, {
+        iteration: i,
+        extraHint: taskShapeContextHint(opts.task),
+      });
     }
 
     const umBefore = userMsg.length;
@@ -1009,6 +1010,20 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         "Every response MUST start with THOUGHT: (1–6 sentences of reasoning) before ACTION: or FINAL:."
       : "";
     history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}${thoughtNudge}` });
+
+    if (
+      localizedFix &&
+      !overCreateNudgeUsed &&
+      writeCount >= 2 &&
+      stepActions.some((a) => a.type === "create_file")
+    ) {
+      overCreateNudgeUsed = true;
+      history[history.length - 1].content +=
+        `\n\n[system] Localized fix: you already touched ${writeCount} file(s) and created new file(s). ` +
+        `Do NOT add more files — edit the file that actually has the bug with a minimal write_patch, then FINAL. ` +
+        `Do not ask the user whether to use files you created.`;
+      emit({ type: "log", level: "warn", message: "Over-creation on localized fix — nudging minimal patch" });
+    }
 
     // No-progress nudge: if we've done 6+ iterations without writing anything, remind the agent
     if (!didWrite && i >= 6 && i % 3 === 0) {

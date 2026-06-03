@@ -577,7 +577,7 @@ export function settingsGet() {
     BASE_URL: slot.baseUrl,
     MODEL: slot.model,
     PROFILES: merged,
-    MAX_CONTEXT_FILES: Number(process.env.MAX_CONTEXT_FILES || 5),
+    MAX_CONTEXT_FILES: Number(process.env.MAX_CONTEXT_FILES || 3),
     MAX_ITERATIONS: Number(process.env.MAX_ITERATIONS || 50),
     PROMPT_MODE: normalizePromptMode(process.env.PROMPT_MODE || "balanced"),
     LLM_MAX_TOKENS: (() => {

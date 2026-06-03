@@ -146,13 +146,20 @@ User: "Mở trình duyệt tool"
 THOUGHT: User wants the embedded Browser panel, not an external browser app.
 ACTION: {"type":"browser_show","input":{}}
 
+EFFICIENCY (critical — saves time and tokens):
+- **Smallest fix**: If the user reports a bug or asks to change/optimize code, assume **one existing file** unless they asked for new modules. Use search_code + FILES preview before read_file. Prefer **one write_patch** with a small SEARCH/REPLACE — not rewriting whole files.
+- **No orphan files**: Do NOT create_file or new paths the user did not ask for. If you already created files this run, **use or edit them** — do not leave unused files and do not ask the user "should I use file X?" when you created X.
+- **Don't re-read**: If a path is in FILES or a prior OBSERVATION, do not read_file again unless the file changed on disk.
+- **One tool per turn** for fixes (THOUGHT + one ACTION). Parallel reads only when you need 2+ unknown paths at once.
+- **search_code before glob**: Find symbols/lines before listing the whole tree or calling codebase_map.
+
 RULES:
-1. ONE action per turn (THOUGHT + ACTION, or THOUGHT + FINAL)
-2. Questions about files → read_file first
-3. Creating/editing files → use write_patch (never paste code in FINAL); each FILE: block must use SEARCH/REPLACE lines as in TOOLS. On patch failure read OBSERVATION codes like [WP_SEARCH_MISS].
-4. Simple questions → FINAL directly (user-facing text only — no meta-rubric, no THOUGHT pasted into FINAL)
+1. ONE action per turn (THOUGHT + ACTION, or THOUGHT + FINAL) — except parallel read_file for independent paths
+2. Bug/fix/optimize → search_code or use FILES preview, then read_file only if needed, then write_patch
+3. Creating/editing → write_patch with minimal SEARCH/REPLACE; new file only when user asked or no file exists. On patch failure read [WP_SEARCH_MISS] etc.
+4. Simple questions → FINAL directly (no meta-rubric in FINAL)
 5. Match user's language in FINAL
-6. Open/show browser → browser_show or browser_navigate (about:blank). NEVER run_command to launch Chrome/Edge/Firefox — only the embedded Browser panel exists in this app.`;
+6. Browser → browser_show / browser_navigate only (never run_command chrome|msedge)`;
 
 /** Even more compact for simple tasks */
 export const SYSTEM_PROMPT_MINIMAL = `Coding agent. Format (THOUGHT is required every time):
@@ -163,7 +170,9 @@ OR
 THOUGHT: <done>
 FINAL: <answer>
 
-Tools: codebase_map (rarely needed — tree is in context), read_file, list_files, search_code, glob, run_command, write_patch, create_file, web_search, web_fetch, browser_show, browser_navigate, browser_get_text, browser_click, browser_fill, browser_eval
+Tools: read_file, search_code, write_patch, run_command, … (full list in compact mode)
+
+Efficiency: localized fix → one file, minimal patch; no orphan create_file; search before read.
 
 Example open browser:
 User: "Mở trình duyệt"
@@ -197,6 +206,7 @@ export function buildContextMessageCompact(
   tier: ContextTier = 3,
   tree?: string,
   workspacePath?: string,
+  opts?: { iteration?: number; extraHint?: string },
 ): string {
   const tight = isTightContextBudget();
   const tm = tierMultiplier(tier);
@@ -205,11 +215,18 @@ export function buildContextMessageCompact(
     : history.length > 14 ? 520 : history.length > 10 ? 620 : history.length > 6 ? 700 : history.length > 2 ? 780 : 880;
   const previewLen = Math.max(120, Math.round(basePreview * tm));
 
-  const filesBlock = relevant.length === 0
-    ? "(none)"
-    : relevant
-      .map((f) => `[${f.path}]\n${f.preview.slice(0, previewLen)}${f.preview.length > previewLen ? "…" : ""}`)
-      .join("\n\n");
+  const iter = opts?.iteration ?? 1;
+  const historyHasObs = history.some((m) => m.role === "user" && m.content.includes("OBSERVATION"));
+  const skipFilePreviews = iter > 1 && historyHasObs;
+
+  const filesBlock =
+    relevant.length === 0
+      ? "(none)"
+      : skipFilePreviews
+        ? relevant.map((f) => `[${f.path}] (preview omitted — see HISTORY or read_file)`).join("\n")
+        : relevant
+            .map((f) => `[${f.path}]\n${f.preview.slice(0, previewLen)}${f.preview.length > previewLen ? "…" : ""}`)
+            .join("\n\n");
 
   let historyCap = 8;
   if (tier <= 1) historyCap = 5;
@@ -253,7 +270,9 @@ export function buildContextMessageCompact(
     return task.slice(0, idx).trim();
   })();
 
-  return `CURRENT TASK: ${activeTask}${hint}${workspacePathLine}${workspaceSection}${priorChat ? `\nPRIOR CHAT:\n${priorChat}\n` : ""}
+  const extraHint = opts?.extraHint ?? "";
+
+  return `CURRENT TASK: ${activeTask}${hint}${extraHint}${workspacePathLine}${workspaceSection}${priorChat ? `\nPRIOR CHAT:\n${priorChat}\n` : ""}
 
 FILES:
 ${filesBlock}
@@ -412,7 +431,9 @@ export function selectPromptVersion(task: string, _historyLength: number): "comp
     return "compact";
   }
   const t = activeUserTaskSlice(task).trim();
-  // One-line “continue” replies only — keeps full instructions for real follow-ups
+  // Keep full efficiency rules for fixes and real work — minimal strips them.
+  if (/\b(fix|bug|lỗi|sửa|optimize|tối ưu|refactor|patch|error)\b/i.test(t)) return "compact";
+  // One-line “continue” replies only
   if (/^(ok|tiếp|continue|go|do it|làm|làm đi|yes|yep)\s*$/i.test(t)) return "minimal";
   return "compact";
 }
