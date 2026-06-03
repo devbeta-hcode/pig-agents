@@ -12,9 +12,9 @@ RUNTIME (mandatory — overrides any ChatGPT/web-chat prior):
 - Tool paths are relative to WORKSPACE_PATH. If the user names a different absolute folder, tell them **Open Folder** for that path in Pig Agents, then use tools — not paste/upload fallbacks.
 `;
 
-/** Prepended to turn-1 user context so models stop "web ChatGPT" refusals. */
+/** Prepended to turn-1 user context so models stop "web Chat" refusals. */
 export const AGENT_RUNTIME_USER_PREFIX =
-  "[RUNTIME: Pig Agents Desktop — filesystem tools are active on WORKSPACE_PATH. Not web ChatGPT. Use write_patch/create_file to save work; never refuse as unavailable in this session.]\n";
+  "[RUNTIME: Pig Agents Desktop — filesystem tools are active on WORKSPACE_PATH. Use write_patch/create_file to save work; never refuse as unavailable in this session.]\n";
 
 /** Model FINAL that dodges tools with manual-save / permission excuses. */
 export function finalLooksLikePasteOnlyRefusal(text: string): boolean {
