@@ -306,6 +306,16 @@ function syntheticStreamingWriteAction(
     return { type: "action", iteration, tool: "create_file", input: { path: peekPath, content: "" } };
   }
   if (peekBody == null) return null;
+  const peekKey = actionScheduleKey("write_patch", { patches: peekBody });
+  const dupWp = traceSteps.some(
+    (x) =>
+      x.type === "action" &&
+      (Number((x as UIEvent).iteration) || 1) === iteration &&
+      (String((x as UIEvent).actionKey ?? "") === peekKey ||
+        actionScheduleKey(String((x as UIEvent).tool ?? ""), ((x as UIEvent).input ?? {}) as Record<string, unknown>) ===
+          peekKey),
+  );
+  if (dupWp) return null;
   return { type: "action", iteration, tool: "write_patch", input: { patches: "" } };
 }
 
@@ -1207,11 +1217,20 @@ function AssistantMessageBase({
         const iterKeys: (number | undefined)[] = [];
         const pendingGroupKeys = new Set<string>();
         const stepIcons: React.ReactNode[] = [];
-        const pushNode = (node: React.ReactNode, groupKey?: string, iterKey?: number, stepIcon?: React.ReactNode): void => {
+        type StepKind = "thought" | "tool" | "other";
+        const stepKinds: StepKind[] = [];
+        const pushNode = (
+          node: React.ReactNode,
+          groupKey?: string,
+          iterKey?: number,
+          stepIcon?: React.ReactNode,
+          kind: StepKind = "other",
+        ): void => {
           rendered.push(node);
           groupKeys.push(groupKey);
           iterKeys.push(iterKey);
           stepIcons.push(stepIcon ?? null);
+          stepKinds.push(kind);
         };
         const skipIndices = new Set<number>();
         let liveFoldInjected = false;
@@ -1288,6 +1307,7 @@ function AssistantMessageBase({
             undefined,
             iter,
             traceThoughtStepIcon(),
+            "thought",
           );
           if (iter === streamThoughtIter) liveFoldInjected = true;
         }
@@ -1406,6 +1426,7 @@ function AssistantMessageBase({
                 groupKey,
                 actIter,
                 traceToolStepIcon(ev.tool),
+                "tool",
               );
             } else {
               patchSlices.forEach((slice, fi) => {
@@ -1464,6 +1485,7 @@ function AssistantMessageBase({
                   groupKey,
                   actIter,
                   traceToolStepIcon(ev.tool),
+                  "tool",
                 );
               });
             }
@@ -1574,6 +1596,7 @@ function AssistantMessageBase({
               peekKey,
               peekIt,
               traceToolStepIcon(streamPeekAction.tool),
+              "tool",
             );
           };
 
@@ -1620,6 +1643,7 @@ function AssistantMessageBase({
                 peekKey,
                 peekIt,
                 traceToolStepIcon(streamPeekAction.tool),
+                "tool",
               );
             });
           }
@@ -1632,9 +1656,17 @@ function AssistantMessageBase({
         const finalRendered: React.ReactNode[] = [];
         const finalIterKeys: (number | undefined)[] = [];
         const finalStepIcons: React.ReactNode[] = [];
+        const finalStepKinds: StepKind[] = [];
         for (let p = 0; p < rendered.length; ) {
           const k = groupKeys[p];
-          if (!k) { finalRendered.push(rendered[p]); finalIterKeys.push(iterKeys[p]); finalStepIcons.push(stepIcons[p]); p++; continue; }
+          if (!k) {
+            finalRendered.push(rendered[p]);
+            finalIterKeys.push(iterKeys[p]);
+            finalStepIcons.push(stepIcons[p]);
+            finalStepKinds.push(stepKinds[p]);
+            p++;
+            continue;
+          }
           let q = p + 1;
           while (q < rendered.length && groupKeys[q] === k) q++;
           const tool = k.split("#")[0] ?? "tool";
@@ -1642,6 +1674,7 @@ function AssistantMessageBase({
             finalRendered.push(rendered[r]);
             finalIterKeys.push(iterKeys[r]);
             finalStepIcons.push(stepIcons[r] ?? traceToolStepIcon(tool));
+            finalStepKinds.push(stepKinds[r]);
           }
           p = q;
         }
@@ -1652,14 +1685,38 @@ function AssistantMessageBase({
           let q = p + 1;
           while (q < finalRendered.length && finalIterKeys[q] === iter) q++;
           const items = finalRendered.slice(p, q);
+          let actionCount = traceSteps.filter(
+            (e) => e.type === "action" && (Number((e as UIEvent).iteration) || 1) === iter,
+          ).length;
+          if (
+            isStreaming &&
+            streamPeekAction &&
+            (Number(streamPeekAction.iteration) || 1) === iter &&
+            !traceSteps.some(
+              (e) =>
+                e.type === "action" &&
+                (Number((e as UIEvent).iteration) || 1) === iter &&
+                String((e as UIEvent).tool ?? "").toLowerCase() ===
+                  String(streamPeekAction.tool ?? "").toLowerCase(),
+            )
+          ) {
+            actionCount += 1;
+          }
+          const hasThought = finalStepKinds.slice(p, q).some((k) => k === "thought");
           if (items.length === 1) {
             groupedByIteration.push(items[0]);
           } else {
+            const meta =
+              actionCount > 0
+                ? `${actionCount} action${actionCount === 1 ? "" : "s"}`
+                : hasThought
+                  ? `${items.length} items`
+                  : `${items.length} actions`;
             groupedByIteration.push(
               <div key={`trace-iter-${turn.id}-${iter}-${p}`} className="trace-iteration-block">
                 <div className="trace-iteration-head">
                   <span className="trace-iteration-label">Step {iter}</span>
-                  <span className="trace-iteration-meta">{items.length} actions</span>
+                  <span className="trace-iteration-meta">{meta}</span>
                 </div>
                 <div className="trace-iteration-body">
                   {items.map((item, idx) => (
@@ -2281,7 +2338,10 @@ export function Chat({
             askId: ev.askId!,
             cmd: String(ev.cmd),
             suggestedAllow: String(ev.suggestedAllow ?? ev.cmd),
-            kind: (ev.kind === "web_fetch" || ev.kind === "web_search" || ev.kind === "browser") ? ev.kind : "command",
+            kind:
+              ev.kind === "web_fetch" || ev.kind === "web_search" || ev.kind === "browser" || ev.kind === "delete_path"
+                ? ev.kind
+                : "command",
           },
         ]);
       });
@@ -2864,6 +2924,16 @@ export function Chat({
     void respondToApproval(askId, "allow_once", editedCmd);
   }
 
+  async function autoApproveDeleteFromModal(askId: string, editedCmd?: string) {
+    try {
+      await api.setAutoApproveDelete(true);
+    } catch (err) {
+      void dlg.alert(`Failed to enable auto-allow deletes: ${(err as Error).message}`);
+      return;
+    }
+    void respondToApproval(askId, "allow_once", editedCmd);
+  }
+
   // Drop the last turn (so a re-run replaces it)
   function dropLastTurn() {
     patchSession((s) => ({ ...s, turns: s.turns.slice(0, -1), updatedAt: Date.now() }));
@@ -3361,6 +3431,7 @@ export function Chat({
         onAnswer={(askId, decision, editedCmd) => void respondToApproval(askId, decision, editedCmd)}
         onAutoApproveAll={(askId, editedCmd) => void autoApproveAllFromModal(askId, editedCmd)}
         onAutoApproveWeb={(askId, editedCmd) => void autoApproveWebFromModal(askId, editedCmd)}
+        onAutoApproveDelete={(askId, editedCmd) => void autoApproveDeleteFromModal(askId, editedCmd)}
       />
     </div>
   );

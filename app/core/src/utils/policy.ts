@@ -52,6 +52,8 @@ export interface Policy {
    * rejected at the tool layer regardless of this flag.
    */
   autoApproveWeb?: boolean;
+  /** When true, `delete_path` skips the approval modal (still sandboxed to workspace). */
+  autoApproveDelete?: boolean;
 }
 
 export const DEFAULT_POLICY: Policy = {
@@ -64,6 +66,11 @@ export const DEFAULT_POLICY: Policy = {
     "rm -rf $HOME*",
     "rm -fr /*",
     "* | rm -rf*",
+    // Windows recursive delete (use delete_file tool / file tree instead)
+    "rd /s /q*",
+    "rmdir /s /q*",
+    "del /f /s /q*",
+    "Remove-Item*-Recurse*",
     // Disk overwrites
     "dd if=*",
     "mkfs*",
@@ -194,6 +201,7 @@ export async function loadPolicy(workspace?: string): Promise<Policy> {
         trusted: Array.isArray(obj.trusted) ? obj.trusted : [],
         autoApprove: !!obj.autoApprove,
         autoApproveWeb: !!obj.autoApproveWeb,
+        autoApproveDelete: !!obj.autoApproveDelete,
       };
     }
   } catch {
@@ -232,6 +240,31 @@ export async function setAutoApproveWeb(value: boolean, workspace?: string): Pro
   p.autoApproveWeb = !!value;
   await savePolicy(p, ws);
   return p;
+}
+
+/** When true, agent `delete_path` runs without the delete approval modal. */
+export async function setAutoApproveDelete(value: boolean, workspace?: string): Promise<Policy> {
+  const ws = workspace ?? getWorkspace();
+  const p = await loadPolicy(ws);
+  if (!!p.autoApproveDelete === !!value) return p;
+  p.autoApproveDelete = !!value;
+  await savePolicy(p, ws);
+  return p;
+}
+
+export function deletePathPolicyKey(relPath: string): string {
+  return `delete_path:${relPath.replace(/\\/g, "/").trim()}`;
+}
+
+/** Returns matched pattern if this delete path is pre-approved. */
+export function matchedDeletePathPolicy(relPath: string, p: Policy): string | null {
+  const key = deletePathPolicyKey(relPath);
+  return (
+    anyMatch(key, p.allow) ??
+    anyMatch(key, p.trusted) ??
+    anyMatch("delete_path:*", p.allow) ??
+    anyMatch("delete_path:*", p.trusted)
+  );
 }
 
 export async function savePolicy(p: Policy, workspace?: string): Promise<void> {

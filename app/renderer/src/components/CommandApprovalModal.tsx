@@ -8,7 +8,7 @@ export interface PendingApproval {
   /** Coarse pattern the backend suggests for "Allow always" (e.g. `git push *`). */
   suggestedAllow: string;
   /** "command" (default) | "web_fetch" | "web_search" | "browser" — drives the modal copy. */
-  kind?: "command" | "web_fetch" | "web_search" | "browser";
+  kind?: "command" | "web_fetch" | "web_search" | "browser" | "delete_path";
 }
 
 interface Props {
@@ -27,6 +27,8 @@ interface Props {
    * `web_fetch` / `web_search` / `browser` kinds. Hidden when not provided.
    */
   onAutoApproveWeb?: (askId: string, editedCmd?: string) => void;
+  /** Flips auto-allow delete_path in Settings, then allow-once for this ask. */
+  onAutoApproveDelete?: (askId: string, editedCmd?: string) => void;
 }
 
 /**
@@ -38,7 +40,13 @@ interface Props {
  * Keyboard: Enter = Allow once, Cmd/Ctrl+Enter = Allow always, Esc = Deny.
  * Mirrors common terminal prompts so muscle memory does the right thing.
  */
-export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAutoApproveWeb }: Props) {
+export function CommandApprovalModal({
+  pending,
+  onAnswer,
+  onAutoApproveAll,
+  onAutoApproveWeb,
+  onAutoApproveDelete,
+}: Props) {
   const [edited, setEdited] = useState("");
   const [trustPattern, setTrustPattern] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -77,26 +85,41 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAu
   if (!pending) return null;
 
   const cmdChanged = edited.trim() !== pending.cmd.trim();
+  const recursiveDelete =
+    /\brd\s+(\/s\s+)?\/q\b/i.test(edited) ||
+    /\brmdir\s+(\/s\s+)?\/q\b/i.test(edited) ||
+    /\bRemove-Item\b[^\n;|&]*-Recurse/i.test(edited) ||
+    /\brm\s+-[a-z]*f[a-z]*\b/i.test(edited);
   const kind = pending.kind ?? "command";
   const isWeb = kind === "web_fetch" || kind === "web_search" || kind === "browser";
-  const title = kind === "web_fetch"
-    ? "Agent wants to fetch a URL"
-    : kind === "web_search"
-      ? "Agent wants to run a web search"
-      : kind === "browser"
-        ? "Agent wants to drive the browser"
-        : "Agent wants to run a command";
-  const fieldLabel = kind === "web_fetch" ? "URL"
-    : kind === "web_search" ? "Query"
-    : kind === "browser" ? "URL"
-    : "Command";
-  const hint = kind === "web_fetch"
-    ? "The agent will fetch this URL and read its plaintext. Loopback / private IPs are blocked at the tool layer regardless. Enable \"Auto-allow web tools\" in Settings to skip this prompt."
-    : kind === "web_search"
-      ? "The agent will run this DuckDuckGo HTML search and read the result list (no clicks). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
-      : kind === "browser"
-        ? "The agent will drive the embedded Electron browser (visible in the Browser panel). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
-        : "This command isn’t on your allow-list yet. Review it carefully before letting the agent run it.";
+  const isDelete = kind === "delete_path";
+  const title = kind === "delete_path"
+    ? "Agent wants to delete a path"
+    : kind === "web_fetch"
+      ? "Agent wants to fetch a URL"
+      : kind === "web_search"
+        ? "Agent wants to run a web search"
+        : kind === "browser"
+          ? "Agent wants to drive the browser"
+          : "Agent wants to run a command";
+  const fieldLabel = kind === "delete_path"
+    ? "Path (workspace-relative)"
+    : kind === "web_fetch"
+      ? "URL"
+      : kind === "web_search"
+        ? "Query"
+        : kind === "browser"
+          ? "URL"
+          : "Command";
+  const hint = kind === "delete_path"
+    ? "Permanent delete — not Recycle Bin. Only paths inside the workspace are allowed (no *, **, .., or D:\\…). Enable \"Auto-allow deletes\" in Settings to skip this prompt."
+    : kind === "web_fetch"
+      ? "The agent will fetch this URL and read its plaintext. Loopback / private IPs are blocked at the tool layer regardless. Enable \"Auto-allow web tools\" in Settings to skip this prompt."
+      : kind === "web_search"
+        ? "The agent will run this DuckDuckGo HTML search and read the result list (no clicks). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
+        : kind === "browser"
+          ? "The agent will drive the embedded Electron browser (visible in the Browser panel). Enable \"Auto-allow web tools\" in Settings to skip this prompt."
+          : "This command isn’t on your allow-list yet. Review it carefully before letting the agent run it.";
 
   return (
     <div className="modal-backdrop policy-modal-backdrop">
@@ -110,6 +133,16 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAu
           <div className="policy-modal-hint">
             {hint}
           </div>
+          {recursiveDelete && (
+            <div
+              className="policy-modal-hint"
+              style={{ color: "var(--danger, #c53030)", fontWeight: 600, marginTop: 8 }}
+              role="alert"
+            >
+              Permanent delete (rd/rmdir/Remove-Item -Recurse). Not Recycle Bin — can wipe folders outside the
+              workspace. Newer builds block this in run_command; use file-tree Delete instead.
+            </div>
+          )}
           <div className="policy-modal-cmd-label">{fieldLabel}</div>
           <input
             ref={inputRef}
@@ -130,7 +163,7 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAu
               Edited from: <code>{pending.cmd}</code>
             </div>
           )}
-          {!isWeb && (
+          {!isWeb && !isDelete && (
             <div className="policy-modal-trust">
               <label>
                 <span className="policy-modal-trust-label">“Allow always” pattern</span>
@@ -156,7 +189,7 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAu
           >
             Deny
           </button>
-          {onAutoApproveAll && !isWeb && (
+          {onAutoApproveAll && !isWeb && !isDelete && (
             <button
               className="policy-modal-yolo"
               onClick={() => onAutoApproveAll(pending.askId, edited.trim() || undefined)}
@@ -173,13 +206,31 @@ export function CommandApprovalModal({ pending, onAnswer, onAutoApproveAll, onAu
           >
             Allow once
           </button>
-          {!isWeb && (
+          {!isWeb && !isDelete && (
             <button
               className="policy-modal-allow-always"
               onClick={() => onAnswer(pending.askId, "allow_always", edited.trim() || undefined)}
               title="Cmd/Ctrl+Enter"
             >
               Allow always
+            </button>
+          )}
+          {isDelete && (
+            <button
+              className="policy-modal-allow-always"
+              onClick={() => onAnswer(pending.askId, "allow_always", edited.trim() || undefined)}
+              title="Trust this path pattern for future deletes"
+            >
+              Allow always (this path)
+            </button>
+          )}
+          {isDelete && onAutoApproveDelete && (
+            <button
+              className="policy-modal-allow-always"
+              onClick={() => onAutoApproveDelete(pending.askId, edited.trim() || undefined)}
+              title="Allow this delete and auto-approve all future delete_path calls"
+            >
+              <IconZap size={13} style={{ marginRight: 4 }} />Always allow deletes
             </button>
           )}
           {isWeb && onAutoApproveWeb && (

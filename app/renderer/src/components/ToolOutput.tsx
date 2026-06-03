@@ -1056,6 +1056,17 @@ export function ToolOutput({
           suppressObservationFollowup={suppressObservationFollowup}
         />
       );
+    case "delete_path":
+    case "delete_file": {
+      const p = String(input.path ?? input.file ?? "");
+      const sum = observation?.summary ?? "";
+      return (
+        <div className="tool-output tool-output--delete">
+          {!suppressHeader && <div className="tool-output-path"><code>{p || "(no path)"}</code></div>}
+          {sum ? <pre className="tool-output-pre">{sum}</pre> : null}
+        </div>
+      );
+    }
     case "run_command":
       return (
         <RunCommandOutput

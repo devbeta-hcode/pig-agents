@@ -102,6 +102,9 @@ function formatToolStatusLabel(tool: string): string {
       return "Applying patch…";
     case "create_file":
       return "Creating file…";
+    case "delete_path":
+    case "delete_file":
+      return "Deleting…";
     case "search_code":
       return "Searching code…";
     case "semantic_search":

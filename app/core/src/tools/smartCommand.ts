@@ -1,6 +1,7 @@
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { getWorkspace } from "../utils/workspace.js";
 import { isWindows, killShellProcess, prepareAgentCommand, shellCommandSpawn } from "../utils/shell.js";
+import { rejectDestructiveShellCommand } from "./destructiveShellGuard.js";
 
 /**
  * Build the env object passed to spawned child processes. We strip the agent
@@ -245,6 +246,8 @@ export async function runSmartCommand(
 ): Promise<SmartCommandResult> {
   const trimmed = prepareAgentCommand(cmd);
   if (!trimmed) throw new Error("Empty command");
+  const destructive = rejectDestructiveShellCommand(trimmed);
+  if (destructive) throw new Error(destructive);
 
   const streamCb = opts.onStreamChunk;
   const spawnCb = opts.onChildSpawn;

@@ -1,6 +1,9 @@
 /**
  * Windows-only helpers to release file locks before deleting project trees
  * (e.g. node_modules/esbuild.exe held by a running Vite dev server).
+ *
+ * Does NOT delete files — only taskkill (scoped) and attrib -r. Actual removal
+ * is fs.rm / rd in file.ts with paths from safeJoin(workspace).
  */
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -14,16 +17,53 @@ function sleepSync(ms: number): void {
   });
 }
 
+/** Refuse drive roots and paths too shallow for safe lock release. */
+export function assertSafeDeleteTarget(targetAbs: string): void {
+  const target = path.resolve(targetAbs).replace(/[\\/]+$/, "");
+  const parsed = path.parse(target);
+  if (!parsed.root) {
+    throw new Error(`Refusing unsafe delete target: ${target}`);
+  }
+  const rel = target.slice(parsed.root.length).replace(/^[\\/]+/, "");
+  const depth = rel.split(/[\\/]/).filter(Boolean).length;
+  if (depth < 1) {
+    throw new Error(`Refusing delete or lock release on drive root: ${target}`);
+  }
+}
+
+/** Leaf-name taskkill is only for deep, specific folders (avoids killing every \\TrainAI\\ process on D:). */
+function allowLeafCommandLineMatch(targetAbs: string): boolean {
+  const target = path.resolve(targetAbs);
+  const parsed = path.parse(target);
+  const relParts = target
+    .slice(parsed.root.length)
+    .replace(/^[\\/]+/, "")
+    .split(/[\\/]/)
+    .filter(Boolean);
+  const leaf = path.basename(target);
+  return relParts.length >= 2 && leaf.length >= 8;
+}
+
 /**
- * Stop processes whose executable lives under `targetAbs`, whose command line
- * references that path (incl. 8.3 short paths), or whose cmd references the
- * folder leaf as a path segment (npm/vite started from a parent shell cwd).
+ * Stop processes whose executable lives under `targetAbs` or whose command line
+ * contains that full path (incl. 8.3). Optional leaf segment match only for
+ * deep paths with a long folder name.
  */
 export function windowsReleasePathLocks(targetAbs: string): number {
   if (!isWindows) return 0;
+  assertSafeDeleteTarget(targetAbs);
   const target = path.resolve(targetAbs).replace(/[\\/]+$/, "");
   const escaped = target.replace(/'/g, "''");
   const leaf = path.basename(target).replace(/'/g, "''");
+  const useLeaf = allowLeafCommandLineMatch(targetAbs);
+
+  const leafBlock = useLeaf
+    ? `
+  if ($cmd -and $leaf -and ($leaf.Length -ge 8)) {
+    $seg = [regex]::Escape($leaf)
+    if ($cmd -match ('[\\\\/]' + $seg + '([\\\\/]|\\s|"|''|$)')) { return $true }
+  }`
+    : "";
 
   const script = `
 $t = [System.IO.Path]::GetFullPath('${escaped}')
@@ -39,11 +79,7 @@ function Test-Hit($exe, $cmd) {
     if (-not $base) { continue }
     if ($exe -and $exe.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
     if ($cmd -and ($cmd.IndexOf($base, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)) { return $true }
-  }
-  if ($cmd -and $leaf -and ($leaf.Length -ge 2)) {
-    $seg = [regex]::Escape($leaf)
-    if ($cmd -match ('[\\\\/]' + $seg + '([\\\\/]|\\s|"|''|$)')) { return $true }
-  }
+  }${leafBlock}
   return $false
 }
 
@@ -58,8 +94,8 @@ Get-Process -ErrorAction SilentlyContinue | Where-Object {
 } | ForEach-Object { [void]$pids.Add($_.Id) }
 
 $n = 0
-foreach ($pid in $pids) {
-  & taskkill.exe /PID $pid /T /F 2>$null | Out-Null
+foreach ($procId in $pids) {
+  & taskkill.exe /PID $procId /T /F 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) { $n++ }
 }
 $n
@@ -84,6 +120,7 @@ $n
 /** Clear read-only attrs so rd / fs.rm can remove git/npm trees on Windows. */
 export function windowsClearAttributesRecursive(targetAbs: string): void {
   if (!isWindows) return;
+  assertSafeDeleteTarget(targetAbs);
   const quoted = `"${path.resolve(targetAbs).replace(/"/g, '""')}"`;
   spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `attrib -r ${quoted}\\* /s /d`], {
     stdio: "ignore",

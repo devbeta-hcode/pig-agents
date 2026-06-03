@@ -83,6 +83,7 @@ export interface CommandPolicy {
   trusted: string[];
   autoApprove?: boolean;
   autoApproveWeb?: boolean;
+  autoApproveDelete?: boolean;
 }
 
 export type PolicyDecision = "allow_once" | "allow_always" | "deny";
@@ -240,6 +241,8 @@ export const api = {
     pig.rpc("policyAutoApprove", [value]),
   setAutoApproveWeb: (value: boolean): Promise<{ ok: true; autoApproveWeb: boolean; policy: CommandPolicy }> =>
     pig.rpc("policyAutoApproveWeb", [value]),
+  setAutoApproveDelete: (value: boolean): Promise<{ ok: true; autoApproveDelete: boolean; policy: CommandPolicy }> =>
+    pig.rpc("policyAutoApproveDelete", [value]),
 
   // ---- Approval bridge ----------------------------------------------------
   respondApproval: (askId: string, decision: PolicyDecision, editedCmd?: string): Promise<{ ok: true }> =>

@@ -30,6 +30,7 @@ import {
   savePolicy,
   setAutoApprove,
   setAutoApproveWeb,
+  setAutoApproveDelete,
   trust as policyTrust,
   type Policy,
 } from "./utils/policy.js";
@@ -230,6 +231,8 @@ export async function policySave(body: Partial<Policy>) {
     allow: Array.isArray(body.allow) ? body.allow.map(String) : [],
     trusted: Array.isArray(body.trusted) ? body.trusted.map(String) : [],
     autoApprove: !!body.autoApprove,
+    autoApproveWeb: !!body.autoApproveWeb,
+    autoApproveDelete: !!body.autoApproveDelete,
   };
   await savePolicy(next);
   return { ok: true as const, policy: next };
@@ -243,6 +246,11 @@ export async function policyAutoApprove(value: boolean) {
 export async function policyAutoApproveWeb(value: boolean) {
   const p = await setAutoApproveWeb(!!value);
   return { ok: true as const, autoApproveWeb: !!p.autoApproveWeb, policy: p };
+}
+
+export async function policyAutoApproveDelete(value: boolean) {
+  const p = await setAutoApproveDelete(!!value);
+  return { ok: true as const, autoApproveDelete: !!p.autoApproveDelete, policy: p };
 }
 
 export async function policyTrustPattern(pattern: string) {

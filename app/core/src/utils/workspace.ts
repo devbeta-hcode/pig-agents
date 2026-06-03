@@ -59,6 +59,17 @@ export function validateWorkspacePath(p: string): string {
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
     throw new Error(`Not a directory: ${abs}`);
   }
+  const parsed = path.parse(abs);
+  const relDepth = abs
+    .slice(parsed.root.length)
+    .replace(/^[\\/]+/, "")
+    .split(/[\\/]/)
+    .filter(Boolean).length;
+  if (relDepth < 1) {
+    throw new Error(
+      `Workspace cannot be a drive root (${parsed.root}). Pick a project folder, e.g. ${parsed.root}Projects\\my-app`,
+    );
+  }
   const allowed = process.env.ALLOWED_WORKSPACE_ROOT;
   if (allowed && allowed.trim().length > 0) {
     const aRoot = path.resolve(allowed);

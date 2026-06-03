@@ -8,7 +8,11 @@ import { workspaceWatcher } from "../utils/watcher.js";
 import { isWindows } from "../utils/shell.js";
 import { cleanupAllBackgroundProcesses } from "./smartCommand.js";
 import { invokeBeforeDeletePath } from "../utils/deleteHooks.js";
-import { windowsClearAttributesRecursive, windowsReleasePathLocks } from "./windowsDelete.js";
+import {
+  assertSafeDeleteTarget,
+  windowsClearAttributesRecursive,
+  windowsReleasePathLocks,
+} from "./windowsDelete.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -246,9 +250,60 @@ async function deleteEntryAttempts(abs: string, rel: string): Promise<void> {
   throw formatDeleteError(rel, lastErr);
 }
 
+/**
+ * Validate agent delete_path input: one workspace-relative path, no globs or traversal.
+ */
+export function normalizeAgentDeletePath(raw: string): string {
+  const p = String(raw ?? "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+  if (!p || p === ".") {
+    throw new Error("delete_path: 'path' is required (workspace-relative, e.g. src/old.ts or portfolio-react)");
+  }
+  if (/[*?[\]{}]/.test(p) || p.includes("**")) {
+    throw new Error(`delete_path: wildcards are not allowed in path: ${p}`);
+  }
+  if (/(^|\/)\.\.(\/|$)/.test(p)) {
+    throw new Error("delete_path: '..' is not allowed — use a path under the workspace root");
+  }
+  if (/^[A-Za-z]:[/\\]/.test(p) || p.startsWith("\\\\")) {
+    throw new Error("delete_path: use workspace-relative path only, not an absolute drive path");
+  }
+  if (p.startsWith("//")) {
+    throw new Error("delete_path: invalid path");
+  }
+  return p;
+}
+
+/** Agent-safe delete (file or directory) — same guards as file-tree deleteEntry. */
+export async function deleteAgentPath(rawPath: string): Promise<{ path: string; kind: "file" | "dir" }> {
+  const rel = normalizeAgentDeletePath(rawPath);
+  const abs = safeJoin(rel);
+  let kind: "file" | "dir" = "file";
+  try {
+    const st = fssync.statSync(abs);
+    kind = st.isDirectory() ? "dir" : "file";
+  } catch {
+    throw new Error(`delete_path: not found: ${rel}`);
+  }
+  await deleteEntry(rel);
+  return { path: rel, kind };
+}
+
 export async function deleteEntry(rel: string): Promise<void> {
   const abs = safeJoin(rel);
   const wsRoot = path.resolve(safeJoin("."));
+  const normRel = (rel || ".").replace(/\\/g, "/").replace(/\/+$/, "") || ".";
+  if (normRel === "." || normRel === "") {
+    throw new Error("Cannot delete the workspace root folder.");
+  }
+  if (path.resolve(abs) === wsRoot) {
+    throw new Error(`Cannot delete workspace root: ${wsRoot}`);
+  }
+  assertSafeDeleteTarget(abs);
 
   const resumeWatch = workspaceWatcher.pauseWatching(wsRoot);
   try {

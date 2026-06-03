@@ -43,6 +43,9 @@ export function toolActivityLabel(tool: string, input: Record<string, unknown>):
       return base ? `Patching ${base}` : "Applying patch";
     case "create_file":
       return base ? `Creating ${base}` : "Creating file";
+    case "delete_path":
+    case "delete_file":
+      return base ? `Deleting ${base}` : "Deleting path";
     case "search_code":
       return `Search "${String(input.query ?? "").slice(0, 48)}"`;
     case "semantic_search":

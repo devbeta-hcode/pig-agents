@@ -10,6 +10,12 @@ export function actionScheduleKey(type: string, input: Record<string, unknown>):
       .trim();
     return `create_file:${path}`;
   }
+  if (t === "delete_path" || t === "delete_file") {
+    const path = String(input.path ?? input.file ?? "")
+      .replace(/\\/g, "/")
+      .trim();
+    return `delete_path:${path}`;
+  }
   if (t === "write_patch") {
     const raw = String(input.patches ?? input.patch ?? "");
     const files = [...raw.matchAll(/^\s*FILE:\s*(.+?)\s*$/gim)]
@@ -17,7 +23,8 @@ export function actionScheduleKey(type: string, input: Record<string, unknown>):
       .filter(Boolean)
       .sort();
     if (files.length) return `write_patch:${files.join("|")}`;
-    return `write_patch:${raw.length}:${raw.slice(0, 80)}`;
+    // Stable while JSON streams — avoids duplicate ACTION rows / double tool runs per token growth.
+    return "write_patch:__pending__";
   }
   return `${t}:${JSON.stringify(input)}`;
 }

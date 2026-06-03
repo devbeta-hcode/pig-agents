@@ -677,8 +677,20 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         // Every complete ACTION: {...} in the buffer so far — fire new ones as each closes (true parallel multi-file).
         const completeActions = extractAllActions(raw);
         for (const act of completeActions) {
-          const key = actionScheduleKey(act.type, act.input);
-          if (earlyScheduled.has(key)) continue;
+          let key = actionScheduleKey(act.type, act.input);
+          if (act.type.toLowerCase() === "write_patch") {
+            if (earlyScheduled.has(key)) continue;
+            const pending = "write_patch:__pending__";
+            if (key !== pending && earlyScheduled.has(pending)) {
+              const ent = earlyScheduled.get(pending)!;
+              earlyScheduled.delete(pending);
+              earlyScheduled.set(key, ent);
+              ent.input = act.input;
+              continue;
+            }
+          } else if (earlyScheduled.has(key)) {
+            continue;
+          }
           // Reserve the slot synchronously so the per-tool observation hook
           // below can flip the `streamedObservation` flag on the same entry.
           const entryRef: EarlyToolExec = {
@@ -703,6 +715,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
                   ok: outcome.ok,
                   summary: outcome.summary,
                   diffs: outcome.diffs,
+                  tool: act.type,
+                  actionKey: key,
                 });
               }
             }
@@ -770,8 +784,20 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // Stream may finish before salvage sees </html> — parse full buffer and run any missed tools.
     const earlyCountBeforeLate = earlyScheduled.size;
     for (const act of extractAllActions(raw)) {
-      const key = actionScheduleKey(act.type, act.input);
-      if (earlyScheduled.has(key)) continue;
+      let key = actionScheduleKey(act.type, act.input);
+      if (act.type.toLowerCase() === "write_patch") {
+        if (earlyScheduled.has(key)) continue;
+        const pending = "write_patch:__pending__";
+        if (key !== pending && earlyScheduled.has(pending)) {
+          const ent = earlyScheduled.get(pending)!;
+          earlyScheduled.delete(pending);
+          earlyScheduled.set(key, ent);
+          ent.input = act.input;
+          continue;
+        }
+      } else if (earlyScheduled.has(key)) {
+        continue;
+      }
       emit({
         type: "log",
         level: "info",
@@ -792,6 +818,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
             ok: outcome.ok,
             summary: outcome.summary,
             diffs: outcome.diffs,
+            tool: act.type,
+            actionKey: key,
           });
         }
         return outcome;

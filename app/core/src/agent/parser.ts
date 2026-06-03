@@ -196,6 +196,8 @@ function parsedJsonToAction(
       input = { patches: json.input };
     } else if (json.type === "read_file") {
       input = { path: json.input };
+    } else if (json.type === "delete_path" || json.type === "delete_file") {
+      input = { path: json.input };
     } else if (json.type === "list_files") {
       input = { dir: json.input };
     } else if (json.type === "search_code") {

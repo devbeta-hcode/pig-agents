@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { getWorkspace } from "../utils/workspace.js";
 import { killShellProcess, prepareAgentCommand, shellCommandSpawn } from "../utils/shell.js";
 import { childSpawnEnv } from "./smartCommand.js";
+import { rejectDestructiveShellCommand } from "./destructiveShellGuard.js";
 
 function yieldEventLoop(): Promise<void> {
   return new Promise((r) => setImmediate(r));
@@ -38,6 +39,8 @@ export interface CommandResult {
 export async function runCommand(cmd: string, opts?: { cwd?: string; timeoutMs?: number; maxBytes?: number }): Promise<CommandResult> {
   const trimmed = prepareAgentCommand(cmd);
   if (!trimmed) throw new Error("Empty command");
+  const destructive = rejectDestructiveShellCommand(trimmed);
+  if (destructive) throw new Error(destructive);
   for (const re of BLOCKED) {
     if (re.test(trimmed)) throw new Error(`Command blocked by safety policy: ${trimmed}`);
   }

@@ -5,6 +5,8 @@ import {
   buildCodebaseMapSummary,
   globFiles,
   sliceFileLines,
+  deleteAgentPath,
+  normalizeAgentDeletePath,
 } from "../tools/file.js";
 import { searchCodeFast } from "../tools/ripgrepSearch.js";
 import {
@@ -19,12 +21,19 @@ import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, makeUnifi
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
 import { startAgentCommand } from "./commandLog.js";
 import { getWorkspace } from "../utils/workspace.js";
-import { decide as policyDecide, trust as policyTrust, loadPolicy as loadAgentPolicy } from "../utils/policy.js";
+import {
+  decide as policyDecide,
+  trust as policyTrust,
+  loadPolicy as loadAgentPolicy,
+  deletePathPolicyKey,
+  matchedDeletePathPolicy,
+} from "../utils/policy.js";
 import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approvals.js";
 import { webFetch, webSearch } from "../tools/web.js";
 import { browserSession } from "../browser/session.js";
 import { externalBrowserLaunchHint } from "../tools/browserGuard.js";
 import { preferAgentToolOverShellHint } from "../tools/commandProbeGuard.js";
+import { rejectDestructiveShellCommand } from "../tools/destructiveShellGuard.js";
 
 export interface ToolOutcome {
   ok: boolean;
@@ -114,6 +123,79 @@ async function gateWebApproval(
     originalCmd: value === initial ? undefined : initial,
   });
   return { ok: true, value };
+}
+
+/**
+ * Approval gate for `delete_path` — modal unless autoApproveDelete or path is trusted.
+ */
+async function gateDeleteApproval(
+  ctx: ToolContext,
+  relPath: string,
+): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
+  const policy = await loadAgentPolicy().catch(() => null);
+  const suggested = deletePathPolicyKey(relPath);
+
+  if (policy?.autoApproveDelete) {
+    ctx.emit?.({ type: "policy_decision", decision: "allow_auto", cmd: relPath, kind: "delete_path" });
+    return { ok: true, path: relPath };
+  }
+
+  if (policy && matchedDeletePathPolicy(relPath, policy)) {
+    ctx.emit?.({
+      type: "policy_decision",
+      decision: "allow_auto",
+      cmd: relPath,
+      kind: "delete_path",
+      matched: suggested,
+    });
+    return { ok: true, path: relPath };
+  }
+
+  const askId = newAskId();
+  ctx.emit?.({
+    type: "policy_ask",
+    askId,
+    cmd: relPath,
+    suggestedAllow: suggested,
+    kind: "delete_path",
+  });
+  let ans: ApprovalAnswer;
+  try {
+    ans = await waitForApproval(askId, relPath, { runId: ctx.runId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: relPath, kind: "delete_path", reason: msg });
+    return { ok: false, reason: `delete_path not approved: ${msg}` };
+  }
+  if (ans.decision === "deny") {
+    ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: relPath, kind: "delete_path", reason: "user denied" });
+    return { ok: false, reason: "delete_path denied by user." };
+  }
+
+  const edited = (typeof ans.editedCmd === "string" && ans.editedCmd.trim()) ? ans.editedCmd.trim() : relPath;
+  let normalized: string;
+  try {
+    normalized = normalizeAgentDeletePath(edited);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: edited, kind: "delete_path", reason: msg });
+    return { ok: false, reason: msg };
+  }
+
+  if (ans.decision === "allow_always") {
+    try {
+      await policyTrust(suggested);
+    } catch { /* best-effort */ }
+  }
+
+  ctx.emit?.({
+    type: "policy_decision",
+    decision: ans.decision,
+    cmd: normalized,
+    kind: "delete_path",
+    originalCmd: normalized === relPath ? undefined : relPath,
+  });
+  return { ok: true, path: normalized };
 }
 
 export async function executeTool(
@@ -257,6 +339,17 @@ export async function executeTool(
         const requestedCmd = String(input.cmd || "");
         if (!requestedCmd) return { ok: false, summary: "run_command: missing 'cmd'" };
 
+        const destructive = rejectDestructiveShellCommand(requestedCmd);
+        if (destructive) {
+          ctx.emit?.({
+            type: "policy_decision",
+            decision: "deny",
+            cmd: requestedCmd,
+            reason: destructive,
+          });
+          return { ok: false, summary: `run_command BLOCKED: ${destructive}` };
+        }
+
         const browserHack = externalBrowserLaunchHint(requestedCmd);
         if (browserHack) {
           return { ok: false, summary: `run_command rejected: ${browserHack}` };
@@ -333,6 +426,17 @@ export async function executeTool(
             cmd: requestedCmd,
             matched: decision.matched,
           });
+        }
+
+        const destructiveFinal = rejectDestructiveShellCommand(cmd);
+        if (destructiveFinal) {
+          ctx.emit?.({
+            type: "policy_decision",
+            decision: "deny",
+            cmd,
+            reason: destructiveFinal,
+          });
+          return { ok: false, summary: `run_command BLOCKED: ${destructiveFinal}` };
         }
 
         const startedAt = Date.now();
@@ -470,6 +574,28 @@ export async function executeTool(
           data: results,
           diffs: results.filter((r) => r.applied).map((r) => r.diff),
         };
+      }
+      case "delete_path":
+      case "delete_file": {
+        const raw = String(input.path ?? input.file ?? "");
+        if (!raw.trim()) return { ok: false, summary: "delete_path: missing 'path'" };
+        try {
+          normalizeAgentDeletePath(raw);
+        } catch (err) {
+          return { ok: false, summary: (err as Error).message };
+        }
+        const gate = await gateDeleteApproval(ctx, raw);
+        if (!gate.ok) return { ok: false, summary: gate.reason };
+        try {
+          const { path: deleted, kind } = await deleteAgentPath(gate.path);
+          return {
+            ok: true,
+            summary: `Deleted ${kind} ${deleted} (workspace-relative; user-approved delete_path).`,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { ok: false, summary: msg };
+        }
       }
       case "create_file": {
         const p = String(input.path || "");

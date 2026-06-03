@@ -219,6 +219,7 @@ export function SettingsModal({ onClose }: Props) {
   // what the user clicked.
   const [autoApprove, setAutoApprove] = useState<boolean | null>(null);
   const [autoApproveWeb, setAutoApproveWeb] = useState<boolean | null>(null);
+  const [autoApproveDelete, setAutoApproveDelete] = useState<boolean | null>(null);
   const [autoSaving, setAutoSaving] = useState(false);
   /** Managed cloud providers use built-in endpoints unless the user expands "custom URL". */
   const [customBaseUrl, setCustomBaseUrl] = useState(false);
@@ -251,10 +252,12 @@ export function SettingsModal({ onClose }: Props) {
       .then(({ policy }) => {
         setAutoApprove(!!policy.autoApprove);
         setAutoApproveWeb(!!policy.autoApproveWeb);
+        setAutoApproveDelete(!!policy.autoApproveDelete);
       })
       .catch(() => {
         setAutoApprove(false);
         setAutoApproveWeb(false);
+        setAutoApproveDelete(false);
       });
   }, []);
 
@@ -281,6 +284,20 @@ export function SettingsModal({ onClose }: Props) {
     } catch (err) {
       setAutoApproveWeb(!next);
       setMsg(`Auto-allow web toggle failed: ${(err as Error).message}`);
+    } finally {
+      setAutoSaving(false);
+    }
+  }
+
+  async function toggleAutoApproveDelete(next: boolean) {
+    setAutoApproveDelete(next);
+    setAutoSaving(true);
+    try {
+      const r = await api.setAutoApproveDelete(next);
+      setAutoApproveDelete(!!r.autoApproveDelete);
+    } catch (err) {
+      setAutoApproveDelete(!next);
+      setMsg(`Auto-allow deletes toggle failed: ${(err as Error).message}`);
     } finally {
       setAutoSaving(false);
     }
@@ -835,6 +852,30 @@ export function SettingsModal({ onClose }: Props) {
           When <strong>ON</strong>, <code>web_fetch</code> and <code>web_search</code> calls skip the
           approval modal. Localhost / private-network hosts are still rejected at the tool layer
           regardless of this flag (SSRF guard). Same per-workspace policy file as above.
+        </div>
+
+        <div className="settings-row settings-row-toggle" style={{ marginTop: 12 }}>
+          <label htmlFor="auto-approve-delete-toggle">Auto-allow deletes</label>
+          <div className="toggle-wrap">
+            <button
+              id="auto-approve-delete-toggle"
+              type="button"
+              role="switch"
+              aria-checked={autoApproveDelete === true}
+              disabled={autoApproveDelete === null || autoSaving}
+              className={`toggle-switch ${autoApproveDelete ? "on" : "off"}`}
+              onClick={() => toggleAutoApproveDelete(!autoApproveDelete)}
+              title={autoApproveDelete ? "Click to disable" : "Click to enable"}
+            >
+              <span className="toggle-knob" />
+              <span className="toggle-label">{autoApproveDelete === null ? "…" : autoApproveDelete ? "ON" : "OFF"}</span>
+            </button>
+          </div>
+        </div>
+        <div className="hint">
+          When <strong>ON</strong>, agent <code>delete_path</code> runs without asking (still workspace-only;
+          no <code>rd</code>/<code>rm -rf</code> in shell). When <strong>OFF</strong>, every delete shows a
+          confirmation modal with the exact path. <strong>Auto-approve commands</strong> does not include deletes.
         </div>
       </div>
       </div>
