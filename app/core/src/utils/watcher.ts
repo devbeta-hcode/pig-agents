@@ -201,6 +201,27 @@ class MultiWorkspaceWatcher extends EventEmitter {
     const root = path.resolve(rootAbs);
     this.byRoot.get(root)?.watcher.poke(rel);
   }
+
+  /**
+   * Close the OS handle while deleting paths under this workspace (Windows EBUSY).
+   * Call the returned function to re-arm the watcher when delete finishes.
+   */
+  pauseWatching(rootAbs: string): () => void {
+    const root = path.resolve(rootAbs);
+    const entry = this.byRoot.get(root);
+    if (!entry) return () => {};
+    entry.watcher.stop();
+    return () => {
+      const cur = this.byRoot.get(root);
+      if (!cur || cur.refs <= 0) return;
+      const inner = new SingleRootWatcher(root);
+      if (!inner.isActive()) return;
+      inner.on("changes", (batch: FsChangeEvent[]) => {
+        this.emit("changes", { workspace: root, changes: batch } satisfies WorkspaceChangesPayload);
+      });
+      cur.watcher = inner;
+    };
+  }
 }
 
 export const workspaceWatcher = new MultiWorkspaceWatcher();

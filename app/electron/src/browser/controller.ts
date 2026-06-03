@@ -165,11 +165,18 @@ export function initBrowserController(getWin: GetWindow): void {
   getWindow = getWin;
 }
 
-/** Called when the panel `<webview>` fires dom-ready. */
+/** Called when the panel `<webview>` is ready (once per guest webContents). */
 export function registerBrowserGuest(guestId: number): void {
   const guest = webContents.fromId(guestId);
   if (!guest || guest.isDestroyed()) {
     throw new Error(`Browser guest webContents ${guestId} not found`);
+  }
+  if (guestWc?.id === guestId && !guestWc.isDestroyed()) {
+    notifyRenderer();
+    return;
+  }
+  if (guestWc && !guestWc.isDestroyed() && guestWc.id !== guestId) {
+    detachCdp(guestWc);
   }
   guestWc = guest;
   try {
@@ -260,23 +267,27 @@ function isNavigationAborted(code: number, message: string): boolean {
 }
 
 const NAV_TIMEOUT_MS = 45_000;
+let navGeneration = 0;
 
 export async function browserNavigate(url: string): Promise<void> {
   const contents = requireGuest();
   const target = normalizeUrl(url);
+  const gen = ++navGeneration;
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
 
+    const stale = () => gen !== navGeneration || contents.isDestroyed();
+
     const settleOk = () => {
-      if (settled) return;
+      if (settled || stale()) return;
       settled = true;
       cleanup();
       resolve();
     };
 
     const settleErr = (err: Error) => {
-      if (settled) return;
+      if (settled || stale()) return;
       settled = true;
       cleanup();
       reject(err);
@@ -287,6 +298,7 @@ export async function browserNavigate(url: string): Promise<void> {
     }, NAV_TIMEOUT_MS);
 
     const onFinish = () => {
+      if (stale()) return;
       const cur = contents.getURL();
       if (cur === "about:blank" && target !== "about:blank") return;
       settleOk();
@@ -299,6 +311,7 @@ export async function browserNavigate(url: string): Promise<void> {
       validatedURL: string,
       isMainFrame?: boolean,
     ) => {
+      if (stale()) return;
       if (isMainFrame === false) return;
       if (isNavigationAborted(errorCode, errorDescription)) return;
       settleErr(new Error(`Navigation failed (${errorCode}): ${errorDescription} (${validatedURL || target})`));
@@ -314,6 +327,7 @@ export async function browserNavigate(url: string): Promise<void> {
     contents.on("did-fail-load", onFail);
 
     void contents.loadURL(target).catch((err: unknown) => {
+      if (stale()) return;
       const e = err instanceof Error ? err : new Error(String(err));
       const code = (err as { errno?: number })?.errno;
       if (isNavigationAborted(code ?? 0, e.message)) return;
@@ -321,7 +335,10 @@ export async function browserNavigate(url: string): Promise<void> {
     });
   });
 
+  if (gen !== navGeneration || contents.isDestroyed()) return;
+
   await waitForPageSettled(contents);
+  if (gen !== navGeneration || contents.isDestroyed()) return;
   browserFocus();
   notifyRenderer();
 }

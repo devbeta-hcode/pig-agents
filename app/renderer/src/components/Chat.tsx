@@ -1,6 +1,18 @@
-import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  Children,
+  cloneElement,
+  isValidElement,
+  type ReactNode,
+} from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { Steps } from "antd";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
 import { ChatsList } from "./ChatsList";
 import { Markdown } from "./Markdown";
@@ -11,6 +23,10 @@ import { DiffViewer, type DiffItem } from "./DiffViewer";
 import { FileIcon } from "./FileIcon";
 import { CommandApprovalModal, type PendingApproval } from "./CommandApprovalModal";
 import { ContextUsagePanel, ContextUsageTrigger } from "./ContextUsagePanel";
+import { TraceActivityRow, TraceLogRow, TracePolicyRow } from "./AgentTraceRows";
+import { deriveLiveActivity } from "../lib/agentActivity";
+import { actionScheduleKey, dedupeTraceTimelineEvents } from "../lib/actionScheduleKey";
+import { observationLooksCombined, sliceObservationForAction } from "../lib/observationPairing";
 import { useDialogs } from "./DialogProvider";
 import { ToolAccordionHeader, ToolOutput } from "./ToolOutput";
 import {
@@ -72,6 +88,8 @@ function getActiveSessionKey(workspace: string): string {
 }
 
 interface UIEvent extends AgentEvent {
+  phase?: string;
+  label?: string;
   iteration?: number;
   /** Stable correlation id for tool_disk_settled (write_patch / create_file). */
   actionKey?: string;
@@ -239,12 +257,33 @@ function syntheticStreamingWriteAction(
   traceSteps: UIEvent[],
   iteration: number,
 ): UIEvent | null {
-  if (!isStreaming || !streamingText.trim()) return null;
+  if (!isStreaming) return null;
 
-  /** More ACTION: markers buffered than SSE `action` rows yet — nth segment is still streaming. */
   const emittedSameIter = traceSteps.filter(
     (x) => x.type === "action" && (Number((x as UIEvent).iteration) || 1) === iteration,
   ).length;
+
+  /** Native OpenAI tool stream: backend emits tool_payload_streaming before JSON args finish. */
+  const nativePayload = [...traceSteps]
+    .reverse()
+    .find(
+      (x) =>
+        x.type === "tool_payload_streaming" &&
+        (Number((x as UIEvent).iteration) || 1) === iteration,
+    ) as UIEvent | undefined;
+  if (nativePayload?.tool && emittedSameIter === 0) {
+    const tool = String(nativePayload.tool).toLowerCase();
+    if (tool === "create_file") {
+      return { type: "action", iteration, tool: "create_file", input: { path: "", content: "" } };
+    }
+    if (tool === "write_patch") {
+      return { type: "action", iteration, tool: "write_patch", input: { patches: "" } };
+    }
+  }
+
+  if (!streamingText.trim()) return null;
+
+  /** More ACTION: markers buffered than SSE `action` rows yet — nth segment is still streaming. */
   const nthPeek = emittedSameIter;
   if (actionMarkerCount(streamingText) <= nthPeek) return null;
 
@@ -255,10 +294,36 @@ function syntheticStreamingWriteAction(
 
   if (peekMeta.tool === "create_file") {
     if (peekBody == null && !peekPath) return null;
+    const peekKey = actionScheduleKey("create_file", { path: peekPath });
+    const dup = traceSteps.some(
+      (x) =>
+        x.type === "action" &&
+        (Number((x as UIEvent).iteration) || 1) === iteration &&
+        actionScheduleKey(String((x as UIEvent).tool ?? ""), ((x as UIEvent).input ?? {}) as Record<string, unknown>) ===
+          peekKey,
+    );
+    if (dup) return null;
     return { type: "action", iteration, tool: "create_file", input: { path: peekPath, content: "" } };
   }
   if (peekBody == null) return null;
   return { type: "action", iteration, tool: "write_patch", input: { patches: "" } };
+}
+
+/** Match observation to a streaming peek row (synthetic action not in the event list). */
+function observationForStreamingPeek(peek: UIEvent, events: UIEvent[]): UIEvent | undefined {
+  const it = Number(peek.iteration) || 1;
+  const path = String((peek.input as Record<string, unknown>)?.path ?? "").trim();
+  for (const e of events) {
+    if (e.type !== "observation" || Number(e.iteration) !== it) continue;
+    const sum = String(e.summary ?? "");
+    const diffs = e.diffs;
+    if (!path) return e;
+    if (sum.includes(path) || (Array.isArray(diffs) && diffs.some((d) => String(d).includes(path)))) {
+      return e;
+    }
+  }
+  const any = events.find((e) => e.type === "observation" && Number(e.iteration) === it);
+  return any;
 }
 
 function diskSettledForAction(e: UIEvent, all: UIEvent[]): boolean | undefined {
@@ -266,7 +331,13 @@ function diskSettledForAction(e: UIEvent, all: UIEvent[]): boolean | undefined {
   if (!isWriteToolName(e.tool)) return undefined;
   const iter = e.iteration ?? -1;
   const actionIdx = all.indexOf(e);
-  if (actionIdx === -1) return false;
+  if (actionIdx === -1) {
+    const settles = all.filter(
+      (x) => x.type === "tool_disk_settled" && (x as UIEvent).iteration === iter,
+    ) as UIEvent[];
+    if (settles.length === 0) return undefined;
+    return settles[settles.length - 1].ok !== false;
+  }
   const settles = all.filter(
     (x) => x.type === "tool_disk_settled" && (x as UIEvent).iteration === iter,
   ) as UIEvent[];
@@ -310,6 +381,11 @@ function writePatchAccordionSlug(patchSection: string, fi: number): string {
   return leaf.replace(/\W+/g, "-").slice(0, 56) || `f${fi}`;
 }
 
+/** Unique key per ACTION row — prevents merging into "Edit N files" groups. */
+function actionGroupKey(tool: string, iteration: number, suffix: string): string {
+  return `${(tool || "tool").toLowerCase()}#${iteration}#${suffix}`;
+}
+
 /** Merge pre-THOUGHT reasoning with THOUGHT body for a single UI fold. */
 function mergeThoughtBody(reasoning: string, thought: string): string {
   const r = reasoning.trim();
@@ -318,20 +394,59 @@ function mergeThoughtBody(reasoning: string, thought: string): string {
   return t || r;
 }
 
+/** Drop a complete leading `{"type":...}` / `{"patches":...}` blob (not shown in Thought UI). */
+function stripLeadingBareToolJson(buf: string): string {
+  const t = buf.trimStart();
+  if (!t.startsWith("{")) return buf;
+  const head = t.slice(0, 96);
+  if (!/^\{\s*"(?:type|patches)"\s*:/.test(head)) return buf;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (c === "\\" && inStr) {
+      esc = true;
+      continue;
+    }
+    if (c === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (c === "{") depth++;
+    if (c === "}") {
+      depth--;
+      if (depth === 0) return buf.slice(buf.length - t.length + i + 1).trimStart();
+    }
+  }
+  // Incomplete tool JSON still streaming — hide it from reasoning until THOUGHT/ACTION.
+  const cut = t.match(/\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:/i);
+  if (cut?.index != null && cut.index > 0) return buf.slice(buf.length - t.length + cut.index).trimStart();
+  return "";
+}
+
 /** Content BEFORE THOUGHT: — the raw reasoning trace shown in the streaming box. */
 function streamingReasoningExtract(buf: string): string {
-  const norm = normalizeStreamXmlMarkers(buf);
-  // Reasoning is ONLY the prefix before THOUGHT/ACTION/FINAL.
-  // If the model skips THOUGHT and jumps straight to ACTION, keep Thinking empty
-  // instead of leaking tool JSON into the reasoning pane.
-  const m = norm.match(/^[\s\S]*?(?=\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,20}"type"\s*:|$)/i);
+  let norm = normalizeStreamXmlMarkers(buf);
+  norm = stripLeadingBareToolJson(norm);
+  // Reasoning is ONLY the prefix before THOUGHT/ACTION/FINAL — never tool JSON.
+  const m = norm.match(
+    /^[\s\S]*?(?=\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,40}"(?:type|patches)"\s*:|$)/i,
+  );
   return (m?.[0] ?? "").trim();
 }
 
 /** Content AFTER THOUGHT: — shown as plain text log once THOUGHT: appears. */
 function streamingThoughtExtract(buf: string): string {
   const norm = normalizeStreamXmlMarkers(buf);
-  const m = norm.match(/\bTHOUGHT\s*:\s*([\s\S]*?)(?=\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,20}"type"\s*:|$)/i);
+  const m = norm.match(
+    /\bTHOUGHT\s*:\s*([\s\S]*?)(?=\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,40}"(?:type|patches)"\s*:|$)/i,
+  );
   if (!m) return "";
   return m[1]
     .replace(/\bACTION\s*:[\s\S]*$/i, "")
@@ -362,9 +477,12 @@ function streamingFinalExtract(buf: string): string {
     .trimEnd();
 }
 
-/** Mirror of backend `normalizeXmlTags` so XML-emitting models render correctly mid-stream. */
+/** Mirror of backend stream normalizers so THOUGHT/ACTION render while tokens arrive. */
 function normalizeStreamXmlMarkers(buf: string): string {
-  let out = buf;
+  let out = buf.replace(/\r\n/g, "\n");
+  out = out.replace(/(\})\s*(THOUGHT|ACTION|FINAL):/gi, "$1\n$2:");
+  out = out.replace(/(<\/\|DSML\|invoke>)\s*(THOUGHT|ACTION|FINAL):/gi, "$1\n$2:");
+  out = out.replace(/END"\s*\}\s*(THOUGHT|ACTION|FINAL):/gi, 'END"}\n$1:');
   out = out.replace(/<\s*thought\s*>\s*/gi, "\nTHOUGHT: ");
   out = out.replace(/<\s*\/\s*thought\s*>\s*/gi, "\n");
   out = out.replace(/<\s*action\s*>\s*/gi, "\nACTION: ");
@@ -374,17 +492,33 @@ function normalizeStreamXmlMarkers(buf: string): string {
   return out;
 }
 
+function traceIterationMatch(obsIter: number | undefined, actionIter: number | undefined): boolean {
+  return obsIter === actionIter || (obsIter === undefined && actionIter === undefined);
+}
+
 function firstObservationAfter(
   steps: UIEvent[],
   startIdx: number,
   iteration: number | undefined,
-): { ev: UIEvent; idx: number } | undefined {
+  action?: { actionKey?: string; tool?: string; input?: Record<string, unknown> },
+): { ev: UIEvent; idx: number; combined?: boolean } | undefined {
+  const { actionKey, tool, input } = action ?? {};
+  if (actionKey) {
+    for (let k = startIdx; k < steps.length; k++) {
+      const ev = steps[k];
+      if (ev.type !== "observation" || ev.actionKey !== actionKey) continue;
+      if (!traceIterationMatch(ev.iteration, iteration)) continue;
+      return { ev, idx: k };
+    }
+  }
   for (let k = startIdx; k < steps.length; k++) {
     const ev = steps[k];
     if (ev.type !== "observation") continue;
-    const oi = ev.iteration;
-    const ai = iteration;
-    if (oi === ai || (oi === undefined && ai === undefined)) return { ev, idx: k };
+    if (!traceIterationMatch(ev.iteration, iteration)) continue;
+    if (ev.actionKey) continue;
+    if (ev.tool && tool && ev.tool !== tool) continue;
+    const combined = observationLooksCombined(ev.summary ?? "");
+    return { ev: sliceObservationForAction(ev, tool, input) as UIEvent, idx: k, combined };
   }
   return undefined;
 }
@@ -467,12 +601,6 @@ const UserMessage = memo(UserMessageBase, (a, b) =>
   a.canRegenerate === b.canRegenerate,
 );
 
-function isTraceLogLike(e: UIEvent): boolean {
-  if (e.type === "log" && !String(e.message || "").startsWith("Parse error:")) return true;
-  if (e.type === "policy_decision" && (e.decision === "deny" || e.decision === "allow_always")) return true;
-  return false;
-}
-
 function thoughtCollapsedPreview(raw: string, maxChars = 100): string {
   const flat = raw
     .replace(/\r\n/g, "\n")
@@ -509,17 +637,6 @@ function actionStreamingArgPreview(
   if (!(isStreamingTurn || inFlightWrite)) return undefined;
   if (toolName !== "write_patch" && toolName !== "create_file") return undefined;
   return peekStreamingToolArgBodyNth(streamingPartial, streamingActionNth) ?? undefined;
-}
-
-/** Left-border + summary tint cue for filesystem vs mutate vs terminal vs search. */
-function toolAccordionAccent(tool?: string): string {
-  const x = String(tool || "").toLowerCase();
-  if (x === "write_patch" || x === "create_file") return "mutate-fs";
-  if (x === "read_file" || x === "list_files") return "read-fs";
-  if (x === "run_command") return "terminal";
-  if (x === "search_code") return "search";
-  if (x === "codebase_map") return "map";
-  return "generic";
 }
 
 function traceToolStepIcon(tool?: string): ReactNode {
@@ -606,7 +723,14 @@ function ActionGroupFold({
         <span className="tool-action">{meta.verb}</span>
         <span className="assistant-action-group-count">{count} {meta.noun}</span>
       </summary>
-      <div className="assistant-action-group-body">{children}</div>
+      <div className="assistant-action-group-body">
+        {Children.map(children, (child) => {
+          if (isValidElement(child) && child.type === ActionAccordionFold) {
+            return cloneElement(child, { inActionGroup: true } as { inActionGroup?: boolean });
+          }
+          return child;
+        })}
+      </div>
     </details>
   );
 }
@@ -620,6 +744,7 @@ function ActionAccordionFold({
   writePatchHeaderPreview,
   streamingActionOrdinal,
   priorWriteCollapsedBySuccessor,
+  inActionGroup,
   children,
 }: {
   ev: UIEvent;
@@ -633,6 +758,8 @@ function ActionAccordionFold({
   streamingActionOrdinal?: number;
   /** Write finished on disk but stream still lists a later ACTION in the same iteration (focus the active row). */
   priorWriteCollapsedBySuccessor?: boolean;
+  /** Nested under ActionGroupFold — no duplicate tool verb row; body only (paths, names, output). */
+  inActionGroup?: boolean;
   children: React.ReactNode;
 }) {
   if (ev.type !== "action") return <>{children}</>;
@@ -659,31 +786,60 @@ function ActionAccordionFold({
     streamOrd,
   );
   const headerStreamingPreview = writePatchHeaderPreview ?? defaultArgPreview;
-  const accent = toolAccordionAccent(ev.tool);
+  const saveFailed =
+    pairedObservation?.type !== "observation" &&
+    !isStreamingTurn &&
+    (ev.tool || "").toLowerCase() === "create_file" &&
+    (headerStreamingPreview?.includes("</html>") ||
+      String((ev.input as Record<string, unknown>)?.content ?? "").includes("</html>"));
+  const toolLower = (ev.tool || "").toLowerCase();
+  const obsUi = uiObservationToToolObservation(pairedObservation);
+
+  if (inActionGroup) {
+    const dir =
+      toolLower === "list_files" ? String((ev.input as Record<string, unknown>).dir ?? ".") : null;
+    return (
+      <div
+        className={`assistant-action-group-item${toolLower === "list_files" ? " assistant-action-group-item--list" : ""}`}
+      >
+        {dir != null && (
+          <div className="assistant-action-group-dir" title={dir}>
+            {dir}
+          </div>
+        )}
+        <div className="assistant-action-group-item-body">{children}</div>
+      </div>
+    );
+  }
+
+  const header = (
+    <ToolAccordionHeader
+      tool={ev.tool || "unknown"}
+      input={(ev.input || {}) as Record<string, unknown>}
+      observation={obsUi}
+      streamingArgPreview={headerStreamingPreview}
+      diskSettledOk={diskSettledForAction(ev, allEvents)}
+      saveFailed={saveFailed}
+    />
+  );
+
   return (
     <details
-      className={`assistant-action-fold assistant-action-accent--${accent}`}
+      className="assistant-action-fold assistant-stream-action trace-reasoning"
       open={foldOpen}
-      onToggle={(ev) => {
-        ev.stopPropagation();
-        if (ev.currentTarget !== ev.target) return;
-        setFoldOpen((ev.currentTarget as HTMLDetailsElement).open);
+      onToggle={(toggleEv) => {
+        toggleEv.stopPropagation();
+        if (toggleEv.currentTarget !== toggleEv.target) return;
+        setFoldOpen((toggleEv.currentTarget as HTMLDetailsElement).open);
       }}
     >
-      <summary className="assistant-action-fold-sum tool-header">
-        <span className="assistant-action-fold-chev" aria-hidden>
+      <summary className="assistant-action-fold-sum assistant-stream-action-sum trace-reasoning-summary">
+        <span className="assistant-action-sum-left">{header}</span>
+        <span className="assistant-action-fold-chev thought-log-chev" aria-hidden>
           <ChevronExpand expanded={foldOpen} size={15} />
         </span>
-        <span className="assistant-action-kind">ACTION</span>
-        <ToolAccordionHeader
-          tool={ev.tool || "unknown"}
-          input={(ev.input || {}) as Record<string, unknown>}
-          observation={uiObservationToToolObservation(pairedObservation)}
-          streamingArgPreview={headerStreamingPreview}
-          diskSettledOk={diskSettledForAction(ev, allEvents)}
-        />
       </summary>
-      <div className="assistant-action-fold-body">{children}</div>
+      <div className="assistant-action-fold-body assistant-stream-action-body">{children}</div>
     </details>
   );
 }
@@ -741,7 +897,8 @@ function ThoughtFold({
   const elapsed = displayMs != null ? formatDuration(displayMs) : null;
   const hasMd = displayMarkdown.trim().length > 0;
 
-  if (!hasMd && collapseWhenToolsVisible) return null;
+  // Keep the fold visible while tools run — use last streamed text when collapsed.
+  if (!hasMd && !isStreamingAssistant && !lastNonEmptyRef.current.trim()) return null;
 
   const summaryPrimary = elapsed
     ? `Thought · ${elapsed}`
@@ -839,6 +996,11 @@ function TraceStep({
     } else {
       argPeek = undefined;
     }
+    const saveFailed =
+      !obs &&
+      !isStreamingTurn &&
+      toolName === "create_file" &&
+      (argPeek?.includes("</html>") || String((e.input as Record<string, unknown>)?.content ?? "").includes("</html>"));
     return (
       <div className="trace-tool-row trace-tool-output">
         <ToolOutput
@@ -848,6 +1010,7 @@ function TraceStep({
           streamPreview={streamPreview}
           streamingArgPreview={argPeek}
           diskSettledOk={diskSettledForAction(e, allEvents)}
+          saveFailed={saveFailed}
           suppressHeader={suppressToolHeader}
           suppressObservationFollowup={suppressWritePatchObservationFollowup}
         />
@@ -925,44 +1088,47 @@ function AssistantMessageBase({
   // agent run (filter + sort over hundreds of events on each token tick).
   // Memoize on the events array reference — patchSession produces a new
   // events ref only for the turn it touched, so this gates correctly.
-  const traceSteps = useMemo(() => events
-    .filter(
+  const traceSteps = useMemo(() => {
+    const filtered = (events as UIEvent[]).filter(
       (e) =>
         e.type === "thought" ||
         e.type === "reasoning" ||
         e.type === "action" ||
         e.type === "observation" ||
         e.type === "command_chunk" ||
-        (e.type === "log" &&
-          !String(e.message || "").startsWith("Parse error:") &&
-        !isRedundantUiLog(e as UIEvent)) ||
-      (e.type === "policy_decision" && (e.decision === "deny" || e.decision === "allow_always")),
-  )
-  .sort((a, b) => {
-    const ta = (a as UIEvent).ts ?? 0;
-    const tb = (b as UIEvent).ts ?? 0;
-    const ia = Number((a as UIEvent).iteration) || 1;
-    const ib = Number((b as UIEvent).iteration) || 1;
-    // Different iterations: sort by timestamp when both are available.
-    if (ia !== ib) {
+        (e.type === "activity" &&
+          ["prepare", "index", "context"].includes(String(e.phase ?? ""))) ||
+        (e.type === "log" && !isRedundantUiLog(e)) ||
+        (e.type === "policy_decision" &&
+          (e.decision === "deny" || e.decision === "allow_always")),
+    );
+    const deduped = dedupeTraceTimelineEvents(filtered);
+    return [...deduped].sort((a, b) => {
+      const ta = (a as UIEvent).ts ?? 0;
+      const tb = (b as UIEvent).ts ?? 0;
+      const ia = Number((a as UIEvent).iteration) || 1;
+      const ib = Number((b as UIEvent).iteration) || 1;
+      if (ia !== ib) {
+        if (!ta || !tb) return 0;
+        return ta - tb;
+      }
+      const typeRank = (e: { type: string }): number => {
+        if (e.type === "reasoning") return 0;
+        if (e.type === "thought") return 1;
+        if (e.type === "activity") return 2;
+        if (e.type === "log") return 3;
+        if (e.type === "policy_decision") return 4;
+        if (e.type === "action") return 5;
+        if (e.type === "observation") return 6;
+        return 5;
+      };
+      const ra = typeRank(a as UIEvent);
+      const rb = typeRank(b as UIEvent);
+      if (ra !== rb) return ra - rb;
       if (!ta || !tb) return 0;
       return ta - tb;
-    }
-    // Same iteration: thought always before action/observation, regardless of timestamp
-    // (backend emits action mid-stream, thought only after parse — timestamps are reversed).
-    const typeRank = (e: { type: string }): number => {
-      if (e.type === "reasoning") return 0;
-      if (e.type === "thought") return 1;
-      if (e.type === "action") return 2;
-      if (e.type === "observation") return 3;
-      return 2;
-    };
-    const ra = typeRank(a as UIEvent);
-    const rb = typeRank(b as UIEvent);
-    if (ra !== rb) return ra - rb;
-    if (!ta || !tb) return 0;
-    return ta - tb;
-  }), [events]);
+    });
+  }, [events]);
   const currentIter =
     streamingIteration ??
     Math.max(1, ...traceSteps.map((e) => Number((e as UIEvent).iteration) || 0));
@@ -1149,8 +1315,17 @@ function AssistantMessageBase({
             }
             pushThoughtForIter(actIter);
 
-            let j = i + 1;
             let stream = "";
+            let k = i - 1;
+            while (k >= 0 && traceSteps[k].type === "command_chunk") {
+              const ch = traceSteps[k] as UIEvent;
+              if (ev.iteration !== undefined && ch.iteration !== undefined && ch.iteration !== ev.iteration) break;
+              const t = String(ch.text ?? "");
+              if (t) stream = (ch.stream === "stderr" ? `[stderr] ${t}` : t) + stream;
+              skipIndices.add(k);
+              k--;
+            }
+            let j = i + 1;
             while (j < traceSteps.length && traceSteps[j].type === "command_chunk") {
               const ch = traceSteps[j] as UIEvent;
               if (ev.iteration !== undefined && ch.iteration !== undefined && ch.iteration !== ev.iteration) break;
@@ -1159,7 +1334,11 @@ function AssistantMessageBase({
               skipIndices.add(j);
               j++;
             }
-            const paired = firstObservationAfter(traceSteps, j, ev.iteration);
+            const paired = firstObservationAfter(traceSteps, j, ev.iteration, {
+              actionKey: ev.actionKey,
+              tool: ev.tool,
+              input: (ev.input ?? {}) as Record<string, unknown>,
+            });
             const hasObservation = paired != null;
             const inp = ev.input ?? {};
             const isWp = (ev.tool || "").toLowerCase() === "write_patch";
@@ -1202,10 +1381,13 @@ function AssistantMessageBase({
                 />
               );
 
-            const groupKey = `${(ev.tool || "tool").toLowerCase()}#${actIter}`;
-            if (!paired && isStreaming) pendingGroupKeys.add(groupKey);
-
             if (!patchSlices) {
+              const pathSuffix =
+                (ev.tool || "").toLowerCase() === "create_file"
+                  ? `create-${String((inp as Record<string, unknown>).path ?? "file").replace(/\\/g, "/")}`
+                  : `step-${i}`;
+              const groupKey = actionGroupKey(ev.tool || "tool", actIter, pathSuffix);
+              if (!paired && isStreaming) pendingGroupKeys.add(groupKey);
               pushNode(
                 (
                 <ActionAccordionFold
@@ -1228,6 +1410,8 @@ function AssistantMessageBase({
             } else {
               patchSlices.forEach((slice, fi) => {
                 const slug = writePatchAccordionSlug(slice, fi);
+                const groupKey = actionGroupKey(ev.tool || "tool", actIter, `file-${slug}`);
+                if (!paired && isStreaming && fi === 0) pendingGroupKeys.add(groupKey);
                 const baseInp = typeof inp === "object" && inp ? (inp as Record<string, unknown>) : {};
                 const sliceEv = {
                   ...ev,
@@ -1284,12 +1468,42 @@ function AssistantMessageBase({
               });
             }
 
-            if (paired) skipIndices.add(paired.idx);
+            if (paired && !paired.combined) skipIndices.add(paired.idx);
             return;
           }
 
           const ev = e as UIEvent;
-          if (isTraceLogLike(ev)) {
+
+          if (ev.type === "activity") {
+            pushNode(
+              <TraceActivityRow key={`act-${i}`} label={String(ev.label ?? "")} />,
+              undefined,
+              undefined,
+            );
+            return;
+          }
+
+          if (ev.type === "log") {
+            const level = ev.level === "error" ? "error" : ev.level === "warn" ? "warn" : "info";
+            pushNode(
+              <TraceLogRow key={`log-${i}`} level={level} message={String(ev.message ?? "")} />,
+              undefined,
+              undefined,
+            );
+            return;
+          }
+
+          if (ev.type === "policy_decision") {
+            pushNode(
+              <TracePolicyRow
+                key={`pol-${i}`}
+                decision={String(ev.decision ?? "")}
+                cmd={String(ev.cmd ?? ev.originalCmd ?? "")}
+                reason={String(ev.reason ?? "")}
+              />,
+              undefined,
+              Number(ev.iteration) || undefined,
+            );
             return;
           }
 
@@ -1310,6 +1524,7 @@ function AssistantMessageBase({
         let activeGroupKey: string | undefined;
         if (streamPeekAction) {
           const peekIt = Number(streamPeekAction.iteration) || 1;
+          const peekPairedObs = observationForStreamingPeek(streamPeekAction, events as UIEvent[]);
           /** Synthetic peek row aligns with buffered ACTION blobs not yet flushed as SSE `action` events. */
           const peekStreamOrd = streamedActionCountForIteration(traceSteps as UIEvent[], peekIt);
           if (!liveFoldInjected && peekIt === streamThoughtIter) {
@@ -1328,15 +1543,17 @@ function AssistantMessageBase({
             if (ps.length > 1) peekSlices = ps;
           }
 
-          const peekGroupKey = `${(streamPeekAction.tool || "tool").toLowerCase()}#${peekIt}`;
-          activeGroupKey = peekGroupKey;
+          const peekTool = streamPeekAction.tool || "tool";
           const pushPeekSingle = (): void => {
+            const peekKey = actionGroupKey(peekTool, peekIt, `peek-${peekStreamOrd}`);
+            activeGroupKey = peekKey;
+            if (isStreaming) pendingGroupKeys.add(peekKey);
             pushNode(
               (
               <ActionAccordionFold
                 key={`acc-peek-${streamPeekAction.iteration}-${streamPeekAction.tool}-${String(streamPeekAction.input?.path ?? "patch")}`}
                 ev={streamPeekAction}
-                pairedObservation={undefined}
+                pairedObservation={peekPairedObs}
                 streamingPartial={streamingText}
                 isStreamingTurn={isStreaming}
                 allEvents={events as UIEvent[]}
@@ -1345,6 +1562,7 @@ function AssistantMessageBase({
                 <TraceStep
                   key="stream-peek-ts"
                   e={streamPeekAction}
+                  observation={peekPairedObs}
                   allEvents={events as UIEvent[]}
                   streamingPartial={streamingText}
                   isStreamingTurn={isStreaming}
@@ -1353,7 +1571,7 @@ function AssistantMessageBase({
                 />
               </ActionAccordionFold>
               ),
-              peekGroupKey,
+              peekKey,
               peekIt,
               traceToolStepIcon(streamPeekAction.tool),
             );
@@ -1364,6 +1582,11 @@ function AssistantMessageBase({
           } else {
             peekSlices.forEach((slice, fi) => {
               const slug = writePatchAccordionSlug(slice, fi);
+              const peekKey = actionGroupKey(peekTool, peekIt, `peek-${peekStreamOrd}-file-${slug}`);
+              if (fi === 0) {
+                activeGroupKey = peekKey;
+                if (isStreaming) pendingGroupKeys.add(peekKey);
+              }
               const sliceEv = {
                 ...streamPeekAction,
                 input: { ...basePeekInp, patches: slice },
@@ -1373,7 +1596,7 @@ function AssistantMessageBase({
                 <ActionAccordionFold
                   key={`acc-peek-${streamPeekAction.iteration}-wp-${fi}-${slug}`}
                   ev={sliceEv}
-                  pairedObservation={undefined}
+                  pairedObservation={peekPairedObs}
                   streamingPartial={streamingText}
                   isStreamingTurn={isStreaming}
                   allEvents={events as UIEvent[]}
@@ -1383,6 +1606,7 @@ function AssistantMessageBase({
                   <TraceStep
                     key={`stream-peek-ts-${fi}`}
                     e={sliceEv}
+                    observation={peekPairedObs}
                     streamingWritePatchArg={peekWritePatchSectionNth(streamingText, peekStreamOrd, fi) ?? ""}
                     allEvents={events as UIEvent[]}
                     streamingPartial={streamingText}
@@ -1393,7 +1617,7 @@ function AssistantMessageBase({
                   />
                 </ActionAccordionFold>
                 ),
-                peekGroupKey,
+                peekKey,
                 peekIt,
                 traceToolStepIcon(streamPeekAction.tool),
               );
@@ -1413,16 +1637,12 @@ function AssistantMessageBase({
           if (!k) { finalRendered.push(rendered[p]); finalIterKeys.push(iterKeys[p]); finalStepIcons.push(stepIcons[p]); p++; continue; }
           let q = p + 1;
           while (q < rendered.length && groupKeys[q] === k) q++;
-          const len = q - p;
-          const iter = iterKeys[p];
           const tool = k.split("#")[0] ?? "tool";
-          finalRendered.push(
-            <ActionGroupFold key={`grp-${k}-${p}`} tool={tool} count={len} isActive={isStreaming && (k === activeGroupKey || pendingGroupKeys.has(k))}>  
-              {rendered.slice(p, q)}
-            </ActionGroupFold>,
-          );
-          finalIterKeys.push(iter);
-          finalStepIcons.push(traceToolStepIcon(tool));
+          for (let r = p; r < q; r++) {
+            finalRendered.push(rendered[r]);
+            finalIterKeys.push(iterKeys[r]);
+            finalStepIcons.push(stepIcons[r] ?? traceToolStepIcon(tool));
+          }
           p = q;
         }
         const groupedByIteration: React.ReactNode[] = [];
@@ -1436,19 +1656,18 @@ function AssistantMessageBase({
             groupedByIteration.push(items[0]);
           } else {
             groupedByIteration.push(
-              <div key={`trace-iter-${turn.id}-${iter}-${p}`} className="trace-iteration-group">
-                <Steps
-                  className="trace-iteration-steps"
-                  direction="vertical"
-                  size="small"
-                  current={items.length - 1}
-                  items={items.map((item, idx) => ({
-                    key: `${iter}-${idx}`,
-                    icon: <span className="trace-step-ant-icon">{finalStepIcons[p + idx] ?? null}</span>,
-                    title: null,
-                    description: <div className="trace-iteration-step">{item}</div>,
-                  }))}
-                />
+              <div key={`trace-iter-${turn.id}-${iter}-${p}`} className="trace-iteration-block">
+                <div className="trace-iteration-head">
+                  <span className="trace-iteration-label">Step {iter}</span>
+                  <span className="trace-iteration-meta">{items.length} actions</span>
+                </div>
+                <div className="trace-iteration-body">
+                  {items.map((item, idx) => (
+                    <div key={`${iter}-step-${idx}`} className="trace-iteration-step">
+                      {item}
+                    </div>
+                  ))}
+                </div>
               </div>,
             );
           }
@@ -1658,22 +1877,82 @@ export function Chat({
   const thoughtStartByTurnRef = useRef<Map<string, Map<number, number>>>(new Map());
   /** Sticky-tail state for "↓ Latest" affordance. */
   const [autoScroll, setAutoScroll] = useState(true);
+  const autoScrollRef = useRef(true);
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const chatScrollerRef = useRef<HTMLElement | null>(null);
+  /** Ignore transient atBottom=false while we programmatically stick to tail. */
+  const programmaticUntilRef = useRef(0);
+  const atBottomDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wheelCleanupRef = useRef<(() => void) | null>(null);
 
-  // Helper: scroll to absolute bottom with retries (Virtuoso renders lazily).
-  // scrollToIndex({index:"LAST"}) only reaches the top of the last item; using
-  // align:"end" + a DOM scrollTop=scrollHeight combo ensures we land at the very end.
-  const scrollToBottom = useCallback(() => {
-    const doScroll = () => {
-      const v = virtuosoRef.current;
-      if (v) v.scrollToIndex({ index: "LAST", align: "end" });
-      // Belt-and-suspenders: also push the native scroller to its maximum.
-      const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
-    };
-    const delays = [0, 100, 300, 600];
-    const timers = delays.map((ms) => setTimeout(doScroll, ms));
-    return () => timers.forEach(clearTimeout);
+  const enableAutoScroll = useCallback(() => {
+    autoScrollRef.current = true;
+    setAutoScroll(true);
   }, []);
+
+  const stickToBottom = useCallback(() => {
+    if (!autoScrollRef.current) return;
+    programmaticUntilRef.current = performance.now() + 280;
+    const v = virtuosoRef.current;
+    const scroller = chatScrollerRef.current;
+    v?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    requestAnimationFrame(() => {
+      if (!autoScrollRef.current) return;
+      v?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+      const sc = chatScrollerRef.current;
+      if (sc) sc.scrollTop = sc.scrollHeight;
+    });
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    enableAutoScroll();
+    stickToBottom();
+    const t = setTimeout(stickToBottom, 120);
+    return () => clearTimeout(t);
+  }, [enableAutoScroll, stickToBottom]);
+
+  const bindChatScroller = useCallback((el: HTMLElement | Window | null) => {
+    if (wheelCleanupRef.current) {
+      wheelCleanupRef.current();
+      wheelCleanupRef.current = null;
+    }
+    const node = el instanceof HTMLElement ? el : null;
+    chatScrollerRef.current = node;
+    if (!node) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < -2) {
+        autoScrollRef.current = false;
+        setAutoScroll(false);
+        programmaticUntilRef.current = 0;
+        if (atBottomDebounceRef.current != null) {
+          clearTimeout(atBottomDebounceRef.current);
+          atBottomDebounceRef.current = null;
+        }
+      }
+    };
+    node.addEventListener("wheel", onWheel, { passive: true });
+    wheelCleanupRef.current = () => node.removeEventListener("wheel", onWheel);
+  }, []);
+
+  useEffect(() => () => wheelCleanupRef.current?.(), []);
+
+  const streamTailKey = useMemo(() => {
+    const turns = session.turns;
+    const last = turns[turns.length - 1];
+    return [
+      running ? 1 : 0,
+      turns.length,
+      last?.events?.length ?? 0,
+      thinking?.partial?.length ?? 0,
+      thinking?.iteration ?? 0,
+    ].join(":");
+  }, [running, session.turns, thinking?.partial, thinking?.iteration]);
+
+  useLayoutEffect(() => {
+    if (!running || !autoScrollRef.current) return;
+    stickToBottom();
+  }, [streamTailKey, running, stickToBottom]);
 
   useEffect(() => {
     // Release per-turn in-memory buffers from the previous session.
@@ -1685,25 +1964,6 @@ export function Chat({
     // Scroll to bottom when switching sessions / workspace.
     return scrollToBottom();
   }, [session.id, workspace, scrollToBottom]);
-
-  const isAutoScrollingRef = useRef(true);
-
-  // Bulletproof smart auto-scroller for streaming chat
-  // Virtuoso's followOutput is flaky for continuous token streams.
-  // We use RAF to snap to bottom, BUT we respect a small atBottomThreshold
-  // to let the user escape the auto-scroll trap if they scroll up.
-  useEffect(() => {
-    if (!running) return;
-
-    const frame = requestAnimationFrame(() => {
-      if (!isAutoScrollingRef.current) return;
-      const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
-      if (!scroller) return;
-      scroller.scrollTop = scroller.scrollHeight;
-    });
-
-    return () => cancelAnimationFrame(frame);
-  }, [thinking?.partial, running, session.turns.length]);
 
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
@@ -1721,7 +1981,6 @@ export function Chat({
     try { return sessionStorage.getItem(getActiveSessionKey(workspace)); } catch { return null; }
   });
   const logRef = useRef<HTMLDivElement | null>(null);
-  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const ctrlRef = useRef<{ close: () => void; done: Promise<void> } | null>(null);
   const stoppedRef = useRef(false);
   const sessionRef = useRef(session);
@@ -1731,6 +1990,14 @@ export function Chat({
   const tokenRafRef = useRef<number | null>(null);
   const tokenPendingRef = useRef("");
   const tokenIterRef = useRef<number | undefined>(undefined);
+
+  const cmdChunkRafRef = useRef<number | null>(null);
+  const cmdChunkPendingRef = useRef<{
+    turnId: string;
+    iteration: number;
+    stream: "stdout" | "stderr";
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
     if (sessionRef.current.id !== session.id) sessionRef.current = session;
@@ -1750,7 +2017,8 @@ export function Chat({
     };
     thinkingRef.current = next;
     setThinking(next);
-  }, []);
+    stickToBottom();
+  }, [stickToBottom]);
 
   const scheduleTokenRaf = useCallback(() => {
     if (tokenRafRef.current != null) return;
@@ -1765,6 +2033,62 @@ export function Chat({
   }, []);
 
   /** Apply buffered token chars before handling any non-token event (ordering). */
+  const applyCmdChunkPending = useCallback((pending: {
+    turnId: string;
+    iteration: number;
+    stream: "stdout" | "stderr";
+    text: string;
+  }) => {
+    const { turnId, iteration, stream, text } = pending;
+    if (!text) return;
+    patchSession((s) => {
+      const turns = s.turns.slice();
+      const idx = turns.findIndex((x) => x.id === turnId);
+      if (idx === -1) return s;
+      const existing = turns[idx].events as UIEvent[];
+      const last = existing[existing.length - 1];
+      if (last?.type === "command_chunk" && Number(last.iteration ?? 1) === iteration) {
+        const merged: UIEvent = {
+          ...last,
+          text: String(last.text ?? "") + text,
+          ts: Date.now(),
+        };
+        turns[idx] = { ...turns[idx], events: [...existing.slice(0, -1), merged] };
+      } else {
+        turns[idx] = {
+          ...turns[idx],
+          events: [
+            ...existing,
+            { type: "command_chunk", iteration, stream, text, ts: Date.now() } as UIEvent,
+          ],
+        };
+      }
+      return { ...s, turns, updatedAt: Date.now() };
+    });
+    if (autoScrollRef.current) stickToBottom();
+  }, [stickToBottom]);
+
+  const flushCmdChunkRaf = useCallback(() => {
+    cmdChunkRafRef.current = null;
+    const pending = cmdChunkPendingRef.current;
+    if (!pending?.text) return;
+    cmdChunkPendingRef.current = null;
+    applyCmdChunkPending(pending);
+  }, [applyCmdChunkPending]);
+
+  const flushCmdChunkNow = useCallback(() => {
+    if (cmdChunkRafRef.current != null) {
+      cancelAnimationFrame(cmdChunkRafRef.current);
+      cmdChunkRafRef.current = null;
+    }
+    flushCmdChunkRaf();
+  }, [flushCmdChunkRaf]);
+
+  const scheduleCmdChunkRaf = useCallback(() => {
+    if (cmdChunkRafRef.current != null) return;
+    cmdChunkRafRef.current = requestAnimationFrame(flushCmdChunkRaf);
+  }, [flushCmdChunkRaf]);
+
   const flushPendingTokensNow = useCallback(() => {
     cancelTokenRaf();
     const add = tokenPendingRef.current;
@@ -1779,7 +2103,8 @@ export function Chat({
     };
     thinkingRef.current = next;
     setThinking(next);
-  }, [cancelTokenRaf]);
+    stickToBottom();
+  }, [cancelTokenRaf, stickToBottom]);
 
   const markThoughtStart = useCallback((turnId: string, iteration: number) => {
     let byTurn = thoughtStartByTurnRef.current.get(turnId);
@@ -1872,7 +2197,15 @@ export function Chat({
       );
     };
 
+    const snapshotThoughtBuffer = (iteration: number): void => {
+      const cur = thinkingRef.current;
+      if (!cur?.partial.trim() || cur.iteration !== iteration) return;
+      persistReasoningFromBuffer(iteration, cur.partial);
+      persistThoughtFromBuffer(iteration, cur.partial);
+    };
+
     if (ev.type === "action") {
+      snapshotThoughtBuffer(Number(ev.iteration ?? 1));
       finalizeThoughtDuration(turnId, Number(ev.iteration ?? 1));
     }
 
@@ -1881,7 +2214,17 @@ export function Chat({
     if (ev.type === "thought") {
       const cur = thinkingRef.current;
       const ti = ev.iteration ?? cur?.iteration ?? 1;
-      if (cur && cur.iteration === ti) persistReasoningFromBuffer(ti, cur.partial);
+      if (cur && cur.iteration === ti) snapshotThoughtBuffer(ti);
+      const fromEv = String(ev.thought ?? "").trim();
+      if (fromEv) {
+        setSettledThoughts((m) => {
+          const next = new Map(m);
+          const byIter = new Map(next.get(turnId) ?? []);
+          byIter.set(ti, fromEv);
+          next.set(turnId, byIter);
+          return next;
+        });
+      }
       stampedThoughtMs = finalizeThoughtDuration(turnId, ti);
       if (cur) {
         const next = { iteration: cur.iteration, partial: "", startedAt: cur.startedAt };
@@ -1910,11 +2253,8 @@ export function Chat({
       return;
     }
 
-    if (ev.type === "action") {
-      finalizeThoughtDuration(turnId, Number(ev.iteration ?? 1));
-    }
-
     if (ev.type === "final" || ev.type === "error" || ev.type === "aborted") {
+      flushCmdChunkNow();
       const cur = thinkingRef.current;
       if (cur?.partial.trim()) {
         persistReasoningFromBuffer(cur.iteration, cur.partial);
@@ -1924,6 +2264,9 @@ export function Chat({
       }
       thinkingRef.current = null;
       setThinking(null);
+      if (ev.type === "final" || ev.type === "error" || ev.type === "aborted") {
+        flushPendingTokensNow();
+      }
     }
     if (ev.type === "context_usage") {
       const usage = contextUsageFromEvent(ev as Record<string, unknown>);
@@ -1945,39 +2288,32 @@ export function Chat({
     }
     if (ev.type === "done" || ev.type === "run_started") return;
 
+    if (ev.type === "action") {
+      flushCmdChunkNow();
+      appendTurnEvent(ev.ts ? ev : { ...ev, ts: Date.now() });
+      return;
+    }
+
     if (ev.type === "command_chunk") {
       const iteration = Number(ev.iteration ?? 1);
       const stream = ev.stream === "stderr" ? "stderr" : "stdout";
       const piece = String(ev.text ?? "");
       if (!piece) return;
-      patchSession((s) => {
-        const turns = s.turns.slice();
-        const idx = turns.findIndex((x) => x.id === turnId);
-        if (idx === -1) return s;
-        const existing = turns[idx].events as UIEvent[];
-        const last = existing[existing.length - 1];
-        const chunkText = stream === "stderr" ? `[stderr] ${piece}` : piece;
-        if (
-          last?.type === "command_chunk" &&
-          Number(last.iteration ?? 1) === iteration
-        ) {
-          const merged: UIEvent = {
-            ...last,
-            text: String(last.text ?? "") + chunkText,
-            ts: Date.now(),
-          };
-          turns[idx] = {
-            ...turns[idx],
-            events: [...existing.slice(0, -1), merged],
-          };
-        } else {
-          turns[idx] = {
-            ...turns[idx],
-            events: [...existing, { type: "command_chunk", iteration, stream, text: chunkText, ts: Date.now() } as UIEvent],
-          };
+      const chunkText = stream === "stderr" ? `[stderr] ${piece}` : piece;
+      const cur = cmdChunkPendingRef.current;
+      if (cur && cur.turnId === turnId && cur.iteration === iteration) {
+        cmdChunkPendingRef.current = { turnId, iteration, stream, text: cur.text + chunkText };
+      } else {
+        if (cur?.text) {
+          if (cmdChunkRafRef.current != null) {
+            cancelAnimationFrame(cmdChunkRafRef.current);
+            cmdChunkRafRef.current = null;
+          }
+          applyCmdChunkPending(cur);
         }
-        return { ...s, turns, updatedAt: Date.now() };
-      });
+        cmdChunkPendingRef.current = { turnId, iteration, stream, text: chunkText };
+      }
+      scheduleCmdChunkRaf();
       return;
     }
 
@@ -1992,7 +2328,17 @@ export function Chat({
       );
       if (ev.type === "observation" && ev.diffs && ev.diffs.length) onDiffs(ev.diffs);
     });
-  }, [onDiffs, flushPendingTokensNow, scheduleTokenRaf, markThoughtStart, finalizeThoughtDuration, setContextUsage]);
+  }, [
+    onDiffs,
+    flushPendingTokensNow,
+    flushCmdChunkNow,
+    applyCmdChunkPending,
+    scheduleCmdChunkRaf,
+    scheduleTokenRaf,
+    markThoughtStart,
+    finalizeThoughtDuration,
+    setContextUsage,
+  ]);
 
   useEffect(() => {
     if (reconnectAttemptedRef.current) return;
@@ -2002,8 +2348,8 @@ export function Chat({
     const connectToSession = (backendSession: { id: string; task: string; mode: "ask" | "agent"; status: string; createdAt: number }) => {
       console.log("[Chat] Reconnecting to running session:", backendSession.id);
       setRunning(true);
-      setAutoScroll(true);
-      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+      enableAutoScroll();
+      stickToBottom();
       setAwaitingStop(false);
       stoppedRef.current = false;
       
@@ -2296,8 +2642,8 @@ export function Chat({
     setTaskExternal("");
     setAttachedImages([]); // Clear images after capturing
     setRunning(true);
-    setAutoScroll(true);
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+    enableAutoScroll();
+    stickToBottom();
     setAwaitingStop(false);
     stoppedRef.current = false;
     const startedAt = Date.now();
@@ -2606,9 +2952,17 @@ export function Chat({
 
   const sessionConnecting = running && !activeSessionId && !awaitingStop;
 
+  const liveRunLabel = useMemo(() => {
+    if (!running) return "";
+    const last = session.turns[session.turns.length - 1];
+    if (!last) return "";
+    return deriveLiveActivity(last.events as UIEvent[], true)?.label ?? "";
+  }, [running, session.turns]);
+
   const statusText =
     running && awaitingStop ? "● stopping…" :
     running && sessionConnecting ? "● connecting…" :
+    running && liveRunLabel ? `● ${liveRunLabel}` :
     running ? "● running…" :
     status === "done" ? "● done" :
     status === "error" ? "● error" :
@@ -2772,10 +3126,27 @@ export function Chat({
             className="chat-log"
             data={session.turns}
             initialTopMostItemIndex={session.turns.length - 1}
-            atBottomThreshold={15}
+            scrollerRef={bindChatScroller}
+            followOutput={() => (running && autoScrollRef.current ? "auto" : false)}
+            atBottomThreshold={80}
             atBottomStateChange={(atBottom) => {
-              setAutoScroll(atBottom);
-              isAutoScrollingRef.current = atBottom;
+              if (atBottom) {
+                if (atBottomDebounceRef.current != null) {
+                  clearTimeout(atBottomDebounceRef.current);
+                  atBottomDebounceRef.current = null;
+                }
+                autoScrollRef.current = true;
+                setAutoScroll(true);
+                return;
+              }
+              if (performance.now() < programmaticUntilRef.current) return;
+              if (atBottomDebounceRef.current != null) clearTimeout(atBottomDebounceRef.current);
+              atBottomDebounceRef.current = setTimeout(() => {
+                atBottomDebounceRef.current = null;
+                if (performance.now() < programmaticUntilRef.current) return;
+                autoScrollRef.current = false;
+                setAutoScroll(false);
+              }, 140);
             }}
             components={{ Footer: () => <div style={{ height: 24 }} /> }}
             itemContent={(index, turn) => {
@@ -2817,7 +3188,16 @@ export function Chat({
             }}
           />
         )}
-
+        {!autoScroll && session.turns.length > 0 && (
+          <button
+            type="button"
+            className="scroll-bottom"
+            aria-label="Scroll to latest messages"
+            onClick={() => scrollToBottom()}
+          >
+            ↓ Latest
+          </button>
+        )}
       </div>
 
       <div

@@ -639,7 +639,7 @@
   transition: border-color 120ms ease;
 }
 .assistant-action-fold[open] {
-  border-color: color-mix(in srgb, var(--border) 40%, transparent);
+  border-color: transparent;
 }
 .assistant-action-fold[open]::before {
   content: none;
@@ -647,6 +647,9 @@
 }
 /* ── Unified step-row: action folds, action groups, thought rows ── */
 .assistant-action-fold-sum,
+.assistant-stream-action-sum {
+  width: 100%;
+}
 .assistant-action-group-sum,
 .thought-step-archive-row,
 .assistant-live-thought-summary,
@@ -666,20 +669,37 @@
   transition: background 100ms ease, color 100ms ease;
 }
 
-.assistant-action-kind {
+/* ACTION row — same chrome as Thought; chevron on the right. */
+.assistant-stream-action {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  min-width: 0;
+}
+.assistant-action-sum-left {
   display: inline-flex;
   align-items: center;
-  margin-right: 8px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-  color: rgba(255, 209, 153, 0.9);
-  background: rgba(255, 184, 108, 0.12);
-  border: 1px solid rgba(255, 184, 108, 0.25);
-  text-transform: uppercase;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+}
+.assistant-action-sum-left .tool-flat-head {
+  flex: 1;
+  min-width: 0;
+}
+.assistant-action-step-icon {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
+  color: var(--fg-dim);
+  opacity: 0.9;
+}
+.assistant-stream-action-body {
+  margin: 0;
+  padding: 0 0 6px 22px;
+}
+.assistant-stream-action-body .trace-tool-output {
+  margin: 0;
 }
 .assistant-action-fold-sum:hover,
 .assistant-action-group-sum:hover,
@@ -690,12 +710,14 @@
   color: var(--fg);
 }
 details[open] > .assistant-action-fold-sum,
+details[open] > .assistant-stream-action-sum,
 details[open] > .assistant-action-group-sum,
 details[open] > .thought-step-archive-row,
 details[open] > .assistant-live-thought-summary {
   color: var(--fg);
 }
 .assistant-action-fold-sum::-webkit-details-marker,
+.assistant-stream-action-sum::-webkit-details-marker,
 .assistant-action-group-sum::-webkit-details-marker {
   display: none;
 }
@@ -736,6 +758,7 @@ details[open] > .assistant-live-thought-summary {
   display: block;
 }
 .assistant-action-fold-sum:hover .assistant-action-fold-chev,
+.assistant-stream-action-sum:hover .assistant-action-fold-chev,
 .assistant-action-group-sum:hover .assistant-action-fold-chev,
 .thought-step-archive-row:hover .thought-log-chev,
 .assistant-live-thought-summary:hover .assistant-thought-fold-chev,
@@ -743,6 +766,7 @@ details[open] > .assistant-live-thought-summary {
   color: var(--fg-dim);
 }
 details[open] > .assistant-action-fold-sum .assistant-action-fold-chev,
+details[open] > .assistant-stream-action-sum .assistant-action-fold-chev,
 details[open] > .assistant-action-group-sum .assistant-action-fold-chev,
 details[open] > .thought-step-archive-row .thought-log-chev,
 details[open] > .assistant-live-thought-summary .assistant-thought-fold-chev,
@@ -834,7 +858,24 @@ details[open] > .assistant-stream-thought-sum .assistant-thought-fold-chev {
 }
 /* Inside a group the header already shows tool icon + verb — don't repeat them per row. */
 .assistant-action-group-body .assistant-action-fold-sum > .tool-icon,
-.assistant-action-group-body .assistant-action-fold-sum > .tool-action {
+.assistant-action-group-body .assistant-action-fold-sum > .tool-action,
+.assistant-action-group-body .assistant-action-fold-sum .tool-flat-head .tool-action,
+.assistant-action-group-body .assistant-action-fold-sum .tool-flat-head .tool-icon--folder {
+  display: none;
+}
+.assistant-action-group-item {
+  margin: 2px 0 6px;
+}
+.assistant-action-group-item--list .assistant-action-group-item-body .tool-list-files {
+  margin-top: 0;
+}
+.assistant-action-group-dir {
+  font-size: 12px;
+  color: var(--fg-dim);
+  padding: 2px 0 4px 2px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.assistant-action-group-item-body .tool-header {
   display: none;
 }
 .assistant-action-group-body .assistant-action-fold-sum {
@@ -932,6 +973,35 @@ details[open] > .assistant-stream-thought-sum .assistant-thought-fold-chev {
 .assistant-live-thought-summary {
   /* inherits from unified rule; keep italic for thought context */
   font-style: italic;
+}
+.trace-iteration-block {
+  min-width: 0;
+  margin: 4px 0 6px 0;
+  padding-left: 2px;
+  border-left: 2px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.trace-iteration-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 8px 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.trace-iteration-meta {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+.trace-iteration-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 4px;
 }
 .trace-iteration-group {
   min-width: 0;
@@ -1372,15 +1442,49 @@ details[open] > .assistant-stream-thought-sum .assistant-thought-fold-chev {
 }
 .trace-log-flat {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 8px;
-  padding: 2px 10px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  padding: 3px 6px 3px 4px;
+  font-size: 11px;
   line-height: 1.45;
-  color: var(--fg-muted);
+  color: color-mix(in srgb, var(--fg-dim) 92%, var(--fg));
   border-bottom: none;
   word-break: break-word;
+  min-width: 0;
+}
+.trace-log-flat--activity {
+  color: color-mix(in srgb, var(--fg-dim) 78%, var(--fg));
+  padding-left: 2px;
+}
+.trace-log-flat--activity .trace-log-msg {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.trace-log-dot {
+  width: 5px;
+  height: 5px;
+  margin-top: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--accent-2) 55%, transparent);
+}
+.trace-log-msg {
+  flex: 1;
+  min-width: 0;
+}
+.trace-log-cmd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.trace-log-policy-reason {
+  opacity: 0.85;
+}
+.trace-log-policy-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  opacity: 0.75;
+}
+.trace-log-flat--policy.trace-log-flat--deny {
+  color: color-mix(in srgb, #f87171 85%, var(--fg));
 }
 .agent-log-group {
   border-bottom: none;
@@ -2281,4 +2385,3 @@ kbd {
   background: var(--accent-2);
   width: 1.5px;
 }
-

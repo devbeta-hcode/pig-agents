@@ -53,7 +53,7 @@ function messageText(content: string | ContentPart[]): string {
 export function messagesToCursorPrompt(messages: ChatMessage[]): string {
   const blocks: string[] = [];
   for (const m of messages) {
-    const body = messageText(m.content).trim();
+    const body = messageText(m.content ?? "").trim();
     if (!body) continue;
     blocks.push(`[${m.role.toUpperCase()}]\n${body}`);
   }

@@ -1,7 +1,46 @@
 import fs from "node:fs/promises";
 import fssync from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { safeJoin, toRel } from "../utils/workspace.js";
+import { workspaceWatcher } from "../utils/watcher.js";
+import { isWindows } from "../utils/shell.js";
+import { cleanupAllBackgroundProcesses } from "./smartCommand.js";
+import { windowsClearAttributesRecursive, windowsReleasePathLocks } from "./windowsDelete.js";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function formatDeleteError(rel: string, err: unknown): Error {
+  const e = err as NodeJS.ErrnoException;
+  const code = e?.code ?? "";
+  const msg = e?.message ?? String(err);
+  const target = e?.path ?? rel;
+  if (code === "EBUSY" || /EBUSY|resource busy|locked/i.test(msg)) {
+    return new Error(
+      `Cannot delete "${rel}": path is in use (EBUSY on Windows).\n` +
+        `• Stop agent runs and close Terminals tabs (especially npm run dev in this folder)\n` +
+        `• Close editor tabs for files inside "${rel}"\n` +
+        `• Close File Explorer windows showing this folder\n` +
+        `• Retry after a few seconds\n` +
+        `Path: ${target}`,
+    );
+  }
+  if (code === "EPERM" || code === "EACCES" || /access is denied/i.test(msg)) {
+    return new Error(
+      `Cannot delete "${rel}": permission denied (${code || "access denied"}).\n` +
+        `On Windows, stop Vite/npm dev servers first (they lock esbuild.exe and rollup binaries in node_modules).\n` +
+        `Close Pig Agents Terminals tabs, stop the agent run, then retry.\n` +
+        `Path: ${target}`,
+    );
+  }
+  if (code === "ENOTEMPTY") {
+    return new Error(`Cannot delete "${rel}": directory not empty (${code}). Path: ${target}`);
+  }
+  return new Error(`Cannot delete "${rel}": ${msg}`);
+}
 
 /** Skipped when walking the tree for `searchCode` only (avoids scanning huge deps trees). */
 const SEARCH_SKIP_DIRS = new Set([
@@ -76,6 +115,51 @@ export async function readFile(rel: string): Promise<string> {
   return await fs.readFile(abs, "utf8");
 }
 
+/** Slice file content by 1-based line numbers (inclusive). */
+export function sliceFileLines(
+  content: string,
+  startLine?: number,
+  endLine?: number,
+): { text: string; totalLines: number; from: number; to: number } {
+  const lines = content.split(/\r?\n/);
+  const total = lines.length;
+  let from = 1;
+  let to = total;
+  if (startLine != null && Number.isFinite(startLine)) {
+    from = Math.max(1, Math.min(total, Math.floor(startLine)));
+  }
+  if (endLine != null && Number.isFinite(endLine)) {
+    to = Math.max(from, Math.min(total, Math.floor(endLine)));
+  }
+  const maxLines = 200;
+  if (to - from + 1 > maxLines) {
+    to = from + maxLines - 1;
+  }
+  const text = lines.slice(from - 1, to).join("\n");
+  return { text, totalLines: total, from, to };
+}
+
+/** Short manifest excerpts for first-turn agent context (Aider-style). */
+export async function buildManifestExcerpt(maxLinesPerFile = 28): Promise<string> {
+  const parts: string[] = [];
+  let total = 0;
+  const maxTotal = 4500;
+  for (const p of MANIFEST_HINTS) {
+    if (total >= maxTotal) break;
+    try {
+      const content = await readFile(p);
+      const lines = content.split(/\r?\n/);
+      const excerpt = lines.slice(0, maxLinesPerFile).join("\n");
+      const block = `--- ${p} ---\n${excerpt}${lines.length > maxLinesPerFile ? "\n…" : ""}`;
+      parts.push(block);
+      total += block.length;
+    } catch {
+      /* missing */
+    }
+  }
+  return parts.length ? parts.join("\n\n") : "";
+}
+
 export async function writeFile(rel: string, content: string): Promise<void> {
   const abs = safeJoin(rel);
   await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -92,9 +176,80 @@ export async function createEntry(rel: string, kind: "file" | "dir"): Promise<vo
   }
 }
 
+function windowsCmdRmdir(abs: string): boolean {
+  const quoted = `"${abs.replace(/"/g, '""')}"`;
+  const r = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `rd /s /q ${quoted}`], {
+    stdio: "ignore",
+    timeout: 120_000,
+  });
+  return r.status === 0 || !fssync.existsSync(abs);
+}
+
+function releaseLocksForDelete(abs: string): void {
+  try {
+    cleanupAllBackgroundProcesses();
+  } catch {
+    /* noop */
+  }
+  if (isWindows) {
+    windowsReleasePathLocks(abs);
+    windowsClearAttributesRecursive(abs);
+  }
+}
+
+async function deleteEntryAttempts(abs: string, rel: string): Promise<void> {
+  releaseLocksForDelete(abs);
+
+  const backoffMs = [0, 400, 1000, 2000, 3500];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < backoffMs.length; attempt++) {
+    if (backoffMs[attempt] > 0) await sleep(backoffMs[attempt]);
+    if (attempt === 2) releaseLocksForDelete(abs);
+    try {
+      await fs.rm(abs, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 200,
+      });
+      return;
+    } catch (err) {
+      lastErr = err;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") {
+        throw formatDeleteError(rel, err);
+      }
+    }
+  }
+
+  if (isWindows && fssync.existsSync(abs)) {
+    releaseLocksForDelete(abs);
+    try {
+      const trash = path.join(os.tmpdir(), `.pig-del-${process.pid}-${Date.now()}`);
+      await fs.rename(abs, trash);
+      releaseLocksForDelete(trash);
+      await fs.rm(trash, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+      return;
+    } catch {
+      /* rename-away failed — try cmd rd */
+    }
+    releaseLocksForDelete(abs);
+    if (windowsCmdRmdir(abs)) return;
+  }
+
+  throw formatDeleteError(rel, lastErr);
+}
+
 export async function deleteEntry(rel: string): Promise<void> {
   const abs = safeJoin(rel);
-  await fs.rm(abs, { recursive: true, force: true });
+  const wsRoot = path.resolve(safeJoin("."));
+
+  const resumeWatch = workspaceWatcher.pauseWatching(wsRoot);
+  try {
+    await deleteEntryAttempts(abs, rel);
+  } finally {
+    resumeWatch();
+  }
 }
 
 /**
@@ -200,6 +355,9 @@ const MANIFEST_HINTS = [
   "Cargo.toml",
   "pyproject.toml",
   "go.mod",
+  "index.html",
+  "style.css",
+  "script.js",
 ] as const;
 
 /**

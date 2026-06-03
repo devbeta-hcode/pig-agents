@@ -17,10 +17,8 @@ export interface ImageContentPart {
 
 export type ContentPart = TextContentPart | ImageContentPart;
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string | ContentPart[];
-}
+export type ChatMessage =
+  | { role: "system" | "user" | "assistant"; content: string | ContentPart[] };
 
 export interface LLMUsage {
   promptTokens?: number;
@@ -126,6 +124,69 @@ function logConfigOnce(url: string, modelName: string) {
   logger.info(`LLM → ${modelName} @ ${url}`);
 }
 
+/** Whether the current endpoint + model accept OpenAI-style `image_url` content parts. */
+export function llmSupportsVision(): boolean {
+  const url = endpoint();
+  const m = model().toLowerCase();
+
+  if (/api\.deepseek\.com/i.test(url)) return false;
+
+  if (/openai\.com/i.test(url)) {
+    return /gpt-4o|gpt-4-turbo|gpt-4-vision|gpt-4\.1|o1|o3|chatgpt-4o/i.test(m);
+  }
+  if (/generativelanguage\.googleapis|gemini/i.test(url)) return true;
+  if (/anthropic\.com/i.test(url)) {
+    return /claude-3|claude-sonnet-4|claude-opus-4|claude-haiku-4/i.test(m);
+  }
+  if (/openrouter\.ai/i.test(url)) {
+    return /vision|gpt-4o|claude-3|gemini|llava|qwen.*vl|glm-4v/i.test(m);
+  }
+  if (/api\.groq\.com/i.test(url)) {
+    return /vision|llava|gemma.*vision|llama-3\.2-vision/i.test(m);
+  }
+  if (isOllamaNative()) {
+    return /llava|vision|bakllava|moondream|llama.*vision|gemma.*vision|qwen.*vl|glm-4v/i.test(m);
+  }
+  return /gpt-4o|vision|llava|multimodal|qwen.*vl|glm-4v|gemini/i.test(m);
+}
+
+function messageHasImages(content: string | ContentPart[]): boolean {
+  return Array.isArray(content) && content.some((p) => p.type === "image_url");
+}
+
+function stripImagesFromMessages(messages: ChatMessage[]): ChatMessage[] {
+  const note =
+    "[Attached image(s) were not sent: this LLM endpoint only accepts text. " +
+    "Use a vision-capable model (e.g. GPT-4o, Gemini, Claude 3+) or describe the image in your message.]";
+  return messages.map((msg) => {
+    if (!messageHasImages(msg.content)) return msg;
+    const parts = msg.content as ContentPart[];
+    const text = parts
+      .filter((p): p is TextContentPart => p.type === "text")
+      .map((p) => p.text)
+      .join("\n\n")
+      .trim();
+    const imageCount = parts.filter((p) => p.type === "image_url").length;
+    const suffix = imageCount > 0 ? `\n\n${note}` : "";
+    return { ...msg, content: (text + suffix).trim() || note };
+  });
+}
+
+let lastVisionStripSig = "";
+function prepareWireMessages(messages: ChatMessage[]): ChatMessage[] {
+  if (llmSupportsVision()) return messages;
+  const hasImages = messages.some((m) => messageHasImages(m.content));
+  if (!hasImages) return messages;
+  const sig = `${endpoint()}|${model()}`;
+  if (lastVisionStripSig !== sig) {
+    lastVisionStripSig = sig;
+    logger.warn(
+      `LLM ${model()} @ ${endpoint()} does not support image_url — attached images omitted (text-only request).`,
+    );
+  }
+  return stripImagesFromMessages(messages);
+}
+
 const MAX_429_ATTEMPTS = 8;
 
 function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
@@ -217,6 +278,7 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
   const url = endpoint();
   const modelName = model();
   const ollama = isOllamaNative();
+  const wireMessages = prepareWireMessages(messages);
   logConfigOnce(url, modelName);
   // Two distinct request shapes:
   //   - OpenAI-compatible: { model, messages, temperature, max_tokens, stream }
@@ -226,7 +288,7 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
   const body = ollama
     ? {
         model: modelName,
-        messages,
+        messages: wireMessages,
         stream,
         options: {
           temperature: opts.temperature ?? 0.2,
@@ -236,14 +298,14 @@ async function executeChat(messages: ChatMessage[], opts: LLMOptions): Promise<s
     : skipTemp
       ? {
           model: modelName,
-          messages,
+          messages: wireMessages,
           max_tokens: opts.maxTokens ?? 1500,
           stream,
           ...(stream ? { stream_options: { include_usage: true } } : {}),
         }
       : {
           model: modelName,
-          messages,
+          messages: wireMessages,
           temperature: opts.temperature ?? 0.2,
           max_tokens: opts.maxTokens ?? 1500,
           stream,
@@ -462,22 +524,23 @@ export async function* chatStream(
       const url = endpoint();
       const modelName = model();
       const ollama = isOllamaNative();
+      const wireMessages = prepareWireMessages(messages);
       logConfigOnce(url, modelName);
       const skipTemp = !ollama && anthropicOpenAiOmitsTemperature();
       const body = ollama
-        ? { model: modelName, messages, stream: true,
+        ? { model: modelName, messages: wireMessages, stream: true,
             options: { temperature: opts.temperature ?? 0.2, num_predict: opts.maxTokens ?? 1500 } }
         : skipTemp
           ? {
               model: modelName,
-              messages,
+              messages: wireMessages,
               max_tokens: opts.maxTokens ?? 1500,
               stream: true,
               stream_options: { include_usage: true },
             }
           : {
               model: modelName,
-              messages,
+              messages: wireMessages,
               temperature: opts.temperature ?? 0.2,
               max_tokens: opts.maxTokens ?? 1500,
               stream: true,

@@ -42,6 +42,7 @@ export interface BrowseResult {
 export interface AgentEvent {
   type:
     | "log"
+    | "activity"
     | "iter_start"
     | "token"
     | "reasoning"

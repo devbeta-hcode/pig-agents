@@ -149,6 +149,8 @@ export default function App() {
   const sessionCacheRef = useRef<Map<string, ChatSession>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<ChatSession | null>(null);
+  /** Block debounced saves for sessions the user deleted (prevents ghost index rows). */
+  const deletedChatIdsRef = useRef<Set<string>>(new Set());
   // Coalesce parent re-renders during agent runs. SSE pushes many `action`
   // events per second; calling `setActiveSession` (and resorting `chatList`)
   // synchronously on every one of them re-renders the entire App tree
@@ -358,7 +360,7 @@ export default function App() {
     }
     const payload = pendingSaveRef.current;
     pendingSaveRef.current = null;
-    if (!payload) return;
+    if (!payload || deletedChatIdsRef.current.has(payload.id)) return;
     const merged = { ...payload, pendingDiffs: diffsRef.current };
     api.putChat(merged.workspace, merged).catch((err) => {
       console.warn("chat save failed:", err);
@@ -366,6 +368,7 @@ export default function App() {
   }
 
   function scheduleSave(session: ChatSession, delay = 350) {
+    if (deletedChatIdsRef.current.has(session.id)) return;
     pendingSaveRef.current = session;
     if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(flushSave, delay);
@@ -482,20 +485,27 @@ export default function App() {
       } catch (err) {
         console.warn("getChat failed:", err);
         if (cancelled) return;
-        const meta = chatListRef.current.find((m) => m.id === idLoading);
-        const now = Date.now();
-        const fallback: ChatSession = {
-          id: idLoading,
-          title: meta?.title ?? "Chat",
-          workspace,
-          mode: meta?.mode,
-          createdAt: meta?.createdAt ?? now,
-          updatedAt: now,
-          turns: [],
-          pendingDiffs: [],
-        };
-        sessionCacheRef.current.set(fallback.id, fallback);
-        setActiveSession(fallback);
+        deletedChatIdsRef.current.add(idLoading);
+        sessionCacheRef.current.delete(idLoading);
+        try {
+          await api.deleteChat(workspace, idLoading);
+        } catch {
+          /* prune stale sidebar row */
+        }
+        setChatList((cur) => {
+          const next = cur.filter((m) => m.id !== idLoading);
+          if (next.length === 0) {
+            const s = newSession(workspace);
+            sessionCacheRef.current.set(s.id, s);
+            api.putChat(workspace, s).catch(() => { /* noop */ });
+            setActiveSessionId(s.id);
+            setActiveSession(s);
+            return [metaFromSession(s)];
+          }
+          if (activeSessionId === idLoading) setActiveSessionId(next[0].id);
+          return next;
+        });
+        setActiveSession(null);
         setDiffs([]);
       }
     })();
@@ -514,18 +524,8 @@ export default function App() {
     });
   }, [diffs, activeSessionId, workspace]);
 
-  // Persist any in-flight write before the tab unloads.
   useEffect(() => {
-    const onUnload = () => {
-      const p = pendingSaveRef.current;
-      if (!p) return;
-      try {
-        const merged = { ...p, pendingDiffs: diffsRef.current };
-        const url = `/api/chats/${encodeURIComponent(merged.id)}?workspace=${encodeURIComponent(merged.workspace)}`;
-        const blob = new Blob([JSON.stringify(merged)], { type: "application/json" });
-        navigator.sendBeacon?.(url, blob);
-      } catch { /* noop */ }
-    };
+    const onUnload = () => flushSave();
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
   }, []);
@@ -593,25 +593,39 @@ export default function App() {
     api.putChat(workspace, s).catch((err) => console.warn("create chat failed:", err));
   }
 
-  function deleteChat(id: string) {
+  async function deleteChat(id: string) {
     if (!workspace) return;
+
+    deletedChatIdsRef.current.add(id);
     sessionCacheRef.current.delete(id);
 
-    // Cancel any pending debounced save for this session so it can't
-    // resurrect the file after the DELETE request completes.
     if (pendingSaveRef.current?.id === id) {
       pendingSaveRef.current = null;
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
+    } else {
+      flushSave();
     }
 
-    api.deleteChat(workspace, id).catch((err) => console.warn("delete chat failed:", err));
+    try {
+      await api.deleteChat(workspace, id);
+    } catch (err) {
+      deletedChatIdsRef.current.delete(id);
+      void dlg.alert(`Could not delete chat: ${(err as Error).message}`);
+      try {
+        const r = await api.listChats(workspace);
+        setChatList(r.sessions);
+      } catch {
+        /* noop */
+      }
+      return;
+    }
+
     setChatList((cur) => {
       const next = cur.filter((m) => m.id !== id);
       if (next.length === 0) {
-        // Always keep at least one chat available.
         const s = newSession(workspace);
         sessionCacheRef.current.set(s.id, s);
         api.putChat(workspace, s).catch((err) => console.warn("create chat failed:", err));
@@ -619,7 +633,10 @@ export default function App() {
         setActiveSession(s);
         return [metaFromSession(s)];
       }
-      if (activeSessionId === id) setActiveSessionId(next[0].id);
+      if (activeSessionId === id) {
+        setActiveSessionId(next[0].id);
+        setActiveSession(null);
+      }
       return next;
     });
   }

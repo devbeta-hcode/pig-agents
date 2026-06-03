@@ -135,19 +135,14 @@ async function runAgentInBackground(state: SessionState): Promise<void> {
       session.events.push(event);
     }
 
-    // command_chunk: deliver synchronously so chat/terminal UIs update while the child runs.
-    const syncToClient = event.type === "command_chunk";
+    // Deliver in emission order. command_chunk must not overtake `action` (setImmediate
+    // used to defer other events broke chat live output — chunks rendered before Run row).
     for (const listener of state.listeners) {
-      const l = listener;
-      const deliver = () => {
-        try {
-          l(event);
-        } catch (err) {
-          logger.warn("Session listener error:", err);
-        }
-      };
-      if (syncToClient) deliver();
-      else setImmediate(deliver);
+      try {
+        listener(event);
+      } catch (err) {
+        logger.warn("Session listener error:", err);
+      }
     }
   };
   

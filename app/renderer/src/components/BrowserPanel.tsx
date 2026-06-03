@@ -33,6 +33,9 @@ export default function BrowserPanel({
 }: BrowserPanelProps) {
   const webviewRef = useRef<ElectronWebviewElement | null>(null);
   const guestIdRef = useRef<number | null>(null);
+  const registeredGuestIdRef = useRef<number | null>(null);
+  const registerInFlightRef = useRef(false);
+  const initialNavDoneRef = useRef(false);
   const inspectMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inspectingRef = useRef(false);
   const moreOpenRef = useRef(false);
@@ -69,10 +72,20 @@ export default function BrowserPanel({
   const webviewHidden = overlayHidden || moreOpen;
 
   const registerGuest = useCallback(async (el: ElectronWebviewElement) => {
+    if (registerInFlightRef.current) return;
+    let id: number;
     try {
-      const id = el.getWebContentsId();
+      id = el.getWebContentsId();
+    } catch {
+      return;
+    }
+    if (registeredGuestIdRef.current === id) return;
+
+    registerInFlightRef.current = true;
+    try {
       guestIdRef.current = id;
       const s = await pig.browserRegisterGuest(id);
+      registeredGuestIdRef.current = id;
       setState(s);
       if (s.url && s.url !== "about:blank") {
         setUrlInput(s.url);
@@ -80,10 +93,15 @@ export default function BrowserPanel({
       setReady(true);
       setError(null);
 
-      // Manual open: URL bar is only a label until we navigate — load it when still blank.
-      // Skip when agent just opened the tab (it will navigate itself).
+      // Manual open: load default URL once when the panel is still blank.
+      // dom-ready fires on every navigation — never repeat this here.
       const current = s.url || "";
-      if (!agentActivatingRef.current && (!current || current === "about:blank")) {
+      if (
+        !initialNavDoneRef.current &&
+        !agentActivatingRef.current &&
+        (!current || current === "about:blank")
+      ) {
+        initialNavDoneRef.current = true;
         const target = urlRef.current.trim() || HOME;
         const ns = await pig.browserNavigate(target);
         setState(ns);
@@ -91,6 +109,8 @@ export default function BrowserPanel({
       }
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      registerInFlightRef.current = false;
     }
   }, []);
 
@@ -111,13 +131,9 @@ export default function BrowserPanel({
         const id = guestIdRef.current;
         if (id != null) void pig.browserUnregisterGuest(id);
         guestIdRef.current = null;
+        registeredGuestIdRef.current = null;
+        initialNavDoneRef.current = false;
       };
-
-      try {
-        if (node.getWebContentsId()) void registerGuest(node);
-      } catch {
-        /* not ready yet — dom-ready will fire */
-      }
     },
     [registerGuest],
   );

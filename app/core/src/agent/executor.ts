@@ -1,4 +1,19 @@
-import { listFiles, readFile, writeFile, searchCode, buildCodebaseMapSummary, globFiles } from "../tools/file.js";
+import {
+  listFiles,
+  readFile,
+  writeFile,
+  buildCodebaseMapSummary,
+  globFiles,
+  sliceFileLines,
+} from "../tools/file.js";
+import { searchCodeFast } from "../tools/ripgrepSearch.js";
+import {
+  buildSymbolIndex,
+  findSymbols,
+  findSymbolReferences,
+  formatSymbolHits,
+} from "../index/symbolIndex.js";
+import { semanticSearch } from "../index/embeddingIndex.js";
 import { runSmartCommand } from "../tools/smartCommand.js";
 import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, makeUnifiedDiff, type PatchResult } from "../tools/patch.js";
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
@@ -9,6 +24,7 @@ import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approva
 import { webFetch, webSearch } from "../tools/web.js";
 import { browserSession } from "../browser/session.js";
 import { externalBrowserLaunchHint } from "../tools/browserGuard.js";
+import { preferAgentToolOverShellHint } from "../tools/commandProbeGuard.js";
 
 export interface ToolOutcome {
   ok: boolean;
@@ -33,6 +49,8 @@ export interface ToolContext {
   emit?: (event: { type: string; [k: string]: unknown }) => void;
   /** Per-run read_file cache to prevent duplicate file reads wasting tokens. */
   readCache?: Map<string, string>;
+  /** Paths successfully written this run — blocks duplicate create_file. */
+  writtenPaths?: Set<string>;
 }
 
 /**
@@ -108,12 +126,15 @@ export async function executeTool(
       case "read_file": {
         const p = String(input.path || "");
         if (!p) return { ok: false, summary: "read_file: missing 'path'" };
-        // Return cached result if same file already read this run
-        if (ctx.readCache?.has(p)) {
-          const cached = ctx.readCache.get(p)!;
-          const maxLen = cached.length > 10000 ? 4000 : cached.length > 5000 ? 6000 : 8000;
-          const truncated = cached.length > maxLen ? cached.slice(0, maxLen) + `\n…[+${Math.floor((cached.length-maxLen)/1000)}k chars, cached]` : cached;
-          return { ok: true, summary: `${p} (${cached.length}c, cached):\n${truncated}`, data: cached };
+        const startLine = input.start_line != null ? Number(input.start_line) : undefined;
+        const endLine = input.end_line != null ? Number(input.end_line) : undefined;
+        const cacheKey =
+          startLine != null || endLine != null
+            ? `${p}:${startLine ?? ""}:${endLine ?? ""}`
+            : p;
+        if (ctx.readCache?.has(cacheKey)) {
+          const cached = ctx.readCache.get(cacheKey)!;
+          return { ok: true, summary: `${p} (cached):\n${cached}`, data: cached };
         }
         let content: string;
         try {
@@ -145,11 +166,21 @@ export async function executeTool(
           }
           return { ok: false, summary: `read_file error: ${msg}` };
         }
-        ctx.readCache?.set(p, content);
-        // Adaptive truncation: shorter for large files
-        const maxLen = content.length > 10000 ? 4000 : content.length > 5000 ? 6000 : 8000;
-        const truncated = content.length > maxLen ? content.slice(0, maxLen) + `\n…[+${Math.floor((content.length-maxLen)/1000)}k chars]` : content;
-        return { ok: true, summary: `${p} (${content.length}c):\n${truncated}`, data: content };
+        const sliced = sliceFileLines(
+          content,
+          Number.isFinite(startLine) ? startLine : undefined,
+          Number.isFinite(endLine) ? endLine : undefined,
+        );
+        const body = sliced.text;
+        const maxLen = 6000;
+        const truncated =
+          body.length > maxLen
+            ? body.slice(0, maxLen) + `\n…[+${Math.floor((body.length - maxLen) / 1000)}k chars]`
+            : body;
+        const header = `${p} lines ${sliced.from}-${sliced.to} of ${sliced.totalLines}`;
+        const summary = `${header}:\n${truncated}`;
+        ctx.readCache?.set(cacheKey, summary);
+        return { ok: true, summary, data: body };
       }
       case "list_files": {
         const dir = String(input.dir ?? ".");
@@ -160,9 +191,62 @@ export async function executeTool(
       case "search_code": {
         const q = String(input.query || "");
         if (!q) return { ok: false, summary: "search_code: missing 'query'" };
-        const hits = await searchCode(q, 30);
-        const lines = hits.slice(0, 20).map((h) => `${h.file}:${h.line}: ${h.text.slice(0,80)}`);
-        return { ok: true, summary: `"${q}" (${hits.length} hits):\n${lines.join("\n")}`, data: hits };
+        const hits = await searchCodeFast(q, 24);
+        const lines = hits.slice(0, 16).map((h) => `${h.file}:${h.line}: ${h.text.slice(0, 72)}`);
+        const tail = hits.length > 16 ? `\n…+${hits.length - 16} more` : "";
+        return {
+          ok: true,
+          summary: `"${q}" ${hits.length} hit(s):\n${lines.join("\n")}${tail}`,
+          data: hits,
+        };
+      }
+      case "find_symbol": {
+        const name = String(input.name || "").trim();
+        if (!name) return { ok: false, summary: "find_symbol: missing 'name'" };
+        await buildSymbolIndex(false);
+        const hits = findSymbols(name, 20);
+        return {
+          ok: true,
+          summary: `symbol "${name}" (${hits.length}):\n${formatSymbolHits(hits)}`,
+          data: hits,
+        };
+      }
+      case "find_references": {
+        const name = String(input.name || "").trim();
+        if (!name) return { ok: false, summary: "find_references: missing 'name'" };
+        const hits = await findSymbolReferences(name, 24);
+        const lines = hits.slice(0, 18).map((h) => `${h.file}:${h.line}: ${h.text.slice(0, 72)}`);
+        const tail = hits.length > 18 ? `\n…+${hits.length - 18} more` : "";
+        return {
+          ok: true,
+          summary: `refs "${name}" (${hits.length}):\n${lines.join("\n")}${tail}`,
+          data: hits,
+        };
+      }
+      case "semantic_search": {
+        const q = String(input.query || "").trim();
+        if (!q) return { ok: false, summary: "semantic_search: missing 'query'" };
+        if (process.env.LLM_DISABLE_SEMANTIC_INDEX === "1" || process.env.LLM_DISABLE_SEMANTIC_INDEX === "true") {
+          return { ok: false, summary: "semantic_search disabled (LLM_DISABLE_SEMANTIC_INDEX=1). Use find_symbol or search_code." };
+        }
+        try {
+          const topK = Math.min(16, Math.max(1, Number(input.top_k ?? 8)));
+          const hits = await semanticSearch(q, topK);
+          if (hits.length === 0) {
+            return { ok: true, summary: `semantic_search "${q}": no matches (index empty or low similarity)` };
+          }
+          const lines = hits.map(
+            (h) => `${h.path}:${h.line} (${h.score.toFixed(2)}) ${h.excerpt.split("\n").slice(0, 4).join(" ").slice(0, 120)}`,
+          );
+          return {
+            ok: true,
+            summary: `semantic "${q}" (${hits.length}) — read_file with start_line:\n${lines.join("\n")}`,
+            data: hits,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { ok: false, summary: `semantic_search failed: ${msg.slice(0, 500)}` };
+        }
       }
       case "codebase_map": {
         const maxDepth = Math.min(10, Math.max(1, Number(input.max_depth ?? input.depth ?? 5)));
@@ -337,7 +421,17 @@ export async function executeTool(
         }
 
         out += hints;
-        
+
+        const toolPreferHint = preferAgentToolOverShellHint(cmd);
+        if (toolPreferHint) {
+          ctx.emit?.({
+            type: "log",
+            level: "info",
+            message: `run_command tip: ${toolPreferHint}`,
+          });
+          out += `\n[i] ${toolPreferHint}`;
+        }
+
         // Determine success: completed with exit 0, or background mode (server started)
         const ok = r.mode === "completed" ? r.exitCode === 0 : r.mode === "background";
         return { ok, summary: out, data: r };
@@ -381,6 +475,13 @@ export async function executeTool(
         const p = String(input.path || "");
         const content = stripStrayPatchMarkers(String(input.content ?? ""));
         if (!p) return { ok: false, summary: "create_file: missing 'path'" };
+        if (ctx.writtenPaths?.has(p)) {
+          return {
+            ok: true,
+            summary: `Skipped duplicate create_file for ${p} (already written this run).`,
+            diffs: [],
+          };
+        }
         // Capture pre-state so DiffViewer can render a row + revert can restore it.
         // Treat unreadable / non-existent as an empty file (mark the patch as a
         // create-from-absent so revert will delete the path instead of leaving
@@ -389,6 +490,7 @@ export async function executeTool(
         let createdFromAbsent = false;
         try { before = await readFile(p); } catch { createdFromAbsent = true; }
         await writeFile(p, content);
+        ctx.writtenPaths?.add(p);
         ctx.readCache?.delete(p);
         const diff = makeUnifiedDiff(p, before, content, { markCreatedFromAbsent: createdFromAbsent });
         const diffs = diff ? [diff] : [];

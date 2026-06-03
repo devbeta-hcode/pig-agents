@@ -11,7 +11,7 @@ export function normalizePromptMode(raw: string | undefined): PromptModeId {
   const s = (raw ?? "").trim().toLowerCase();
   if (s === "compact") return "balanced";
   if ((VALID as readonly string[]).includes(s)) return s as PromptModeId;
-  return "balanced";
+  return "economical";
 }
 
 /** Context attachment aggressiveness for compact builders (1 = smallest). */

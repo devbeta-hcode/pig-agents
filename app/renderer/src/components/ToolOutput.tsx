@@ -19,6 +19,8 @@ export interface ToolOutputProps {
   streamingArgPreview?: string;
   /** Disk write finished (SSE tool_disk_settled) before observation is emitted. */
   diskSettledOk?: boolean;
+  /** Turn ended but disk write never confirmed (broken ACTION JSON, etc.). */
+  saveFailed?: boolean;
   /** Hide the Copilot-style top row — used when the row is rendered in `<summary>`. */
   suppressHeader?: boolean;
   /**
@@ -30,7 +32,7 @@ export interface ToolOutputProps {
 
 export type ToolAccordionHeaderProps = Pick<
   ToolOutputProps,
-  "tool" | "input" | "observation" | "streamPreview" | "streamingArgPreview" | "diskSettledOk"
+  "tool" | "input" | "observation" | "streamPreview" | "streamingArgPreview" | "diskSettledOk" | "saveFailed"
 >;
 
 // Icons as simple SVG components
@@ -253,12 +255,14 @@ function CreateFileOutput({
   observation,
   streamingArgPreview,
   diskSettledOk,
+  saveFailed,
   suppressHeader,
 }: {
   input: Record<string, unknown>;
   observation?: ToolOutputProps["observation"];
   streamingArgPreview?: string;
   diskSettledOk?: boolean;
+  saveFailed?: boolean;
   suppressHeader?: boolean;
 }) {
   const filePath = String(input.path || "");
@@ -286,10 +290,12 @@ function CreateFileOutput({
         </span>
         {observation ? (
           <StatusBadge ok={observation.ok} />
+        ) : saveFailed ? (
+          <span className="tool-status tool-status--fail">not saved</span>
         ) : diskSettledOk === true ? (
           <span className="tool-status tool-status--streaming">saved…</span>
         ) : (
-          <span className="tool-status tool-status--streaming">applying…</span>
+          <span className="tool-status tool-status--streaming">writing…</span>
         )}
       </div>
       )}
@@ -322,9 +328,10 @@ function CreateFileOutput({
 }
 
 /** Count +/- lines in a unified diff body (skips file headers and hunk markers). */
-function countDiffStats(diff: string | undefined): { add: number; del: number } | null {
+export function countDiffStats(diff: string | undefined): { add: number; del: number } | null {
   if (!diff) return null;
-  let add = 0, del = 0;
+  let add = 0,
+    del = 0;
   for (const line of diff.split("\n")) {
     if (line.startsWith("+++") || line.startsWith("---")) continue;
     if (line.startsWith("+")) add++;
@@ -334,27 +341,65 @@ function countDiffStats(diff: string | undefined): { add: number; del: number } 
   return { add, del };
 }
 
-/** Copilot-style collapsible per-file diff viewer with +/- gutter + colored hunks. */
-function PatchDiffList({ diffs }: { diffs: string[] }) {
+export function aggregateDiffStats(diffs: string[] | undefined): { add: number; del: number } | null {
+  if (!diffs?.length) return null;
+  let add = 0,
+    del = 0;
+  for (const d of diffs) {
+    const s = countDiffStats(d);
+    if (s) {
+      add += s.add;
+      del += s.del;
+    }
+  }
+  if (add === 0 && del === 0) return null;
+  return { add, del };
+}
+
+function diffPathBasename(diff: string): string {
+  for (const ln of diff.split("\n")) {
+    if (ln.startsWith("+++ b/")) return ln.slice(6).trim().split("/").pop() || ln.slice(6).trim();
+    if (ln.startsWith("+++ ")) return ln.slice(4).trim().split("/").pop() || ln.slice(4).trim();
+  }
+  return "";
+}
+
+/** Per-file diff — `compact` drops nested filename/stats (shown in parent header). */
+function PatchDiffList({ diffs, compact }: { diffs: string[]; compact?: boolean }) {
   return (
-    <div className="tool-patch-diffs">
+    <div className={`tool-patch-diffs${compact ? " tool-patch-diffs--compact" : ""}`}>
       {diffs.map((d, i) => (
-        <PatchDiffBlock key={i} diff={d} />
+        <PatchDiffBlock key={i} diff={d} compact={compact} />
       ))}
     </div>
   );
 }
 
-function PatchDiffBlock({ diff }: { diff: string }) {
+function PatchDiffBlock({ diff, compact }: { diff: string; compact?: boolean }) {
   const [open, setOpen] = useState(true);
   const lines = diff.split("\n");
-  // Extract file path from "+++ b/<path>" header for the summary label.
   let path = "";
   for (const ln of lines) {
-    if (ln.startsWith("+++ b/")) { path = ln.slice(6).trim(); break; }
-    if (ln.startsWith("+++ ")) { path = ln.slice(4).trim(); break; }
+    if (ln.startsWith("+++ b/")) {
+      path = ln.slice(6).trim();
+      break;
+    }
+    if (ln.startsWith("+++ ")) {
+      path = ln.slice(4).trim();
+      break;
+    }
   }
   const stats = countDiffStats(diff);
+  const body = (
+    <pre className="tool-diff-body language-diff">
+      <code>
+        <PatchStreamHighlighted text={diff} />
+      </code>
+    </pre>
+  );
+  if (compact) {
+    return <div className="tool-diff-flat">{body}</div>;
+  }
   return (
     <details className="tool-diff-block" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary className="tool-diff-summary">
@@ -368,11 +413,7 @@ function PatchDiffBlock({ diff }: { diff: string }) {
           </span>
         )}
       </summary>
-      <pre className="tool-diff-body language-diff">
-        <code>
-          <PatchStreamHighlighted text={diff} />
-        </code>
-      </pre>
+      {body}
     </details>
   );
 }
@@ -409,29 +450,20 @@ function WritePatchOutput({
     el.scrollTop = el.scrollHeight;
   }, [targetPatches, observation, showLivePre]);
 
+  const headerRow = (
+    <ToolAccordionHeader
+      tool="write_patch"
+      input={input}
+      observation={observation}
+      streamingArgPreview={streamingArgPreview}
+      diskSettledOk={diskSettledOk}
+    />
+  );
+
   return (
     <div className="tool-output tool-write-patch">
-      {!suppressHeader && (
-      <div className="tool-header">
-        <span className="tool-icon tool-icon--edit">{icons.edit}</span>
-        <span className="tool-action">Edit</span>
-        <span className="tool-files">
-          {chips.slice(0, 3).map((f, i) => (
-            <span key={i} className="tool-file-chip">
-              <FileIcon name={f.split("/").pop() || ""} size={12} />
-              <span>{f.split("/").pop()}</span>
-            </span>
-          ))}
-          {chips.length > 3 && <span className="tool-file-more">+{chips.length - 3}</span>}
-        </span>
-        {observation ? (
-          <StatusBadge ok={observation.ok} label={observation.ok ? "Applied" : undefined} />
-        ) : diskSettledOk === true ? (
-          <span className="tool-status tool-status--streaming">saved…</span>
-        ) : (
-          <span className="tool-status tool-status--streaming">writing…</span>
-        )}
-      </div>
+      {!suppressHeader && !observation?.diffs?.length && (
+        <div className="tool-header">{headerRow}</div>
       )}
       {showLivePre && (
         <div className="tool-create-stream">
@@ -456,43 +488,34 @@ function WritePatchOutput({
       )}
       {observation && !suppressObservationFollowup && (
         <div className="tool-details tool-inline-body-patch">
-          <div className="tool-patch-results">
-            {okFiles.map((f, i) => (
-              <div key={i} className="tool-patch-file tool-patch-file--ok">
-                <span className="tool-patch-status">{icons.check}</span>
-                <FileIcon name={f.split("/").pop() || ""} size={12} />
-                <span>{f}</span>
-                {(() => {
-                  const stats = countDiffStats(observation.diffs?.[i]);
-                  if (!stats) return null;
-                  return (
-                    <span className="tool-patch-stats">
-                      <span className="tool-patch-stats-add">+{stats.add}</span>
-                      <span className="tool-patch-stats-del">−{stats.del}</span>
-                    </span>
-                  );
-                })()}
-              </div>
-            ))}
-            {failFiles.map((f, i) => (
-              <div key={i} className="tool-patch-file tool-patch-file--fail">
-                <span className="tool-patch-status">{icons.error}</span>
-                <FileIcon name={f.split("/").pop() || ""} size={12} />
-                <span>{f}</span>
-              </div>
-            ))}
-            {observation.diffs && observation.diffs.length > 0 && (
-              <PatchDiffList diffs={observation.diffs} />
-            )}
-            {observation.summary?.includes("Validation:") && (
-              <div className="tool-validation">
-                <CodeBlock
-                  content={observation.summary.split("Validation:")[1]?.trim() || ""}
-                  maxLines={6}
-                />
-              </div>
-            )}
-          </div>
+          {observation.diffs && observation.diffs.length > 0 ? (
+            <PatchDiffList diffs={observation.diffs} compact={suppressHeader} />
+          ) : (
+            <div className="tool-patch-results">
+              {okFiles.map((f, i) => (
+                <div key={i} className="tool-patch-file tool-patch-file--ok">
+                  <span className="tool-patch-status">{icons.check}</span>
+                  <FileIcon name={f.split("/").pop() || ""} size={12} />
+                  <span>{f}</span>
+                </div>
+              ))}
+              {failFiles.map((f, i) => (
+                <div key={i} className="tool-patch-file tool-patch-file--fail">
+                  <span className="tool-patch-status">{icons.error}</span>
+                  <FileIcon name={f.split("/").pop() || ""} size={12} />
+                  <span>{f}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {observation.summary?.includes("Validation:") && (
+            <div className="tool-validation">
+              <CodeBlock
+                content={observation.summary.split("Validation:")[1]?.trim() || ""}
+                maxLines={6}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -567,8 +590,78 @@ function RunCommandOutput({
       )}
       {observation && output && (
         <div className="tool-details tool-inline-body-run">
-          <CodeBlock content={output} language="shell" maxLines={20} />
+          <CodeBlock content={output} language="shell" maxLines={12} />
         </div>
+      )}
+    </div>
+  );
+}
+
+function parseCodeHits(summary: string): { loc: string; text: string }[] {
+  const body = summary.replace(/^search_code "[^"]*" \(\d+ hits\):\n?/i, "").trim();
+  if (!body) return [];
+  return body
+    .split("\n")
+    .filter(Boolean)
+    .slice(0, 12)
+    .map((line) => {
+      const m = line.match(/^(.+?):(\d+):\s*(.*)$/);
+      if (m) return { loc: `${m[1]}:${m[2]}`, text: m[3] ?? "" };
+      return { loc: line.slice(0, 48), text: "" };
+    });
+}
+
+function CodeHitList({ hits }: { hits: { loc: string; text: string }[] }) {
+  if (!hits.length) return null;
+  return (
+    <ul className="tool-hit-list">
+      {hits.map((h, i) => (
+        <li key={i} className="tool-hit-row">
+          <code className="tool-hit-loc">{h.loc}</code>
+          {h.text ? <span className="tool-hit-snippet">{h.text}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SemanticSearchOutput({
+  input,
+  observation,
+  suppressHeader,
+}: {
+  input: Record<string, unknown>;
+  observation?: ToolOutputProps["observation"];
+  suppressHeader?: boolean;
+}) {
+  const query = String(input.query || "");
+  const lines =
+    observation?.summary
+      ?.split("\n")
+      .filter((l) => l.trim() && !/^semantic /i.test(l))
+      .slice(0, 10) ?? [];
+  return (
+    <div className="tool-output tool-semantic-search">
+      {!suppressHeader && (
+        <div className="tool-header">
+          <span className="tool-icon tool-icon--search">{icons.search}</span>
+          <span className="tool-action">Semantic</span>
+          <code className="tool-query">&quot;{query}&quot;</code>
+          {observation ? (
+            <span className="tool-hit-count">{lines.length} hits</span>
+          ) : (
+            <span className="tool-status tool-status--streaming">searching…</span>
+          )}
+        </div>
+      )}
+      {observation && lines.length > 0 && (
+        <ul className="tool-hit-list">
+          {lines.map((line, i) => (
+            <li key={i} className="tool-hit-row tool-hit-row--semantic">
+              <span className="tool-hit-snippet">{line.length > 140 ? `${line.slice(0, 137)}…` : line}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -591,7 +684,7 @@ function SearchCodeOutput({
   const hitCount = hitsMatch ? parseInt(hitsMatch[1], 10) : 0;
   
   // Extract search results
-  const resultsText = observation?.summary?.replace(/^search_code "[^"]*" \(\d+ hits\):\n/, "") || "";
+  const hits = observation?.summary ? parseCodeHits(observation.summary) : [];
 
   return (
     <div className="tool-output tool-search-code">
@@ -607,9 +700,9 @@ function SearchCodeOutput({
         )}
       </div>
       )}
-      {observation && resultsText && (
+      {observation && hits.length > 0 && (
         <div className="tool-details tool-inline-body-search">
-          <CodeBlock content={resultsText} maxLines={15} />
+          <CodeHitList hits={hits} />
         </div>
       )}
     </div>
@@ -734,6 +827,7 @@ export function ToolAccordionHeader({
   observation,
   streamingArgPreview,
   diskSettledOk,
+  saveFailed,
 }: ToolAccordionHeaderProps): JSX.Element | null {
   const t = tool.toLowerCase();
 
@@ -741,71 +835,87 @@ export function ToolAccordionHeader({
     const path = String(input.path || "");
     const fileName = path.split("/").pop() || path;
     return (
-      <>
-        <span className="tool-icon">{icons.file}</span>
+      <span className="tool-flat-head">
         <span className="tool-action">Read</span>
-        <span className="tool-target">
-          <FileIcon name={fileName} size={14} />
-          <span className="tool-path" title={path}>
-            {path}
-          </span>
+        <FileIcon name={fileName} size={14} />
+        <span className="tool-flat-name" title={path}>
+          {fileName}
         </span>
-        {observation ? (
-          <StatusBadge ok={observation.ok} />
-        ) : (
+        {!observation ? (
           <span className="tool-status tool-status--streaming">reading…</span>
-        )}
-      </>
+        ) : !observation.ok ? (
+          <StatusBadge ok={false} />
+        ) : null}
+      </span>
     );
   }
 
   if (t === "create_file") {
     const filePath = String(input.path || "");
     const fileName = filePath.split("/").pop() || filePath;
+    const stats = aggregateDiffStats(observation?.diffs);
     return (
-      <>
-        <span className="tool-icon tool-icon--edit">{icons.edit}</span>
+      <span className="tool-flat-head">
         <span className="tool-action">Create</span>
-        <span className="tool-target">
-          <FileIcon name={fileName} size={14} />
-          <span className="tool-path" title={filePath}>
-            {filePath}
-          </span>
+        <FileIcon name={fileName} size={14} />
+        <span className="tool-flat-name" title={filePath}>
+          {fileName}
         </span>
-        {observation ? (
-          <StatusBadge ok={observation.ok} />
-        ) : diskSettledOk === true ? (
-          <span className="tool-status tool-status--streaming">saved…</span>
-        ) : (
-          <span className="tool-status tool-status--streaming">writing…</span>
+        {stats && (
+          <span className="tool-flat-stats">
+            <span className="tool-patch-stats-add">+{stats.add}</span>
+            <span className="tool-patch-stats-del">−{stats.del}</span>
+          </span>
         )}
-      </>
+        {!observation ? (
+          saveFailed ? (
+            <span className="tool-status tool-status--fail">not saved</span>
+          ) : diskSettledOk === true ? (
+            <span className="tool-status tool-status--streaming">saved…</span>
+          ) : (
+            <span className="tool-status tool-status--streaming">writing…</span>
+          )
+        ) : !observation.ok ? (
+          <StatusBadge ok={false} />
+        ) : null}
+      </span>
     );
   }
 
   if (t === "write_patch") {
-    const { chips } = writePatchHeaderFileLists(input, observation, streamingArgPreview);
+    const { chips, okFiles, failFiles } = writePatchHeaderFileLists(input, observation, streamingArgPreview);
+    const primary =
+      chips[0] ||
+      okFiles[0] ||
+      failFiles[0] ||
+      (observation?.diffs?.[0] ? diffPathBasename(observation.diffs[0]) : "") ||
+      "";
+    const base = primary.split("/").pop() || primary || "file";
+    const stats = aggregateDiffStats(observation?.diffs);
     return (
-      <>
-        <span className="tool-icon tool-icon--edit">{icons.edit}</span>
+      <span className="tool-flat-head">
         <span className="tool-action">Edit</span>
-        <span className="tool-files">
-          {chips.slice(0, 3).map((f, i) => (
-            <span key={i} className="tool-file-chip">
-              <FileIcon name={f.split("/").pop() || ""} size={12} />
-              <span>{f.split("/").pop()}</span>
-            </span>
-          ))}
-          {chips.length > 3 && <span className="tool-file-more">+{chips.length - 3}</span>}
+        <FileIcon name={base} size={14} />
+        <span className="tool-flat-name" title={primary}>
+          {base}
         </span>
-        {observation ? (
-          <StatusBadge ok={observation.ok} label={observation.ok ? "Applied" : undefined} />
-        ) : diskSettledOk === true ? (
-          <span className="tool-status tool-status--streaming">saved…</span>
-        ) : (
-          <span className="tool-status tool-status--streaming">writing…</span>
+        {chips.length > 1 && <span className="tool-flat-more">+{chips.length - 1}</span>}
+        {stats && (
+          <span className="tool-flat-stats">
+            <span className="tool-patch-stats-add">+{stats.add}</span>
+            <span className="tool-patch-stats-del">−{stats.del}</span>
+          </span>
         )}
-      </>
+        {!observation ? (
+          diskSettledOk === true ? (
+            <span className="tool-status tool-status--streaming">saved…</span>
+          ) : (
+            <span className="tool-status tool-status--streaming">writing…</span>
+          )
+        ) : !observation.ok ? (
+          <StatusBadge ok={false} />
+        ) : null}
+      </span>
     );
   }
 
@@ -823,9 +933,9 @@ export function ToolAccordionHeader({
           ? `Exit ${exitCode}`
           : undefined;
     return (
-      <>
-        <span className="tool-icon tool-icon--terminal">{icons.terminal}</span>
+      <span className="tool-flat-head">
         <span className="tool-action">Run</span>
+        <span className="tool-icon tool-icon--terminal">{icons.terminal}</span>
         <code className="tool-cmd" title={cmd}>
           {cmd.length > 60 ? cmd.slice(0, 57) + "…" : cmd}
         </code>
@@ -834,7 +944,7 @@ export function ToolAccordionHeader({
         ) : (
           <span className="tool-status tool-status--streaming">running…</span>
         )}
-      </>
+      </span>
     );
   }
 
@@ -843,16 +953,16 @@ export function ToolAccordionHeader({
     const hitsMatch = observation?.summary?.match(/\((\d+) hits\)/);
     const hitCount = hitsMatch ? parseInt(hitsMatch[1], 10) : 0;
     return (
-      <>
-        <span className="tool-icon tool-icon--search">{icons.search}</span>
+      <span className="tool-flat-head">
         <span className="tool-action">Search</span>
+        <span className="tool-icon tool-icon--search">{icons.search}</span>
         <code className="tool-query">&quot;{query}&quot;</code>
         {observation ? (
           <span className="tool-hit-count">{hitCount} matches</span>
         ) : (
           <span className="tool-status tool-status--streaming">searching…</span>
         )}
-      </>
+      </span>
     );
   }
 
@@ -862,9 +972,9 @@ export function ToolAccordionHeader({
     const content = rawSummary.replace(/^[^\n]+\/:\n?/, "");
     const fileCount = content.split("\n").filter(Boolean).length;
     return (
-      <>
-        <span className="tool-icon tool-icon--folder">{icons.folder}</span>
+      <span className="tool-flat-head">
         <span className="tool-action">List</span>
+        <span className="tool-icon tool-icon--folder">{icons.folder}</span>
         <span className="tool-path" title={dir}>
           {dir}
         </span>
@@ -873,37 +983,37 @@ export function ToolAccordionHeader({
         ) : (
           <span className="tool-status tool-status--streaming">listing…</span>
         )}
-      </>
+      </span>
     );
   }
 
   if (t === "codebase_map") {
     const maxDepth = input.max_depth ?? input.depth ?? 5;
     return (
-      <>
+      <span className="tool-flat-head">
+        <span className="tool-action">Map</span>
         <span className="tool-icon tool-icon--map">{icons.map}</span>
-        <span className="tool-action">Codebase Map</span>
         <span className="tool-depth">depth: {String(maxDepth)}</span>
         {observation ? (
           <StatusBadge ok={observation.ok} />
         ) : (
           <span className="tool-status tool-status--streaming">mapping…</span>
         )}
-      </>
+      </span>
     );
   }
 
+  const verb = tool.replace(/_/g, " ");
   return (
-    <>
+    <span className="tool-flat-head">
+      <span className="tool-action">{verb}</span>
       <span className="tool-icon">{icons.terminal}</span>
-      <span className="tool-action">{tool.replace(/_/g, " ")}</span>
-      <span className="tool-target" style={{ flex: 1 }} />
       {observation ? (
         <StatusBadge ok={observation.ok} />
       ) : (
         <span className="tool-status tool-status--streaming">working…</span>
       )}
-    </>
+    </span>
   );
 }
 
@@ -915,6 +1025,7 @@ export function ToolOutput({
   streamPreview,
   streamingArgPreview,
   diskSettledOk,
+  saveFailed,
   suppressHeader,
   suppressObservationFollowup,
 }: ToolOutputProps) {
@@ -930,6 +1041,7 @@ export function ToolOutput({
           observation={observation}
           streamingArgPreview={streamingArgPreview}
           diskSettledOk={diskSettledOk}
+          saveFailed={saveFailed}
           suppressHeader={suppressHeader}
         />
       );
@@ -955,6 +1067,8 @@ export function ToolOutput({
       );
     case "search_code":
       return <SearchCodeOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
+    case "semantic_search":
+      return <SemanticSearchOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
     case "list_files":
       return <ListFilesOutput input={input} observation={observation} suppressHeader={suppressHeader} />;
     case "codebase_map":

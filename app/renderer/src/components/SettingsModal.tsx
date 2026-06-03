@@ -31,7 +31,7 @@ function isOpenAiShapedProvider(p: string): boolean {
 
 const PROMPT_MODE_OPTIONS = [
   { value: "minimal", label: "Ultra-frugal (fewest tokens)" },
-  { value: "economical", label: "Economical" },
+  { value: "economical", label: "Economical (recommended)" },
   { value: "balanced", label: "Balanced (default)" },
   { value: "detailed", label: "Advanced (more context)" },
   { value: "verbose", label: "Maximum detail (full instructions)" },
@@ -780,8 +780,8 @@ export function SettingsModal({ onClose }: Props) {
             options={PROMPT_MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
           />
           <div className="hint">
-            <strong>Economical</strong> or <strong>Balanced</strong> for everyday fixes (smaller context, efficiency rules).
-            <strong>Detailed</strong> / <strong>Verbose</strong> only for hard multi-file work. Agent skips file previews on later turns when history already has tool results.
+            <strong>Economical</strong> or <strong>Balanced</strong> for everyday fixes. Optional env:{" "}
+            <code>EMBEDDING_MODEL</code>, <code>LLM_DISABLE_SEMANTIC_INDEX=1</code>.
           </div>
         </div>
       </div>

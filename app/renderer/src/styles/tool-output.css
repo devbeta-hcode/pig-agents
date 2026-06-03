@@ -79,7 +79,7 @@
 .tool-command-stream {
   margin: 0;
   padding: 6px 8px;
-  max-height: 180px;
+  max-height: 160px;
   overflow: auto;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -257,6 +257,64 @@
   padding-left: 8px;
 }
 
+/* Flat file-change row (header + diff only — no duplicate filenames). */
+.tool-flat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+.tool-flat-head .tool-action {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.tool-flat-head .tool-cmd,
+.tool-flat-head .tool-query,
+.tool-flat-head .tool-path {
+  flex: 1;
+  min-width: 0;
+}
+.tool-flat-name {
+  font-weight: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-flat-more {
+  font-size: 10px;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.tool-flat-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.tool-patch-diffs--compact {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.tool-diff-flat .tool-diff-body {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 11px;
+}
+.assistant-stream-action-body .tool-diff-flat .tool-diff-body {
+  padding: 4px 0 2px;
+}
+
 /* Failed read_file: render the error + hint as plain pre so the agent's
    suggested-paths list is readable (no syntax highlight, no Show-more). */
 .tool-error-pre {
@@ -410,5 +468,37 @@
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
+}
+
+.tool-hit-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-hit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.tool-hit-loc {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(130, 190, 255, 0.9);
+  flex-shrink: 0;
+}
+.tool-hit-snippet {
+  color: rgba(200, 210, 230, 0.82);
+  min-width: 0;
+  word-break: break-word;
+}
+.tool-hit-row--semantic .tool-hit-snippet {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
 }
 

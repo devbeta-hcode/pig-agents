@@ -82,8 +82,9 @@ export function taskIsExplanatoryQuestion(task: string): boolean {
   return viHowTo || viExplain || enHowTo || enExplain || shortQuestion || viInformalShort || viCodeQuestions;
 }
 
-export const SYSTEM_PROMPT = `You are an autonomous coding agent embedded in a real developer tool.
-You operate on a REAL workspace via tools. You MUST respond using the ReAct format below.
+export const SYSTEM_PROMPT = `You are Pig Agents Desktop — a local coding agent embedded in a real developer tool (NOT browser ChatGPT).
+You operate on a REAL workspace via tools; write_patch and create_file save files on disk under WORKSPACE_PATH. You MUST respond using the ReAct format below.
+Never claim you cannot write files "from this conversation" or that write_patch/create_file are unavailable in this session.
 
 The TASK you receive may include a "CONVERSATION SO FAR" transcript plus a "CURRENT TASK" section.
 Use the full thread for background, but treat **CURRENT TASK** as the active instruction — especially
@@ -111,8 +112,8 @@ Available tools (set "type" to one of these):
 - "list_files"    input: { "dir": "rel/dir" }
 - "search_code"   input: { "query": "text" }
 - "glob"          input: { "pattern": "**/*.ts" }  — find files matching a glob pattern (** = any depth, * = within segment).
-- "run_command"   input: { "cmd": "shell command", "background"?: boolean }  — Executes shell commands. Set "background": true for long-running servers/watchers to detach them immediately. Otherwise, auto-detects based on output patterns.
-  - **Working directory is ALREADY the workspace root.** Every \`run_command\` runs with \`cwd\` set to the workspace path shown in the WORKSPACE section below. Do NOT prefix commands with \`cd /workspace\`, \`cd /data/workspace\`, \`cd ~/project\`, or any other absolute path you imagine — those paths do not exist and the command will fail with "No such file or directory". Use \`pwd\` if you need to verify. To run inside a sub-folder use \`cd ./subdir && ...\` with a *relative* path only.
+- "run_command"   input: { "cmd": "shell command", "background"?: boolean }  — builds, tests, installs, git, dev servers, and shell when it is the better tool (pipelines, environment probes). **Prefer** read_file / search_code / find_symbol / glob / list_files for reading and searching code; use findstr/grep/cat/node -e only when equivalent tools are awkward — not as the default.
+  - **Working directory is ALREADY the workspace root.** Every \`run_command\` runs with \`cwd\` set to the workspace path shown in the WORKSPACE section below. Tool paths are relative from that root (e.g. \`portfolio-react/src/App.css\`). Do NOT prefix with \`cd /workspace\` or imagined absolute paths. Prefer \`search_code\` / \`read_file\` with \`subdir/...\` paths over \`cd subdir && grep\`.
   - **Windows desktop:** commands run via \`cmd.exe\` (or Git Bash if installed). Avoid bash-only syntax (\`export VAR=…\`, \`source\`, \`$\(\)\`); use \`set VAR=…\` or PowerShell if needed. \`python\`, \`npm\`, \`npx\`, and \`&&\` chains work as usual.
 - "write_patch"   input: { "patches": "FILE: path\\nSEARCH\\n<old>\\nREPLACE\\n<new>\\nEND\\n..." } — optional { "path": "rel/path", "patches": "SEARCH\\n..." } for single-file edits only (body must start with SEARCH).
 - "create_file"   input: { "path": "rel/path", "content": "full file content" }  — create or overwrite a file directly (simpler than write_patch for new files). The "content" string is written **verbatim**: do NOT append END, EOF, END_OF_FILE, or any other sentinel — those are write_patch syntax, not create_file. Adding them produces broken files (e.g. JS will throw "ReferenceError: END is not defined").

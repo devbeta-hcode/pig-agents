@@ -18,6 +18,29 @@ export function loadDesktopEnv(): void {
   process.env.PIG_ENV_FILE = userEnv;
   if (fs.existsSync(userEnv)) {
     dotenv.config({ path: userEnv });
+    const legacy = [
+      "AGENT_TOOL_MODE",
+      "LLM_DISABLE_NATIVE_TOOLS",
+      "LLM_DISABLE_NATIVE_STREAM",
+      "AGENT_USE_NATIVE_TOOLS",
+    ];
+    let txt = fs.readFileSync(userEnv, "utf8");
+    let changed = false;
+    for (const line of txt.split(/\r?\n/)) {
+      const key = line.split("=")[0]?.trim();
+      if (key && legacy.includes(key)) changed = true;
+    }
+    for (const k of legacy) delete process.env[k];
+    if (changed) {
+      const lines = txt
+        .split(/\r?\n/)
+        .filter((line) => {
+          if (!line || line.startsWith("#")) return true;
+          const key = line.split("=")[0]?.trim();
+          return !key || !legacy.includes(key);
+        });
+      fs.writeFileSync(userEnv, lines.filter((l, i, a) => !(l === "" && i === a.length - 1)).join("\n") + "\n", "utf8");
+    }
   }
 
   // Per-provider LLM config lives in electron-store (not repo llm-profiles.json).

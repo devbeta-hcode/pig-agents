@@ -17,8 +17,16 @@ import {
   maxOutputTokensForMode,
 } from "../llm/prompt-mode.js";
 import { rankRelevant } from "../relevance/search.js";
-import { buildCompactTree } from "../tools/file.js";
-import { extractAllActions, parseAgentResponse, type AgentStep } from "./parser.js";
+import { warmWorkspaceIndex } from "../index/workspaceIndex.js";
+import { activityEvent } from "./activity.js";
+import { actionScheduleKey } from "./actionKey.js";
+import { buildCompactTree, buildManifestExcerpt } from "../tools/file.js";
+import {
+  detectStreamingToolPayload,
+  extractAllActions,
+  parseAgentResponse,
+  type AgentStep,
+} from "./parser.js";
 import { sanitizeFinalOrKeep } from "./sanitizeFinal.js";
 import { executeTool, type ToolContext, type ToolOutcome } from "./executor.js";
 import { createCheckpoint, type Checkpoint } from "../utils/checkpoints.js";
@@ -31,6 +39,12 @@ import {
   looksLikeLocalizedFixTask,
   taskShapeContextHint,
 } from "./taskShape.js";
+import {
+  AGENT_WRITE_AUTHORITY,
+  AGENT_RUNTIME_USER_PREFIX,
+  finalClaimsCreatedWithoutDisk,
+  finalLooksLikePasteOnlyRefusal,
+} from "./writeAuthority.js";
 import type { LLMUsage } from "../llm/client.js";
 
 /** Per-iteration LLM call ceiling — without this, a stalled model/stream leaves the agent run open forever. */
@@ -68,6 +82,7 @@ export type AgentMode = "ask" | "agent";
 
 export type AgentEvent =
   | { type: "log"; level: "info" | "warn" | "error"; message: string }
+  | import("./activity.js").ActivityAgentEvent
   | { type: "iter_start"; iteration: number }
   | { type: "token"; iteration: number; delta: string }
   | { type: "thought"; iteration: number; thought: string }
@@ -77,7 +92,16 @@ export type AgentEvent =
   | { type: "tool_disk_settled"; iteration: number; actionKey: string; ok: boolean }
   /** Live stdout/stderr while run_command child is running (event-driven stream; no poll loop). */
   | { type: "command_chunk"; iteration: number; stream: "stdout" | "stderr"; text: string }
-  | { type: "observation"; iteration: number; ok: boolean; summary: string; diffs?: string[] }
+  | {
+      type: "observation";
+      iteration: number;
+      ok: boolean;
+      summary: string;
+      diffs?: string[];
+      /** Set when multiple tools run in one iteration — pairs UI row to this action. */
+      tool?: string;
+      actionKey?: string;
+    }
   | { type: "final"; result: string }
   | { type: "error"; message: string }
   | { type: "aborted"; message: string }
@@ -296,10 +320,6 @@ function actionsMatchEarly(
   return false;
 }
 
-function actionScheduleKey(type: string, input: Record<string, unknown>): string {
-  return `${type}:${JSON.stringify(input)}`;
-}
-
 type EarlyToolExec = {
   type: string;
   input: Record<string, unknown>;
@@ -310,23 +330,6 @@ type EarlyToolExec = {
    *  in the chat trace and on the diff sidebar. */
   streamedObservation?: boolean;
 };
-
-function detectStreamingToolPayload(buf: string): { tool: string } | null {
-  const markerMatch = /(?:^|\n)ACTION:\s*/i.exec(buf);
-  if (!markerMatch) return null;
-  let after = buf.slice(markerMatch.index + markerMatch[0].length).trimStart();
-  if (/^```(?:json)?\s*\n?/i.test(after)) {
-    after = after.replace(/^```(?:json)?\s*\n?/i, "");
-  }
-  const jsonStart = after.indexOf("{");
-  if (jsonStart === -1) return null;
-  const head = after.slice(jsonStart, jsonStart + 16_000);
-  const m = /"type"\s*:\s*"([^"]+)"/.exec(head);
-  if (!m) return null;
-  const tool = m[1];
-  if (tool === "write_patch" || tool === "create_file") return { tool };
-  return null;
-}
 
 function emitContextUsage(
   emit: (e: AgentEvent) => void,
@@ -375,7 +378,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   };
 
   const wsRoot = getWorkspace();
-  emit({ type: "log", level: "info", message: `Preparing agent context for ${wsRoot}` });
+  emit(activityEvent("prepare", "Preparing workspace…"));
   const loadedRules = loadProjectRules(wsRoot);
   const projectRulesBlock =
     loadedRules.text.length > 0
@@ -400,13 +403,29 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 3));
-  emit({ type: "log", level: "info", message: `Ranking relevant files and compacting workspace tree` });
+  emit(activityEvent("index", "Indexing workspace…"));
   const taskForRanking = activeUserTaskSlice(opts.task);
+  let indexStatus = { symbols: 0, embeddingChunks: 0 };
+  try {
+    indexStatus = await warmWorkspaceIndex(opts.task);
+  } catch (err) {
+    emit({
+      type: "log",
+      level: "warn",
+      message: `Workspace index skipped: ${(err as Error).message}`,
+    });
+  }
   const [relevant, compactTree] = await Promise.all([
     rankRelevant(taskForRanking, maxFiles),
     buildCompactTree(3, 180).catch(() => ""),
   ]);
-  emit({ type: "log", level: "info", message: `Context ready (${relevant.length} relevant file(s))` });
+  const embedNote = indexStatus.embeddingChunks ? ` · ${indexStatus.embeddingChunks} embed` : "";
+  emit(
+    activityEvent(
+      "context",
+      `Context · ${relevant.length} preview${relevant.length === 1 ? "" : "s"} · ${indexStatus.symbols} symbols${embedNote}`,
+    ),
+  );
 
   // History uses simple string content (images only go in the initial user message, not history)
   const history: { role: "system" | "user" | "assistant"; content: string }[] = [];
@@ -539,6 +558,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const scaffoldExpected = looksLikeScaffoldTask(opts.task);
   const localizedFix = looksLikeLocalizedFixTask(opts.task);
   let overCreateNudgeUsed = false;
+  let pasteOnlyFinalNudgeUsed = false;
+  let falseCreateFinalNudgeUsed = false;
 
   /** Stuck detection: consecutive parse errors */
   let consecutiveParseErrors = 0;
@@ -559,10 +580,14 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     emit: (e: { type: string; [k: string]: unknown }) => emit(e as AgentEvent),
     /** Cache file reads for the duration of this run to avoid duplicate token waste. */
     readCache: new Map(),
+    writtenPaths: new Set(),
   };
 
   const promptMode = normalizePromptMode(process.env.PROMPT_MODE);
   const contextTier = promptModeToContextTier(promptMode);
+
+  const manifestExcerpt = await buildManifestExcerpt().catch(() => "");
+
 
   for (let i = 1; i <= maxIter; i++) {
     toolCtx.iteration = i;
@@ -572,8 +597,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     let userMsg: string;
 
     if (promptMode === "verbose") {
-      systemPrompt = SYSTEM_PROMPT + projectRulesBlock;
+      systemPrompt = SYSTEM_PROMPT + AGENT_WRITE_AUTHORITY + projectRulesBlock;
       userMsg = buildContextMessage(opts.task, relevant, history, compactTree, wsRoot);
+      if (i === 1) {
+        userMsg = AGENT_RUNTIME_USER_PREFIX + userMsg;
+      }
     } else {
       let version: "minimal" | "compact";
       if (promptMode === "minimal" || promptMode === "economical") {
@@ -584,11 +612,18 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         version = selectPromptVersion(opts.task, history.length);
       }
       systemPrompt =
-        (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) + projectRulesBlock;
+        (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) +
+        AGENT_WRITE_AUTHORITY +
+        projectRulesBlock;
       userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot, {
         iteration: i,
-        extraHint: taskShapeContextHint(opts.task),
+        extraHint:
+          (i === 1 ? AGENT_RUNTIME_USER_PREFIX : "") + taskShapeContextHint(opts.task, wsRoot),
       });
+    }
+
+    if (i === 1 && manifestExcerpt) {
+      userMsg = `PROJECT MANIFEST:\n${manifestExcerpt}\n\n${userMsg}`;
     }
 
     const umBefore = userMsg.length;
@@ -732,6 +767,74 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
     }
 
+    // Stream may finish before salvage sees </html> — parse full buffer and run any missed tools.
+    const earlyCountBeforeLate = earlyScheduled.size;
+    for (const act of extractAllActions(raw)) {
+      const key = actionScheduleKey(act.type, act.input);
+      if (earlyScheduled.has(key)) continue;
+      emit({
+        type: "log",
+        level: "info",
+        message: `Recovered ${act.type} after stream`,
+      });
+      const entryRef: EarlyToolExec = {
+        type: act.type,
+        input: act.input,
+        promise: Promise.resolve({ ok: false, summary: "pending" }),
+      };
+      earlyScheduled.set(key, entryRef);
+      entryRef.promise = executeTool(act.type, act.input, toolCtx).then((outcome) => {
+        if (isWriteTool(act.type) && outcome.diffs?.length) {
+          entryRef.streamedObservation = true;
+          emit({
+            type: "observation",
+            iteration: i,
+            ok: outcome.ok,
+            summary: outcome.summary,
+            diffs: outcome.diffs,
+          });
+        }
+        return outcome;
+      });
+      emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
+    }
+    if (earlyScheduled.size > earlyCountBeforeLate) {
+      await Promise.all(
+        [...earlyScheduled.values()].slice(earlyCountBeforeLate).map((e) =>
+          e.promise
+            .then((o) => {
+              e.outcome = o;
+            })
+            .catch((err: Error) => {
+              e.outcome = { ok: false, summary: `Tool error: ${err.message}`, diffs: [] as string[] };
+            }),
+        ),
+      );
+      for (const e of [...earlyScheduled.values()].slice(earlyCountBeforeLate)) {
+        if (!isWriteTool(e.type)) continue;
+        const o = e.outcome!;
+        if (o.diffs?.length) {
+          didWrite = true;
+          writeCount += o.diffs.length;
+          diffs.push(...o.diffs);
+        }
+      }
+    }
+
+    if (
+      earlyScheduled.size === 0 &&
+      /ACTION:\s*\{[\s\S]*"type"\s*:\s*"create_file"/i.test(raw) &&
+      /<!DOCTYPE\s+html|<html[\s>]/i.test(raw)
+    ) {
+      emit({
+        type: "log",
+        level: "warn",
+        message:
+          "create_file ACTION present but not executed (broken JSON — unescaped quotes in HTML). " +
+          "Salvage runs after </html> or when the LLM stream ends.",
+      });
+    }
+
     const step = parseAgentResponse(raw);
     if (step.kind === "error") {
       consecutiveParseErrors++;
@@ -833,6 +936,34 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         finalResult = sanitizeFinalOrKeep(step.result);
         emit({ type: "final", result: finalResult });
         return { result: finalResult, iterations: i, diffs, events };
+      }
+
+      if (!didWrite && !falseCreateFinalNudgeUsed && finalClaimsCreatedWithoutDisk(step.result, step.thought)) {
+        falseCreateFinalNudgeUsed = true;
+        const nudge =
+          `You said you created a file but nothing was saved (ACTION JSON may be invalid — HTML with raw " quotes breaks create_file). ` +
+          `Re-emit ONE ACTION: prefer write_patch with FILE:index.html\\nSEARCH\\n\\nREPLACE\\n<full html>\\nEND, ` +
+          `or create_file with properly escaped JSON. Do NOT emit FINAL until the tool succeeds.`;
+        emit({ type: "log", level: "warn", message: "FINAL claimed create but didWrite=false — re-prompting." });
+        history.push({ role: "assistant", content: raw });
+        history.push({ role: "user", content: nudge });
+        continue;
+      }
+
+      if (
+        !didWrite &&
+        !pasteOnlyFinalNudgeUsed &&
+        finalLooksLikePasteOnlyRefusal(`${step.thought}\n${step.result}`)
+      ) {
+        pasteOnlyFinalNudgeUsed = true;
+        const nudge =
+          `You replied as if this were browser ChatGPT. This is Pig Agents Desktop — write_patch and create_file ARE available and write to WORKSPACE_PATH. ` +
+          `Do not ask the user to paste or save files manually. Emit ACTION write_patch/create_file now. ` +
+          `If their target folder is not WORKSPACE_PATH, tell them to Open Folder in the app, then write with tools.`;
+        emit({ type: "log", level: "warn", message: "Paste-only / permission refusal FINAL — re-prompting." });
+        history.push({ role: "assistant", content: raw });
+        history.push({ role: "user", content: nudge });
+        continue;
       }
 
       // Premature FINAL: THOUGHT describes real file work but zero tools ran.
@@ -1001,7 +1132,32 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     });
 
     if (!iterationObservationEmitted) {
-      emit({ type: "observation", iteration: i, ok: allOk, summary: combinedSummary, diffs: combinedDiffs });
+      if (stepActions.length > 1) {
+        for (let j = 0; j < outcomes.length; j++) {
+          const act = stepActions[j];
+          const outcome = outcomes[j];
+          const key = actionScheduleKey(act.type, act.input);
+          const early = earlyScheduled.get(key);
+          if (early?.streamedObservation && isWriteTool(act.type)) continue;
+          emit({
+            type: "observation",
+            iteration: i,
+            ok: outcome.ok,
+            summary: outcome.summary,
+            diffs: outcome.diffs,
+            tool: act.type,
+            actionKey: key,
+          });
+        }
+      } else {
+        emit({
+          type: "observation",
+          iteration: i,
+          ok: allOk,
+          summary: combinedSummary,
+          diffs: combinedDiffs,
+        });
+      }
     }
 
     history.push({ role: "assistant", content: raw });

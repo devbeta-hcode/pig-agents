@@ -528,7 +528,34 @@ export async function diffRevertHunk(diff: string, hunkIndex: number) {
 // Settings (ported from api/settings.ts)
 // ===========================================================================
 
-const SAFE_KEYS = ["LLM_PROVIDER", "BASE_URL", "MODEL", "MAX_CONTEXT_FILES", "MAX_ITERATIONS", "PROMPT_MODE", "LLM_MAX_TOKENS"];
+const SAFE_KEYS = [
+  "LLM_PROVIDER",
+  "BASE_URL",
+  "MODEL",
+  "MAX_CONTEXT_FILES",
+  "MAX_ITERATIONS",
+  "PROMPT_MODE",
+  "LLM_MAX_TOKENS",
+];
+
+/** Removed from product — strip from process + .env on settings access. */
+const LEGACY_AGENT_ENV_KEYS = [
+  "AGENT_TOOL_MODE",
+  "LLM_DISABLE_NATIVE_TOOLS",
+  "LLM_DISABLE_NATIVE_STREAM",
+  "AGENT_USE_NATIVE_TOOLS",
+] as const;
+
+function stripLegacyAgentEnv(): Record<string, undefined> {
+  for (const k of LEGACY_AGENT_ENV_KEYS) delete process.env[k];
+  return Object.fromEntries(LEGACY_AGENT_ENV_KEYS.map((k) => [k, undefined]));
+}
+
+async function stripLegacyAgentEnvFromDisk(): Promise<void> {
+  const cur = await readEnvFile();
+  if (!LEGACY_AGENT_ENV_KEYS.some((k) => k in cur)) return;
+  await writeEnvFile(stripLegacyAgentEnv());
+}
 
 function envFilePath(): string {
   if (process.env.PIG_ENV_FILE) return process.env.PIG_ENV_FILE;
@@ -557,7 +584,18 @@ async function writeEnvFile(updates: Record<string, string | undefined>) {
     if (v === undefined) delete cur[k];
     else cur[k] = v;
   }
-  const order = ["LLM_PROVIDER", "OPENAI_API_KEY", "BASE_URL", "MODEL", "MAX_CONTEXT_FILES", "MAX_ITERATIONS", "PROMPT_MODE", "LLM_MAX_TOKENS", "WORKSPACE_ROOT", "ALLOWED_WORKSPACE_ROOT"];
+  const order = [
+    "LLM_PROVIDER",
+    "OPENAI_API_KEY",
+    "BASE_URL",
+    "MODEL",
+    "MAX_CONTEXT_FILES",
+    "MAX_ITERATIONS",
+    "PROMPT_MODE",
+    "LLM_MAX_TOKENS",
+    "WORKSPACE_ROOT",
+    "ALLOWED_WORKSPACE_ROOT",
+  ];
   const lines: string[] = [];
   for (const k of order) if (k in cur) lines.push(`${k}=${cur[k]}`);
   for (const k of Object.keys(cur)) if (!order.includes(k)) lines.push(`${k}=${cur[k]}`);
@@ -566,6 +604,8 @@ async function writeEnvFile(updates: Record<string, string | undefined>) {
 }
 
 export function settingsGet() {
+  stripLegacyAgentEnv();
+  void stripLegacyAgentEnvFromDisk().catch(() => {});
   let data = readProfilesFile();
   data = ensureProfilesSeededFromEnv(data);
   data = migrateLegacyEnvApiKeyIntoProfiles(data);
@@ -642,6 +682,8 @@ export async function settingsSave(body: Record<string, unknown>) {
     MODEL: merged.model,
     OPENAI_API_KEY: undefined,
   };
+  Object.assign(persisted, stripLegacyAgentEnv());
+
   for (const key of SAFE_KEYS) {
     if (key === "LLM_PROVIDER" || key === "BASE_URL" || key === "MODEL") continue;
     if (key in body && body[key] !== undefined && body[key] !== null) {
@@ -1081,9 +1123,26 @@ function requireWs(ws: string): string {
   return ws;
 }
 
+/** Drop index rows whose session file was removed (stale ghosts after failed deletes). */
+async function pruneChatIndex(ws: string): Promise<SessionMeta[]> {
+  const idx = await readIndex(ws);
+  const kept: SessionMeta[] = [];
+  let changed = false;
+  for (const meta of idx) {
+    try {
+      await fsp.access(chatsSessionPath(ws, meta.id));
+      kept.push(meta);
+    } catch {
+      changed = true;
+    }
+  }
+  if (changed) await writeIndex(ws, kept);
+  return kept;
+}
+
 export async function chatsList(ws: string) {
   requireWs(ws);
-  const list = (await readIndex(ws)).sort((a, b) => b.updatedAt - a.updatedAt);
+  const list = (await pruneChatIndex(ws)).sort((a, b) => b.updatedAt - a.updatedAt);
   return { workspace: ws, sessions: list };
 }
 
@@ -1153,9 +1212,13 @@ export async function chatDelete(ws: string, id: string) {
   requireWs(ws);
   if (!isValidId(id)) throw new Error("invalid id");
   const sp = chatsSessionPath(ws, id);
-  try { await fsp.unlink(sp); } catch { /* may not exist */ }
   const idx = (await readIndex(ws)).filter((m) => m.id !== id);
   await writeIndex(ws, idx);
+  try {
+    await fsp.unlink(sp);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
   return { ok: true as const };
 }
 

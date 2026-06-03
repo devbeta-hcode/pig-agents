@@ -16,7 +16,12 @@ function sleep(ms: number): Promise<void> {
 async function attachCdp(contents: WebContents): Promise<void> {
   if (contents.isDestroyed()) throw new Error("Browser guest destroyed");
   if (contents.debugger.isAttached()) return;
-  await contents.debugger.attach(CDP_VERSION);
+  try {
+    await contents.debugger.attach(CDP_VERSION);
+  } catch (err) {
+    if (contents.debugger.isAttached()) return;
+    throw err;
+  }
 }
 
 export function detachCdp(contents: WebContents | null | undefined): void {

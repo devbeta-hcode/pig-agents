@@ -22,6 +22,7 @@ import {
   maxOutputTokensForMode,
 } from "../llm/prompt-mode.js";
 import { taskShapeContextHint } from "./taskShape.js";
+import { AGENT_RUNTIME_USER_PREFIX, AGENT_WRITE_AUTHORITY } from "./writeAuthority.js";
 import { rankRelevant } from "../relevance/search.js";
 import { buildCompactTree } from "../tools/file.js";
 import { getWorkspace } from "../utils/workspace.js";
@@ -305,8 +306,8 @@ export async function buildPromptForContextPreview(opts: {
       userMsg = buildAskMessageCompact(opts.task, relevant, history, askTier);
     }
   } else if (promptMode === "verbose") {
-    systemPrompt = SYSTEM_PROMPT + projectRulesBlock;
-    userMsg = buildContextMessage(opts.task, relevant, history, compactTree, wsRoot);
+    systemPrompt = SYSTEM_PROMPT + AGENT_WRITE_AUTHORITY + projectRulesBlock;
+    userMsg = AGENT_RUNTIME_USER_PREFIX + buildContextMessage(opts.task, relevant, history, compactTree, wsRoot);
   } else {
     const contextTier = promptModeToContextTier(promptMode);
     let version: "minimal" | "compact";
@@ -318,10 +319,12 @@ export async function buildPromptForContextPreview(opts: {
       version = selectPromptVersion(opts.task, history.length);
     }
     systemPrompt =
-      (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) + projectRulesBlock;
+      (version === "minimal" ? SYSTEM_PROMPT_MINIMAL : SYSTEM_PROMPT_COMPACT) +
+      AGENT_WRITE_AUTHORITY +
+      projectRulesBlock;
     userMsg = buildContextMessageCompact(opts.task, relevant, history, contextTier, compactTree, wsRoot, {
       iteration: 1,
-      extraHint: taskShapeContextHint(opts.task),
+      extraHint: AGENT_RUNTIME_USER_PREFIX + taskShapeContextHint(opts.task, wsRoot),
     });
   }
 
