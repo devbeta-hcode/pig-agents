@@ -72,8 +72,10 @@ export interface Checkpoint {
   gitSha: string;
   parentSha: string;
   runId?: string;
+  chatId?: string;
   kind: "auto-pre-run" | "auto-pre-restore" | "manual";
   hadChanges: boolean;
+  backupType?: "git" | "file" | "run-files";
 }
 
 export interface CommandPolicy {
@@ -229,8 +231,10 @@ export const api = {
   // ---- Checkpoints --------------------------------------------------------
   listCheckpoints: (): Promise<{ workspace: string; checkpoints: Checkpoint[] }> => pig.rpc("checkpointsList", []),
   createCheckpoint: (label?: string): Promise<{ ok: true; checkpoint: Checkpoint }> => pig.rpc("checkpointCreate", [label]),
-  restoreCheckpoint: (id: string): Promise<{ ok: true; restored: Checkpoint; safetyCheckpoint: Checkpoint | null }> =>
-    pig.rpc("checkpointRestore", [id]),
+  restoreCheckpoint: (
+    idOrCp: string | Checkpoint,
+  ): Promise<{ ok: true; restored: Checkpoint; safetyCheckpoint: Checkpoint | null }> =>
+    pig.rpc("checkpointRestore", [idOrCp]),
   deleteCheckpoint: (id: string): Promise<{ ok: true }> => pig.rpc("checkpointDelete", [id]),
 
   // ---- Command policy -----------------------------------------------------
@@ -321,7 +325,8 @@ export const api = {
     task: string,
     mode: "ask" | "agent" = "agent",
     images?: { dataUrl: string; name: string }[],
-  ): Promise<{ ok: true; session: AgentSession }> => pig.rpc("sessionStart", [task, mode, images]),
+    chatId?: string,
+  ): Promise<{ ok: true; session: AgentSession }> => pig.rpc("sessionStart", [task, mode, images, chatId]),
 
   listSessions: (): Promise<{ sessions: AgentSession[]; stats: SessionStats; workspace: string }> =>
     pig.rpc("sessionList", []),

@@ -17,7 +17,15 @@ import {
 } from "../index/symbolIndex.js";
 import { semanticSearch } from "../index/embeddingIndex.js";
 import { runSmartCommand } from "../tools/smartCommand.js";
-import { applyPatches, patchApplyErrorCode, validateWritePatchPayload, makeUnifiedDiff, type PatchResult } from "../tools/patch.js";
+import {
+  applyPatches,
+  parsePatch,
+  patchApplyErrorCode,
+  validateWritePatchPayload,
+  makeUnifiedDiff,
+  type PatchResult,
+} from "../tools/patch.js";
+import { recordRunSnapshotFile } from "../utils/runSnapshots.js";
 import { autoValidate, summarizeValidation, type ValidationReport } from "../validation/validator.js";
 import { startAgentCommand } from "./commandLog.js";
 import { getWorkspace } from "../utils/workspace.js";
@@ -53,6 +61,8 @@ export interface ToolOutcome {
  */
 export interface ToolContext {
   runId?: string;
+  /** Chat session — per-file snapshots stored under ~/.pig-agents/chats/.../snapshots/<chatId>/ */
+  chatId?: string;
   /** ReAct iteration (for command_chunk SSE tagging). */
   iteration?: number;
   emit?: (event: { type: string; [k: string]: unknown }) => void;
@@ -60,6 +70,23 @@ export interface ToolContext {
   readCache?: Map<string, string>;
   /** Paths successfully written this run — blocks duplicate create_file. */
   writtenPaths?: Set<string>;
+}
+
+async function captureRunSnapshotBeforeWrite(
+  ctx: ToolContext,
+  relPath: string,
+): Promise<{ before: string; createdFromAbsent: boolean }> {
+  let before = "";
+  let createdFromAbsent = false;
+  try {
+    before = await readFile(relPath);
+  } catch {
+    createdFromAbsent = true;
+  }
+  if (ctx.chatId && ctx.runId) {
+    await recordRunSnapshotFile(ctx.chatId, ctx.runId, relPath, before, { createdFromAbsent });
+  }
+  return { before, createdFromAbsent };
 }
 
 /**
@@ -547,6 +574,12 @@ export async function executeTool(
         const pathTrim = path?.trim();
         const formatErr = validateWritePatchPayload(raw, pathTrim);
         if (formatErr) return { ok: false, summary: `[${formatErr.code}] ${formatErr.message}` };
+        if (ctx.chatId && ctx.runId) {
+          const blocks = parsePatch(raw, pathTrim);
+          for (const block of blocks) {
+            await captureRunSnapshotBeforeWrite(ctx, block.path);
+          }
+        }
         const results: PatchResult[] = await applyPatches(raw, path);
         if (results.length === 0) {
           return {
@@ -612,9 +645,7 @@ export async function executeTool(
         // Treat unreadable / non-existent as an empty file (mark the patch as a
         // create-from-absent so revert will delete the path instead of leaving
         // an empty stub on disk).
-        let before = "";
-        let createdFromAbsent = false;
-        try { before = await readFile(p); } catch { createdFromAbsent = true; }
+        const { before, createdFromAbsent } = await captureRunSnapshotBeforeWrite(ctx, p);
         await writeFile(p, content);
         ctx.writtenPaths?.add(p);
         ctx.readCache?.delete(p);

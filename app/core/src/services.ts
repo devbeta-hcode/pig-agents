@@ -24,6 +24,10 @@ import {
   deleteCheckpoint,
   listCheckpoints,
   restoreCheckpoint,
+  findCheckpoint,
+  purgeFileBackupsForWorkspace,
+  deleteCheckpointsForChat,
+  type Checkpoint,
 } from "./utils/checkpoints.js";
 import {
   loadPolicy,
@@ -204,8 +208,14 @@ export async function checkpointCreate(label?: string) {
   return { ok: true as const, checkpoint: cp };
 }
 
-export async function checkpointRestore(id: string) {
-  const r = await restoreCheckpoint(id);
+export async function checkpointRestore(idOrCp: string | Checkpoint) {
+  let cp: Checkpoint | null =
+    typeof idOrCp === "string" ? await findCheckpoint(idOrCp) : idOrCp;
+  if (!cp && typeof idOrCp === "string") {
+    throw new Error(`checkpoint not found: ${idOrCp}`);
+  }
+  if (!cp) throw new Error("checkpoint not found");
+  const r = await restoreCheckpoint(cp.id, { known: cp });
   if (!r.ok) throw new Error((r as { error?: string }).error || "restore failed");
   return r;
 }
@@ -214,6 +224,12 @@ export async function checkpointDelete(id: string) {
   const ok = await deleteCheckpoint(id);
   if (!ok) throw new Error("not found");
   return { ok: true as const };
+}
+
+/** Remove heavy file-copy checkpoints under ~/.pig-agents/backups for the active workspace. */
+export async function checkpointPurgeFileBackups() {
+  const r = await purgeFileBackupsForWorkspace();
+  return { ok: true as const, ...r };
 }
 
 // ===========================================================================
@@ -300,9 +316,16 @@ export function sessionStart(
   task: string,
   mode: "ask" | "agent" = "agent",
   images?: { dataUrl: string; name: string }[],
+  chatId?: string,
 ) {
   if (!task) throw new Error("task required");
-  const session = startSession(task, mode === "ask" ? "ask" : "agent", getWorkspace(), images);
+  const session = startSession(
+    task,
+    mode === "ask" ? "ask" : "agent",
+    getWorkspace(),
+    images,
+    chatId?.trim() || undefined,
+  );
   return { ok: true as const, session };
 }
 
@@ -1227,6 +1250,7 @@ export async function chatDelete(ws: string, id: string) {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
+  await deleteCheckpointsForChat(id, ws);
   return { ok: true as const };
 }
 

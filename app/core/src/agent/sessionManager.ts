@@ -9,6 +9,7 @@ import type { AgentEvent, AgentMode, AgentRunResult } from "./runner.js";
 import { runAgent as runAgentCore } from "./runner.js";
 import { logger } from "../utils/logger.js";
 import { runWithWorkspace } from "../utils/workspace.js";
+import { finalizeRunSnapshot } from "../utils/runSnapshots.js";
 
 export type SessionStatus = "running" | "completed" | "error" | "aborted";
 
@@ -24,6 +25,8 @@ export interface AgentSession {
   completedAt?: number;
   workspace: string;
   images?: { dataUrl: string; name: string }[];
+  /** UI chat session — ties run snapshots + checkpoint purge to chat delete. */
+  chatId?: string;
 }
 
 type SessionListener = (event: AgentEvent) => void;
@@ -88,7 +91,8 @@ export function startSession(
   task: string,
   mode: AgentMode,
   workspace: string,
-  images?: { dataUrl: string; name: string }[]
+  images?: { dataUrl: string; name: string }[],
+  chatId?: string,
 ): AgentSession {
   const id = generateSessionId();
   
@@ -101,6 +105,7 @@ export function startSession(
     createdAt: Date.now(),
     workspace,
     images,
+    chatId,
   };
   
   const abortController = new AbortController();
@@ -152,6 +157,7 @@ async function runAgentInBackground(state: SessionState): Promise<void> {
         task: session.task,
         mode: session.mode,
         runId: session.id,
+        chatId: session.chatId,
         signal: abortController.signal,
         onEvent,
         images: session.images,
@@ -180,6 +186,12 @@ async function runAgentInBackground(state: SessionState): Promise<void> {
     session.completedAt = Date.now();
     
     logger.info(`Session ${session.status}: ${session.id} - ${session.error}`);
+  } finally {
+    if (session.chatId) {
+      void finalizeRunSnapshot(session.chatId, session.id, session.workspace).catch((e) =>
+        logger.warn(`runSnapshots finalize: ${(e as Error).message}`),
+      );
+    }
   }
 }
 

@@ -1,15 +1,12 @@
-// Workspace checkpoint engine — the "agent safety net".
+// Workspace checkpoint engine — rollback for agent runs.
 //
-// Every agent run starts with a snapshot of the entire working tree so the
-// user can roll back the *whole run* with one click.
-//
-// Two modes:
-// 1. GIT-BASED (when workspace is a git repo): Uses git internals for
-//    efficient snapshots without touching the user's index.
-// 2. FILE-BASED (when workspace has no git): Copies files directly to
-//    ~/.pig-agents/backups/<workspace-hash>/<checkpoint-id>/
-//
-// File-based backup respects common ignore patterns (node_modules, .git, etc.)
+// Design (aligned with normal IDEs / git, NOT full-tree copies):
+// - **Git repo**: `commit-tree` + ref under `refs/pig-agents/checkpoints/` — stores
+//   tree state via git object DB (deduped blobs), not a second copy of the project.
+// - **No git**: we do NOT auto-copy the workspace (that filled disks). Manual
+//   full copy only if `PIG_CHECKPOINT_FILE_BACKUP=1` (legacy escape hatch).
+// - **Auto pre-run**: skipped when working tree is clean; reuses latest checkpoint.
+// - Ring buffer trims old refs and runs `git gc --prune=now` after drops.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -25,11 +22,14 @@ import {
   deleteCheckpointRow,
   loadAllCheckpoints,
   mergeRecoveredCheckpoints,
-  trimRing,
 } from "./checkpointDb.js";
+import { initRunSnapshot, restoreRunSnapshot, purgeChatRunSnapshots } from "./runSnapshots.js";
 
 const REF_PREFIX = "refs/pig-agents/checkpoints/";
-const MAX_KEEP = 50; // ring buffer — older checkpoints get GC'd
+/** Git checkpoint refs to retain (older refs deleted + gc). */
+const MAX_KEEP_GIT = 12;
+/** Full-tree copies are disabled by default; if enabled, keep almost none. */
+const MAX_KEEP_FILE = 2;
 
 // Global backup directory for file-based checkpoints
 const BACKUP_ROOT = path.join(os.homedir(), ".pig-agents", "backups");
@@ -39,8 +39,13 @@ const IGNORE_PATTERNS = [
   "node_modules",
   ".git",
   ".pig-agents",
+  "backups",
   "dist",
   "build",
+  "out",
+  "target",
+  "vendor",
+  "release",
   ".next",
   ".nuxt",
   "__pycache__",
@@ -55,6 +60,8 @@ const IGNORE_PATTERNS = [
   ".cache",
   ".parcel-cache",
   ".turbo",
+  ".cursor",
+  "pig-agents-web",
 ];
 
 export interface Checkpoint {
@@ -69,12 +76,14 @@ export interface Checkpoint {
   parentSha: string;
   /** Run id this snapshot belongs to. */
   runId?: string;
+  /** Chat session id — snapshots for this chat are purged when the chat is deleted. */
+  chatId?: string;
   /** Why we took it: explicit user click vs. auto before agent run. */
   kind: "auto-pre-run" | "auto-pre-restore" | "manual";
   /** Whether the working tree had any uncommitted changes when we snapshotted. */
   hadChanges: boolean;
-  /** Backup type: git-based or file-based. */
-  backupType?: "git" | "file";
+  /** git | file (legacy full copy) | run-files (per-file, per chat, in ~/.pig-agents/chats/.../snapshots). */
+  backupType?: "git" | "file" | "run-files";
   /** Path to backup directory (file mode only). */
   backupPath?: string;
 }
@@ -97,18 +106,63 @@ async function ensureMetaDir(ws: string): Promise<void> {
   }
 }
 
+function autoCheckpointEnabled(): boolean {
+  const v = process.env.PIG_DISABLE_AUTO_CHECKPOINT;
+  return v !== "1" && v !== "true";
+}
+
+function latestGitCheckpointMeta(ws: string): Checkpoint | null {
+  const gitCps = loadAllCheckpoints(ws)
+    .filter((c) => c.backupType !== "file")
+    .sort((a, b) => b.createdAt - a.createdAt);
+  return gitCps[0] ?? null;
+}
+
+/** Drop oldest checkpoints; delete refs / file dirs; prune unreachable git objects. */
+async function trimCheckpointRing(ws: string): Promise<void> {
+  const all = loadAllCheckpoints(ws);
+  const fileCps = all.filter((c) => c.backupType === "file").sort((a, b) => a.createdAt - b.createdAt);
+  const gitCps = all.filter((c) => c.backupType !== "file").sort((a, b) => a.createdAt - b.createdAt);
+  const toDrop: Checkpoint[] = [];
+  if (fileCps.length > MAX_KEEP_FILE) {
+    toDrop.push(...fileCps.slice(0, fileCps.length - MAX_KEEP_FILE));
+  }
+  if (gitCps.length > MAX_KEEP_GIT) {
+    toDrop.push(...gitCps.slice(0, gitCps.length - MAX_KEEP_GIT));
+  }
+  let droppedGit = 0;
+  for (const old of toDrop) {
+    deleteCheckpointRow(ws, old.id);
+    if (old.backupType === "file" && old.backupPath) {
+      await deleteFileBackup(old.backupPath);
+    } else {
+      droppedGit++;
+      await runGit(["update-ref", "-d", `${REF_PREFIX}${old.id}`], { cwd: ws });
+    }
+  }
+  if (droppedGit > 0) {
+    await pruneCheckpointGitObjects(ws);
+  }
+}
+
+/** After deleting checkpoint refs, drop unreachable objects so .git does not grow forever. */
+async function pruneCheckpointGitObjects(ws: string): Promise<void> {
+  const gc = await runGit(["gc", "--prune=now", "--quiet"], { cwd: ws });
+  if (gc.exitCode !== 0) {
+    logger.warn(`checkpoints: git gc --prune=now: ${gc.stderr.trim() || gc.exitCode}`);
+  }
+}
+
 /** Persist new checkpoint + ring trim; cleans git refs / file backups for dropped entries. */
 async function persistNewCheckpoint(ws: string, cp: Checkpoint): Promise<void> {
   await ensureMetaDir(ws);
   appendCheckpoint(ws, cp);
-  const dropped = trimRing(ws, MAX_KEEP);
-  for (const old of dropped) {
-    if (old.backupType === "file" && old.backupPath) {
-      await deleteFileBackup(old.backupPath);
-    } else {
-      await runGit(["update-ref", "-d", `${REF_PREFIX}${old.id}`], { cwd: ws });
-    }
-  }
+  await trimCheckpointRing(ws);
+}
+
+/** Full-tree copy is opt-in only (legacy). Default: git snapshots or nothing. */
+function fileBackupAllowed(kind: Checkpoint["kind"]): boolean {
+  return process.env.PIG_CHECKPOINT_FILE_BACKUP === "1" && kind === "manual";
 }
 
 // ---------------------------------------------------------------------------
@@ -361,8 +415,38 @@ export async function repairCheckpointMetaFromStorage(workspace?: string): Promi
   const n = mergeRecoveredCheckpoints(ws, recovered);
   if (n > 0) {
     logger.info(`checkpoints: repaired metadata (${n} row(s) from git refs / file backups)`);
+    await trimCheckpointRing(ws);
   }
   return n;
+}
+
+/**
+ * Delete all file-based checkpoint copies under ~/.pig-agents/backups for a workspace.
+ * Git refs in the repo are untouched. Use after accidental full-tree file backups.
+ */
+export async function purgeFileBackupsForWorkspace(workspace?: string): Promise<{ removedDirs: number; freedNote: string }> {
+  const ws = workspace ?? getWorkspace();
+  const wsHash = hashWorkspace(ws);
+  const backupBase = path.join(BACKUP_ROOT, wsHash);
+  let removedDirs = 0;
+  try {
+    const entries = await fsp.readdir(backupBase, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isDirectory() || !ent.name.startsWith("cp-")) continue;
+      await deleteFileBackup(path.join(backupBase, ent.name));
+      removedDirs++;
+    }
+  } catch {
+    /* missing */
+  }
+  const meta = loadAllCheckpoints(ws);
+  for (const cp of meta) {
+    if (cp.backupType === "file") deleteCheckpointRow(ws, cp.id);
+  }
+  return {
+    removedDirs,
+    freedNote: `Removed ${removedDirs} file backup folder(s) under ${backupBase}. Git checkpoints kept.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -392,20 +476,89 @@ function makeId(): string {
  * Create a new checkpoint of the workspace.
  * Uses git-based snapshots if available, otherwise falls back to file-based backup.
  */
+/** Cursor/Copilot-style: per-chat file snapshots only (no git, no full-tree copy). */
+function createRunFilesCheckpoint(
+  ws: string,
+  chatId: string,
+  runId: string,
+  label: string,
+  kind: Checkpoint["kind"],
+): Checkpoint {
+  return {
+    id: runId,
+    workspace: ws,
+    label,
+    createdAt: Date.now(),
+    gitSha: "",
+    parentSha: "",
+    runId,
+    chatId,
+    kind,
+    hadChanges: false,
+    backupType: "run-files",
+  };
+}
+
+/** Remove workspace git/file checkpoints tied to a chat session. */
+export async function deleteCheckpointsForChat(chatId: string, workspace?: string): Promise<number> {
+  const ws = workspace ?? getWorkspace();
+  const all = loadAllCheckpoints(ws);
+  let n = 0;
+  for (const cp of all) {
+    if (cp.chatId !== chatId) continue;
+    if (await deleteCheckpoint(cp.id, ws)) n++;
+  }
+  await purgeChatRunSnapshots(chatId, ws);
+  return n;
+}
+
 export async function createCheckpoint(
   label: string,
-  opts: { runId?: string; kind?: Checkpoint["kind"]; workspace?: string } = {},
+  opts: { runId?: string; chatId?: string; kind?: Checkpoint["kind"]; workspace?: string } = {},
 ): Promise<Checkpoint | null> {
   const ws = opts.workspace ?? getWorkspace();
+  const kind = opts.kind ?? "manual";
+  const chatId = opts.chatId?.trim();
+
+  // Chat-bound runs: per-file snapshots under ~/.pig-agents/chats/... (no .git required).
+  if (chatId && opts.runId && (kind === "auto-pre-run" || kind === "auto-pre-restore")) {
+    if (kind === "auto-pre-run") {
+      await initRunSnapshot(chatId, opts.runId, ws);
+      const cp = createRunFilesCheckpoint(ws, chatId, opts.runId, label, kind);
+      logger.info(`checkpoints: run-files ${opts.runId} for chat ${chatId}`);
+      return cp;
+    }
+    // Before restore: init empty run bucket for undo-restore (optional safety).
+    await initRunSnapshot(chatId, `${opts.runId}-pre-restore`, ws);
+    return createRunFilesCheckpoint(ws, chatId, `${opts.runId}-pre-restore`, label, kind);
+  }
+
+  if ((kind === "auto-pre-run" || kind === "auto-pre-restore") && !autoCheckpointEnabled()) {
+    return latestGitCheckpointMeta(ws);
+  }
+
   const id = makeId();
+  const allowFile = fileBackupAllowed(kind);
   const hasGit = await ensureRepo(ws);
-  
+
   if (hasGit) {
-    // Git-based checkpoint
     const snap = await snapshotTree(ws);
     if (!snap) {
+      if (!allowFile) {
+        logger.warn(`checkpoints: git snapshot failed for ${id} (${kind}); skipping auto file backup`);
+        return null;
+      }
       logger.warn(`checkpoints: git snapshot failed for ${id}, trying file backup`);
-      return createFileCheckpoint(ws, id, label, opts);
+      return createFileCheckpoint(ws, id, label, { ...opts, kind });
+    }
+
+    // Auto checkpoints only when there are real uncommitted changes (diff vs HEAD).
+    if ((kind === "auto-pre-run" || kind === "auto-pre-restore") && !snap.hadChanges) {
+      const reuse = latestGitCheckpointMeta(ws);
+      logger.info(
+        `checkpoints: skipped new ${kind} (clean tree)${reuse ? `, reusing ${reuse.id}` : ""}`,
+      );
+      return reuse;
     }
 
     // Get HEAD for parentage / display. Empty repo → no parent (orphan commit).
@@ -418,15 +571,23 @@ export async function createCheckpoint(
     }
     const commit = await runGit(commitArgs, { cwd: ws });
     if (commit.exitCode !== 0 || !commit.stdout.trim()) {
+      if (!allowFile) {
+        logger.warn(`checkpoints: commit-tree failed for ${id} (${kind}); skipping auto file backup`);
+        return null;
+      }
       logger.warn(`checkpoints: commit-tree failed for ${id}, trying file backup`);
-      return createFileCheckpoint(ws, id, label, opts);
+      return createFileCheckpoint(ws, id, label, { ...opts, kind });
     }
     const sha = commit.stdout.trim();
 
     const pin = await runGit(["update-ref", `${REF_PREFIX}${id}`, sha], { cwd: ws });
     if (pin.exitCode !== 0) {
+      if (!allowFile) {
+        logger.warn(`checkpoints: update-ref failed for ${id} (${kind}); skipping auto file backup`);
+        return null;
+      }
       logger.warn(`checkpoints: update-ref failed for ${id}: ${pin.stderr}`);
-      return createFileCheckpoint(ws, id, label, opts);
+      return createFileCheckpoint(ws, id, label, { ...opts, kind });
     }
 
     const cp: Checkpoint = {
@@ -437,7 +598,8 @@ export async function createCheckpoint(
       gitSha: sha,
       parentSha,
       runId: opts.runId,
-      kind: opts.kind ?? "manual",
+      chatId,
+      kind,
       hadChanges: snap.hadChanges,
       backupType: "git",
     };
@@ -447,8 +609,13 @@ export async function createCheckpoint(
     logger.info(`checkpoints: created ${id} (git, ${cp.kind}) → ${sha.slice(0, 8)}`);
     return cp;
   } else {
-    // No git — use file-based backup
-    return createFileCheckpoint(ws, id, label, opts);
+    if (!allowFile) {
+      logger.warn(
+        `checkpoints: no git in ${ws}; no snapshot for ${kind} (init git or set PIG_CHECKPOINT_FILE_BACKUP=1 for manual full copy)`,
+      );
+      return null;
+    }
+    return createFileCheckpoint(ws, id, label, { ...opts, kind });
   }
 }
 
@@ -522,17 +689,33 @@ export async function findCheckpoint(id: string, workspace?: string): Promise<Ch
  */
 export async function restoreCheckpoint(
   id: string,
-  opts: { workspace?: string } = {},
+  opts: { workspace?: string; known?: Checkpoint } = {},
 ): Promise<{ ok: true; restored: Checkpoint; safetyCheckpoint: Checkpoint | null } | { ok: false; error: string }> {
   const ws = opts.workspace ?? getWorkspace();
-  const cp = await findCheckpoint(id, ws);
+  const cp = opts.known ?? (await findCheckpoint(id, ws));
   if (!cp) return { ok: false, error: `checkpoint not found: ${id}` };
+
+  if (cp.backupType === "run-files" && cp.chatId && cp.runId) {
+    const safety = cp.chatId
+      ? await createCheckpoint(`Before restoring "${cp.label}"`, {
+          workspace: ws,
+          kind: "auto-pre-restore",
+          runId: cp.runId,
+          chatId: cp.chatId,
+        })
+      : null;
+    const r = await restoreRunSnapshot(cp.chatId, cp.runId, ws);
+    if (!r.ok) return { ok: false, error: r.error };
+    logger.info(`checkpoints: restored run-files ${cp.runId} (${r.restored} paths)`);
+    return { ok: true, restored: cp, safetyCheckpoint: safety };
+  }
 
   // Save current state for "undo my restore" before we overwrite anything.
   const safety = await createCheckpoint(`Before restoring "${cp.label}"`, {
     workspace: ws,
     kind: "auto-pre-restore",
     runId: cp.runId,
+    chatId: cp.chatId,
   });
 
   if (cp.backupType === "file") {
@@ -578,6 +761,7 @@ export async function deleteCheckpoint(id: string, workspace?: string): Promise<
     await deleteFileBackup(cp.backupPath);
   } else {
     await runGit(["update-ref", "-d", `${REF_PREFIX}${id}`], { cwd: ws });
+    await pruneCheckpointGitObjects(ws);
   }
 
   return deleteCheckpointRow(ws, id);

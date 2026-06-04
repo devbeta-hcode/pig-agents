@@ -228,6 +228,39 @@ function isWriteToolName(tool?: string): boolean {
   return t === "write_patch" || t === "create_file";
 }
 
+function writeActionCountForIteration(steps: UIEvent[], iteration: number): number {
+  return steps.filter(
+    (x) =>
+      x.type === "action" &&
+      (Number((x as UIEvent).iteration) || 1) === iteration &&
+      isWriteToolName((x as UIEvent).tool),
+  ).length;
+}
+
+/** True when peek key matches an already-emitted write action (incl. pending → resolved FILE list). */
+function writePeekMatchesEmittedAction(
+  steps: UIEvent[],
+  iteration: number,
+  peekKey: string,
+): boolean {
+  return steps.some((x) => {
+    if (x.type !== "action" || (Number((x as UIEvent).iteration) || 1) !== iteration) return false;
+    if (!isWriteToolName((x as UIEvent).tool)) return false;
+    const ak = String((x as UIEvent).actionKey ?? "").trim();
+    if (ak && ak === peekKey) return true;
+    const xKey = actionScheduleKey(
+      String((x as UIEvent).tool ?? ""),
+      ((x as UIEvent).input ?? {}) as Record<string, unknown>,
+    );
+    if (xKey === peekKey) return true;
+    if (xKey === "write_patch:__pending__" && peekKey.startsWith("write_patch:") && peekKey !== xKey) {
+      return true;
+    }
+    if (peekKey === "write_patch:__pending__" && xKey.startsWith("write_patch:")) return true;
+    return false;
+  });
+}
+
 /**
  * Ordinal (0-based) of this persisted `action` row within its iteration.
  * Mirrors `nthActionBlobAfterMarker(streamingPartial, ord)` across multiple ACTION payloads in one stream.
@@ -259,9 +292,7 @@ function syntheticStreamingWriteAction(
 ): UIEvent | null {
   if (!isStreaming) return null;
 
-  const emittedSameIter = traceSteps.filter(
-    (x) => x.type === "action" && (Number((x as UIEvent).iteration) || 1) === iteration,
-  ).length;
+  const writeEmitted = writeActionCountForIteration(traceSteps, iteration);
 
   /** Native OpenAI tool stream: backend emits tool_payload_streaming before JSON args finish. */
   const nativePayload = [...traceSteps]
@@ -271,7 +302,7 @@ function syntheticStreamingWriteAction(
         x.type === "tool_payload_streaming" &&
         (Number((x as UIEvent).iteration) || 1) === iteration,
     ) as UIEvent | undefined;
-  if (nativePayload?.tool && emittedSameIter === 0) {
+  if (nativePayload?.tool && writeEmitted === 0) {
     const tool = String(nativePayload.tool).toLowerCase();
     if (tool === "create_file") {
       return { type: "action", iteration, tool: "create_file", input: { path: "", content: "" } };
@@ -283,8 +314,8 @@ function syntheticStreamingWriteAction(
 
   if (!streamingText.trim()) return null;
 
-  /** More ACTION: markers buffered than SSE `action` rows yet — nth segment is still streaming. */
-  const nthPeek = emittedSameIter;
+  /** More ACTION: markers buffered than settled write `action` rows — nth segment still streaming. */
+  const nthPeek = writeEmitted;
   if (actionMarkerCount(streamingText) <= nthPeek) return null;
 
   const peekMeta = peekStreamingToolPayloadNth(streamingText, nthPeek);
@@ -295,27 +326,12 @@ function syntheticStreamingWriteAction(
   if (peekMeta.tool === "create_file") {
     if (peekBody == null && !peekPath) return null;
     const peekKey = actionScheduleKey("create_file", { path: peekPath });
-    const dup = traceSteps.some(
-      (x) =>
-        x.type === "action" &&
-        (Number((x as UIEvent).iteration) || 1) === iteration &&
-        actionScheduleKey(String((x as UIEvent).tool ?? ""), ((x as UIEvent).input ?? {}) as Record<string, unknown>) ===
-          peekKey,
-    );
-    if (dup) return null;
+    if (writePeekMatchesEmittedAction(traceSteps, iteration, peekKey)) return null;
     return { type: "action", iteration, tool: "create_file", input: { path: peekPath, content: "" } };
   }
   if (peekBody == null) return null;
   const peekKey = actionScheduleKey("write_patch", { patches: peekBody });
-  const dupWp = traceSteps.some(
-    (x) =>
-      x.type === "action" &&
-      (Number((x as UIEvent).iteration) || 1) === iteration &&
-      (String((x as UIEvent).actionKey ?? "") === peekKey ||
-        actionScheduleKey(String((x as UIEvent).tool ?? ""), ((x as UIEvent).input ?? {}) as Record<string, unknown>) ===
-          peekKey),
-  );
-  if (dupWp) return null;
+  if (writePeekMatchesEmittedAction(traceSteps, iteration, peekKey)) return null;
   return { type: "action", iteration, tool: "write_patch", input: { patches: "" } };
 }
 
@@ -1544,7 +1560,13 @@ function AssistantMessageBase({
         });
 
         let activeGroupKey: string | undefined;
-        if (streamPeekAction) {
+        if (
+          streamPeekAction &&
+          !(
+            isWriteToolName(streamPeekAction.tool) &&
+            writeActionCountForIteration(traceSteps as UIEvent[], Number(streamPeekAction.iteration) || 1) > 0
+          )
+        ) {
           const peekIt = Number(streamPeekAction.iteration) || 1;
           const peekPairedObs = observationForStreamingPeek(streamPeekAction, events as UIEvent[]);
           /** Synthetic peek row aligns with buffered ACTION blobs not yet flushed as SSE `action` events. */
@@ -2715,9 +2737,10 @@ export function Chat({
       // Start a background session - agent continues even if browser disconnects
       // Include images as base64 data
       const { session: backendSession } = await api.startSession(
-        agentTask, 
+        agentTask,
         runMode,
-        images.map((img) => ({ dataUrl: img.dataUrl, name: img.name }))
+        images.map((img) => ({ dataUrl: img.dataUrl, name: img.name })),
+        sessionRef.current.id,
       );
       const sessionId = backendSession.id;
       
@@ -2877,20 +2900,24 @@ export function Chat({
   // overwrites the working tree — but emphasises it's reversible because we
   // automatically take a fresh checkpoint of the current state first.
   async function restoreToCheckpoint(cp: Checkpoint) {
+    const runFiles = cp.backupType === "run-files";
     const ok = await dlg.confirm({
       title: "Restore checkpoint",
-      message:
-        `Restore workspace to "${cp.label}"?\n\n` +
-        `This rewinds the entire working tree to the snapshot taken ` +
-        `${new Date(cp.createdAt).toLocaleString()}. Untracked files added since ` +
-        `then will be removed; ignored files (node_modules etc.) are kept.\n\n` +
-        `A fresh "before restore" checkpoint is created first, so this is reversible.`,
+      message: runFiles
+        ? `Undo agent changes from this run?\n\n` +
+          `Only files the agent edited in this chat turn will be reverted ` +
+          `(snapshot from ${new Date(cp.createdAt).toLocaleString()}).`
+        : `Restore workspace to "${cp.label}"?\n\n` +
+          `This rewinds the working tree to the snapshot taken ` +
+          `${new Date(cp.createdAt).toLocaleString()}. Untracked files added since ` +
+          `then will be removed; ignored files (node_modules etc.) are kept.\n\n` +
+          `A fresh "before restore" checkpoint is created first, so this is reversible.`,
       confirmLabel: "Restore",
       danger: true,
     });
     if (!ok) return;
     try {
-      await api.restoreCheckpoint(cp.id);
+      await api.restoreCheckpoint(cp);
       onAfterRun(); // bump refreshKey so file tree + open editors reload
     } catch (err) {
       void dlg.alert(`Restore failed: ${(err as Error).message}`);

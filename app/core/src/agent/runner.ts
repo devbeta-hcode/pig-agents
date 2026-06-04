@@ -135,6 +135,8 @@ export interface AgentRunOptions {
   signal?: AbortSignal;
   /** Stable id for this run — used to scope pending approvals so an abort cleans them up. */
   runId?: string;
+  /** Chat session id — per-file run snapshots + purge on chat delete (Cursor/Copilot style). */
+  chatId?: string;
   /** Attached images (base64 data URLs) */
   images?: { dataUrl: string; name: string }[];
 }
@@ -529,6 +531,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   try {
     preRunCheckpoint = await createCheckpoint(`Before: ${opts.task.slice(0, 80)}`, {
       runId,
+      chatId: opts.chatId,
       kind: "auto-pre-run",
     });
     if (preRunCheckpoint) {
@@ -575,6 +578,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // emit policy events and bridge approvals back through the SSE channel.
   const toolCtx: ToolContext = {
     runId,
+    chatId: opts.chatId,
     /** Current ReAct iteration — run_command streams tag with this for the UI. */
     iteration: 0,
     emit: (e: { type: string; [k: string]: unknown }) => emit(e as AgentEvent),
