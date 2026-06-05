@@ -56,3 +56,9 @@ Last updated: 2026-05-31
 - **2026-06-03** — Agent `delete_path` tool: one workspace-relative path (no `*`, `**`, `..`, absolute drives); file or directory via `deleteAgentPath` → `deleteEntry` + `safeJoin`; `delete_file` alias; prompts updated.
 - **2026-06-03** — Checkpoint disk blow-up fix: auto `auto-pre-run` / `auto-pre-restore` no longer fall back to full-workspace file copy under `~/.pig-agents/backups` (git-only or skip); file backups manual-only (max 3); expanded ignore list; `checkpointPurgeFileBackups` + `scripts/purge-checkpoint-file-backups.mjs`.
 - **2026-06-03** — Cursor/Copilot-style rollback: per-chat **run-files** snapshots (`runSnapshots.ts`) under `~/.pig-agents/chats/<ws>/snapshots/<chatId>/<runId>/` — only files touched before write; auto checkpoint with `chatId` uses this instead of full copy; `chatDelete` purges snapshots + chat-tagged checkpoints; restore UI supports `backupType: run-files`.
+- **2026-06-05** — Log chronological rendering & streaming Markdown:
+  - Modified `Chat.tsx` to include `final` events in `traceSteps` so finalized answers are rendered chronologically inside the step timeline.
+  - Implemented inline rendering of streaming final text inside the timeline's active iteration (`streamThoughtIter`).
+  - Removed the standalone legacy `displayedFinalText` container from the bottom of the assistant message.
+  - Changed thought folds and streaming final text to render using the `<Markdown>` component during active streaming, instead of raw plaintext.
+  - Updated `streamingFinalText` definition to support streaming raw text in "Ask" mode.
