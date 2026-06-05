@@ -85,6 +85,13 @@ const pig = {
     return ipcRenderer.invoke("pig:zoom:step", delta) as Promise<{ percent: number }>;
   },
 
+  clipboardRead(): Promise<string> {
+    return ipcRenderer.invoke("pig:clipboard:read") as Promise<string>;
+  },
+  clipboardWrite(text: string): Promise<void> {
+    return ipcRenderer.invoke("pig:clipboard:write", text) as Promise<void>;
+  },
+
   browserSetVisible(visible: boolean) {
     return ipcRenderer.invoke("pig:browser:setVisible", visible) as Promise<BrowserStatePayload>;
   },

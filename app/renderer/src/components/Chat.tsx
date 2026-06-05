@@ -1064,6 +1064,14 @@ function TraceStep({
   return null;
 }
 
+function closeUnmatchedMarkdown(text: string): string {
+  const codeBlockCount = (text.match(/```/g) || []).length;
+  if (codeBlockCount % 2 !== 0) {
+    return text + "\n```\n";
+  }
+  return text;
+}
+
 function AssistantMessageBase({
   turn,
   isStreaming,
@@ -1128,13 +1136,10 @@ function AssistantMessageBase({
     );
     const deduped = dedupeTraceTimelineEvents(filtered);
     return [...deduped].sort((a, b) => {
-      const ta = (a as UIEvent).ts ?? 0;
-      const tb = (b as UIEvent).ts ?? 0;
       const ia = Number((a as UIEvent).iteration) || 1;
       const ib = Number((b as UIEvent).iteration) || 1;
       if (ia !== ib) {
-        if (!ta || !tb) return 0;
-        return ta - tb;
+        return ia - ib;
       }
       const typeRank = (e: { type: string }): number => {
         if (e.type === "reasoning") return 0;
@@ -1150,6 +1155,8 @@ function AssistantMessageBase({
       const ra = typeRank(a as UIEvent);
       const rb = typeRank(b as UIEvent);
       if (ra !== rb) return ra - rb;
+      const ta = (a as UIEvent).ts ?? 0;
+      const tb = (b as UIEvent).ts ?? 0;
       if (!ta || !tb) return 0;
       return ta - tb;
     });
@@ -1171,21 +1178,21 @@ function AssistantMessageBase({
   // appears token-by-token instead of waiting for the SSE `final` event.
   const streamingFinalText = useMemo(() => {
     if (!isStreaming || finalText) return "";
-    if (turnMode === "ask") return streamingText;
-    return streamingFinalExtract(streamingText);
+    const raw = turnMode === "ask" ? streamingText : streamingFinalExtract(streamingText);
+    return closeUnmatchedMarkdown(raw);
   }, [isStreaming, streamingText, finalText, turnMode]);
   const displayedFinalText = finalText || streamingFinalText;
   const errorText = errorEv?.message ?? "";
   const duration = turn.endedAt && turn.startedAt ? formatDuration(turn.endedAt - turn.startedAt) : null;
-  const streamingThoughtMarkdown = useMemo(
-    () => (isStreaming && streamingText.trim() ? streamingThoughtExtract(streamingText) : ""),
-    [isStreaming, streamingText],
-  );
+  const streamingThoughtMarkdown = useMemo(() => {
+    const raw = isStreaming && streamingText.trim() ? streamingThoughtExtract(streamingText) : "";
+    return closeUnmatchedMarkdown(raw);
+  }, [isStreaming, streamingText]);
   // Reasoning trace = text BEFORE THOUGHT: — shown in the live streaming box
-  const streamingReasoningMarkdown = useMemo(
-    () => (isStreaming && streamingText.trim() ? streamingReasoningExtract(streamingText) : ""),
-    [isStreaming, streamingText],
-  );
+  const streamingReasoningMarkdown = useMemo(() => {
+    const raw = isStreaming && streamingText.trim() ? streamingReasoningExtract(streamingText) : "";
+    return closeUnmatchedMarkdown(raw);
+  }, [isStreaming, streamingText]);
 
   const finalizedThoughtIterations = useMemo(() => {
     const set = new Set<number>();
@@ -2431,8 +2438,9 @@ export function Chat({
       let stamped: UIEvent = ev;
       if (ev.type === "thought" && stampedThoughtMs != null) {
         stamped = { ...ev, thoughtMs: stampedThoughtMs };
-      } else if (ev.type === "final") {
-        stamped = { ...ev, iteration: ev.iteration ?? tokenIterRef.current ?? thinkingRef.current?.iteration ?? 1 };
+      }
+      if (stamped.iteration == null && ev.type !== "iter_start") {
+        stamped = { ...stamped, iteration: tokenIterRef.current ?? thinkingRef.current?.iteration ?? 1 };
       }
       appendTurnEvent(
         stamped,

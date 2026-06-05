@@ -342,7 +342,7 @@ export default function BrowserPanel({
     const url = state.url || urlInput;
     if (!url) return;
     try {
-      await navigator.clipboard.writeText(url);
+      await pig.clipboardWrite(url);
       showInspectMsg("URL copied");
     } catch {
       showInspectMsg("Copy failed");

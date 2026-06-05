@@ -124,14 +124,14 @@ export function TerminalView({ active, workspace, initialCommand, onCommandSent 
     const selectionSub = term.onSelectionChange(() => {
       const text = term.getSelection();
       if (text) {
-        navigator.clipboard.writeText(text).catch(() => {});
+        pig.clipboardWrite(text).catch(() => {});
       }
     });
 
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       // Putty style: right click pastes
-      navigator.clipboard.readText().then((text) => {
+      pig.clipboardRead().then((text) => {
         if (text && handle) {
           handle.write(text);
         }

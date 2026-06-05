@@ -1,3 +1,4 @@
+import { pig } from "../lib/pig.js";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
@@ -40,8 +41,8 @@ function CodeBlockBase({ language, value }: { language: string; value: string })
   const targetPath = target || active.path || "";
   const targetName = targetPath ? targetPath.split("/").pop() : "";
 
-  function copy() {
-    navigator.clipboard.writeText(value).catch(() => { /* noop */ });
+  const copy = () => {
+    pig.clipboardWrite(value).catch(() => { /* noop */ });
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }

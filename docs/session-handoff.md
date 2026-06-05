@@ -62,3 +62,10 @@ Last updated: 2026-05-31
   - Removed the standalone legacy `displayedFinalText` container from the bottom of the assistant message.
   - Changed thought folds and streaming final text to render using the `<Markdown>` component during active streaming, instead of raw plaintext.
   - Updated `streamingFinalText` definition to support streaming raw text in "Ask" mode.
+  - Fixed sorting logic in `traceSteps` to prioritize iteration sorting (`ia - ib`) strictly before timestamps, resolving duplicate/interleaving step logs.
+- **2026-06-05** — search_code tool regex and shell escaping fix:
+  - Added `-F` / `--fixed-strings` argument to `ripgrepSearch` to treat all query search terms as literal strings instead of regular expressions, preventing syntax crashes on code tokens.
+  - Changed `spawn` options for the `rg` process to use `shell: false` instead of `shell: true`, resolving command line splitting issues on Windows.
+- **2026-06-05** — write_patch EOL matching line ending (CRLF vs LF) fix:
+  - Updated `applyPatch` in `patch.ts` to normalize all line endings (`before`, `block.search`, and `block.replace`) to LF (`\n`) during matching and string replacement.
+  - Detected if the original file used CRLF line endings, and restored them to CRLF before writing it back to disk. This fixes continuous `WP_SEARCH_MISS` failures on Windows files.

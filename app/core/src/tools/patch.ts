@@ -279,15 +279,24 @@ export async function applyPatch(block: PatchBlock): Promise<PatchResult> {
       return { path: block.path, applied: true, diff: makeUnifiedDiff(block.path, before, block.replace) };
     }
 
-    const idx = before.indexOf(block.search);
+    const beforeLF = before.replace(/\r\n/g, "\n");
+    const searchLF = block.search.replace(/\r\n/g, "\n");
+    const replaceLF = block.replace.replace(/\r\n/g, "\n");
+
+    const idx = beforeLF.indexOf(searchLF);
     if (idx === -1) {
       return { path: block.path, applied: false, diff: "", error: "SEARCH text not found" };
     }
-    const occurrences = before.split(block.search).length - 1;
+    const occurrences = beforeLF.split(searchLF).length - 1;
     if (occurrences > 1) {
       return { path: block.path, applied: false, diff: "", error: `SEARCH text matches ${occurrences} times; not unique` };
     }
-    const after = before.replace(block.search, block.replace);
+    
+    let after = beforeLF.replace(searchLF, replaceLF);
+    if (before.includes("\r\n")) {
+      after = after.replace(/\n/g, "\r\n");
+    }
+
     await writeFile(block.path, after);
     return { path: block.path, applied: true, diff: makeUnifiedDiff(block.path, before, after) };
   } catch (err: unknown) {

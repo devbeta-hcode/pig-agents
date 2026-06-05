@@ -18,7 +18,7 @@ function escapeRgQuery(q: string): string {
 
 function runRg(args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; out: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("rg", args, { cwd, shell: true, windowsHide: true });
+    const child = spawn("rg", args, { cwd, shell: false, windowsHide: true });
     let out = "";
     const timer = setTimeout(() => {
       child.kill();
@@ -43,6 +43,7 @@ export async function ripgrepSearch(query: string, maxHits = 24): Promise<CodeSe
   if (q.length < 2) return null;
   const cwd = getWorkspace();
   const args = [
+    "-F",
     "-n",
     "--no-heading",
     "--max-columns",

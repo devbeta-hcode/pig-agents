@@ -47,6 +47,9 @@ export interface PigBridge {
   zoomGet(): Promise<{ percent: number }>;
   zoomSet(percent: number): Promise<{ percent: number }>;
   zoomStep(delta: number): Promise<{ percent: number }>;
+  
+  clipboardRead(): Promise<string>;
+  clipboardWrite(text: string): Promise<void>;
 
   browserSetVisible(visible: boolean): Promise<BrowserState>;
   browserSetBounds(bounds: { x: number; y: number; width: number; height: number } | null): Promise<{ ok: true }>;

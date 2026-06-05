@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type AgentCommandRun } from "../lib/api";
+import { pig } from "../lib/pig.js";
 import { IconCopy, IconAlertTriangle } from "./Icons";
 
 interface Props {
@@ -55,7 +56,7 @@ export function AgentTerminalView({ runId }: Props) {
           title="Copy output"
           onClick={() => {
             const text = formatRun(run);
-            navigator.clipboard?.writeText(text).catch(() => { /* noop */ });
+            pig.clipboardWrite(text).catch(() => { /* noop */ });
           }}
         >
           <IconCopy size={13} />

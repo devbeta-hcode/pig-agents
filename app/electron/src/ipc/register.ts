@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { app, ipcMain, dialog, type BrowserWindow, type OpenDialogOptions, type WebContents } from "electron";
+import { app, ipcMain, dialog, clipboard, type BrowserWindow, type OpenDialogOptions, type WebContents } from "electron";
 import { getUiZoomPercent, setUiZoomPercent, stepUiZoomPercent } from "../uiPrefs.js";
 import { applyWindowZoom } from "../zoom.js";
 import { registerBrowser } from "../browser/register.js";
@@ -235,6 +235,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     applyWindowZoom(getWindow(), p);
     return { percent: p };
   });
+
+  // ---- Clipboard -----------------------------------------------------------
+  ipcMain.handle("pig:clipboard:read", () => clipboard.readText());
+  ipcMain.handle("pig:clipboard:write", (_e, text: string) => clipboard.writeText(text));
 
   // ---- Native folder picker ------------------------------------------------
   ipcMain.handle("pig:workspace:pickFolder", async () => {

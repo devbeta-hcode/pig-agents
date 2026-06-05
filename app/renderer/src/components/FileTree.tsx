@@ -5,6 +5,7 @@ import { useDialogs } from "./DialogProvider";
 import { IconFolderOpen, IconRefreshCw, IconPlus } from "./Icons";
 import { ChevronExpand } from "./ChevronExpand";
 import { FileIcon } from "./FileIcon";
+import { pig } from "../lib/pig.js";
 
 interface Props {
   selected?: string;
@@ -144,15 +145,8 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onPathsDelet
   }
 
   function writeClipboardText(text: string) {
-    try {
-      void navigator.clipboard.writeText(text);
-    } catch {
-      // older browsers / insecure contexts: fallback via a hidden textarea.
-      const el = document.createElement("textarea");
-      el.value = text; el.style.position = "fixed"; el.style.opacity = "0";
-      document.body.appendChild(el); el.select();
-      try { document.execCommand("copy"); } catch { /* noop */ }
-      document.body.removeChild(el);
+    if (text) {
+      pig.clipboardWrite(text).catch(() => {});
     }
   }
 
