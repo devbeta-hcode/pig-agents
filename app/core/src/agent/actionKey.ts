@@ -26,5 +26,18 @@ export function actionScheduleKey(type: string, input: Record<string, unknown>):
     // Stable while JSON streams — avoids duplicate ACTION rows / double tool runs per token growth.
     return "write_patch:__pending__";
   }
+  if (t === "browser_eval") {
+    const js = String(input.js ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return `browser_eval:${js}`;
+  }
+  if (t.startsWith("browser_")) {
+    const norm: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input)) {
+      norm[k] = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : v;
+    }
+    return `${t}:${JSON.stringify(norm)}`;
+  }
   return `${t}:${JSON.stringify(input)}`;
 }

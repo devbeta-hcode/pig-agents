@@ -46,6 +46,12 @@ import {
 } from "./writeAuthority.js";
 import type { LLMUsage } from "../llm/client.js";
 
+/** Cap parallel ACTION blocks per iteration — stops runaway multi_action dumps (e.g. 17× browser_eval). */
+function readMaxActionsPerIteration(): number {
+  const n = Number(process.env.MAX_ACTIONS_PER_ITERATION || 10);
+  return Math.max(1, Math.min(n, 24));
+}
+
 /** Per-iteration LLM call ceiling — without this, a stalled model/stream leaves the agent run open forever. */
 function readLlmTimeoutMs(): number {
   const raw = process.env.LLM_TIMEOUT_MS;
@@ -406,6 +412,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 3));
+  const maxActionsPerIter = readMaxActionsPerIteration();
   emit(activityEvent("index", "Indexing workspace…"));
   const taskForRanking = activeUserTaskSlice(opts.task);
   let indexStatus = { symbols: 0, embeddingChunks: 0 };
@@ -696,6 +703,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
           } else if (earlyScheduled.has(key)) {
             continue;
           }
+          if (earlyScheduled.size >= maxActionsPerIter) continue;
           // Reserve the slot synchronously so the per-tool observation hook
           // below can flip the `streamedObservation` flag on the same entry.
           const entryRef: EarlyToolExec = {
@@ -807,18 +815,19 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       };
       earlyScheduled.set(key, entryRef);
       entryRef.promise = executeTool(act.type, act.input, toolCtx).then((outcome) => {
-        if (isWriteTool(act.type) && outcome.diffs?.length) {
-          entryRef.streamedObservation = true;
-          emit({
-            type: "observation",
-            iteration: i,
-            ok: outcome.ok,
-            summary: outcome.summary,
-            diffs: outcome.diffs,
-            tool: act.type,
-            actionKey: key,
-          });
+        if (isWriteTool(act.type)) {
+          emit({ type: "tool_disk_settled", iteration: i, actionKey: key, ok: outcome.ok });
         }
+        entryRef.streamedObservation = true;
+        emit({
+          type: "observation",
+          iteration: i,
+          ok: outcome.ok,
+          summary: outcome.summary,
+          diffs: outcome.diffs,
+          tool: act.type,
+          actionKey: key,
+        });
         return outcome;
       });
       emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
@@ -1039,12 +1048,22 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     }
 
     // Determine the set of actions to execute (single or parallel multi-action).
-    const stepActions: Array<{ type: string; input: Record<string, unknown> }> =
+    let stepActions: Array<{ type: string; input: Record<string, unknown> }> =
       step.kind === "multi_action"
         ? step.actions
         : step.kind === "action"
           ? [{ type: step.type, input: step.input }]
           : [];
+    if (stepActions.length > maxActionsPerIter) {
+      emit({
+        type: "log",
+        level: "warn",
+        message:
+          `Iteration ${i}: model emitted ${stepActions.length} ACTION blocks — capped at ${maxActionsPerIter}. ` +
+          `Raise MAX_ACTIONS_PER_ITERATION if needed; prefer fewer browser_eval calls per turn.`,
+      });
+      stepActions = stepActions.slice(0, maxActionsPerIter);
+    }
 
     // Stuck detection — use a combined signature across all actions.
     const actionSignature = stepActions.map(a => `${a.type}:${JSON.stringify(a.input).replace(/\s+/g, "")}`).join("|");

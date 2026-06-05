@@ -179,7 +179,8 @@ RULES:
 3. Creating/editing → write_patch with minimal SEARCH/REPLACE; new file only when user asked or no file exists. On patch failure read [WP_SEARCH_MISS] etc.
 4. Simple questions → FINAL directly (no meta-rubric in FINAL)
 5. Match user's language in FINAL
-6. Browser → browser_show / browser_navigate only (never run_command chrome|msedge)`;
+6. Browser → browser_show / browser_navigate only (never run_command chrome|msedge)
+7. Browser reads → prefer browser_get_text / browser_get_html once; avoid spamming many browser_eval in one turn (max ~3–5 browser tools per iteration unless user asked for deep inspection)`;
 
 /** Even more compact for simple tasks */
 export const SYSTEM_PROMPT_MINIMAL = `Pig Agents Desktop coding agent (real disk tools — not browser ChatGPT). Format (THOUGHT is required every time):

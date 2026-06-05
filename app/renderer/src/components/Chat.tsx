@@ -412,6 +412,21 @@ function actionGroupKey(tool: string, iteration: number, suffix: string): string
   return `${(tool || "tool").toLowerCase()}#${iteration}#${suffix}`;
 }
 
+/** Browser + shell tools batch into one fold per iteration (ActionGroupFold). */
+function isBatchableTool(tool?: string): boolean {
+  const t = (tool || "").toLowerCase();
+  return t.startsWith("browser_") || t === "run_command" || t === "search_code";
+}
+
+function actionGroupSuffix(tool: string, inp: Record<string, unknown>, stepIdx: number): string {
+  const t = tool.toLowerCase();
+  if (t === "create_file") {
+    return `create-${String(inp.path ?? "file").replace(/\\/g, "/")}`;
+  }
+  if (isBatchableTool(t)) return "batch";
+  return `step-${stepIdx}`;
+}
+
 /** Merge pre-THOUGHT reasoning with THOUGHT body for a single UI fold. */
 function mergeThoughtBody(reasoning: string, thought: string): string {
   const r = reasoning.trim();
@@ -730,6 +745,10 @@ function ActionGroupFold({
     if (t === "write_patch") return { verb: "Edit", noun: count > 1 ? "files" : "file", icon: editSvg };
     if (t === "run_command") return { verb: "Run", noun: count > 1 ? "commands" : "command", icon: termSvg };
     if (t === "search_code") return { verb: "Search", noun: count > 1 ? "queries" : "query", icon: searchSvg };
+    if (t.startsWith("browser_")) {
+      const label = t.replace(/^browser_/, "").replace(/_/g, " ");
+      return { verb: "Browser", noun: count > 1 ? `${label} calls` : label, icon: fileSvg };
+    }
     return { verb: tool, noun: count > 1 ? "calls" : "call", icon: fileSvg };
   })();
   return (
@@ -1425,11 +1444,13 @@ function AssistantMessageBase({
               );
 
             if (!patchSlices) {
-              const pathSuffix =
-                (ev.tool || "").toLowerCase() === "create_file"
-                  ? `create-${String((inp as Record<string, unknown>).path ?? "file").replace(/\\/g, "/")}`
-                  : `step-${i}`;
-              const groupKey = actionGroupKey(ev.tool || "tool", actIter, pathSuffix);
+              const baseInp =
+                typeof inp === "object" && inp ? (inp as Record<string, unknown>) : {};
+              const groupKey = actionGroupKey(
+                ev.tool || "tool",
+                actIter,
+                actionGroupSuffix(ev.tool || "tool", baseInp, i),
+              );
               if (!paired && isStreaming) pendingGroupKeys.add(groupKey);
               pushNode(
                 (
@@ -1728,11 +1749,24 @@ function AssistantMessageBase({
           let q = p + 1;
           while (q < rendered.length && groupKeys[q] === k) q++;
           const tool = k.split("#")[0] ?? "tool";
-          for (let r = p; r < q; r++) {
-            finalRendered.push(rendered[r]);
-            finalIterKeys.push(iterKeys[r]);
-            finalStepIcons.push(stepIcons[r] ?? traceToolStepIcon(tool));
-            finalStepKinds.push(stepKinds[r]);
+          const slice = rendered.slice(p, q);
+          const isActive = pendingGroupKeys.has(k);
+          if (slice.length > 1 && isBatchableTool(tool)) {
+            finalRendered.push(
+              <ActionGroupFold key={`grp-${k}-${p}`} tool={tool} count={slice.length} isActive={isActive}>
+                {slice}
+              </ActionGroupFold>,
+            );
+            finalIterKeys.push(iterKeys[p]);
+            finalStepIcons.push(stepIcons[p] ?? traceToolStepIcon(tool));
+            finalStepKinds.push("tool");
+          } else {
+            for (let r = p; r < q; r++) {
+              finalRendered.push(rendered[r]);
+              finalIterKeys.push(iterKeys[r]);
+              finalStepIcons.push(stepIcons[r] ?? traceToolStepIcon(tool));
+              finalStepKinds.push(stepKinds[r]);
+            }
           }
           p = q;
         }
@@ -1743,33 +1777,17 @@ function AssistantMessageBase({
           let q = p + 1;
           while (q < finalRendered.length && finalIterKeys[q] === iter) q++;
           const items = finalRendered.slice(p, q);
-          let actionCount = traceSteps.filter(
-            (e) => e.type === "action" && (Number((e as UIEvent).iteration) || 1) === iter,
-          ).length;
-          if (
-            isStreaming &&
-            streamPeekAction &&
-            (Number(streamPeekAction.iteration) || 1) === iter &&
-            !traceSteps.some(
-              (e) =>
-                e.type === "action" &&
-                (Number((e as UIEvent).iteration) || 1) === iter &&
-                String((e as UIEvent).tool ?? "").toLowerCase() ===
-                  String(streamPeekAction.tool ?? "").toLowerCase(),
-            )
-          ) {
-            actionCount += 1;
-          }
+          const visibleToolSteps = finalStepKinds.slice(p, q).filter((k) => k === "tool").length;
           const hasThought = finalStepKinds.slice(p, q).some((k) => k === "thought");
           if (items.length === 1) {
             groupedByIteration.push(items[0]);
           } else {
             const meta =
-              actionCount > 0
-                ? `${actionCount} action${actionCount === 1 ? "" : "s"}`
+              visibleToolSteps > 0
+                ? `${visibleToolSteps} tool${visibleToolSteps === 1 ? "" : "s"}`
                 : hasThought
                   ? `${items.length} items`
-                  : `${items.length} actions`;
+                  : `${items.length} steps`;
             groupedByIteration.push(
               <div key={`trace-iter-${turn.id}-${iter}-${p}`} className="trace-iteration-block">
                 <div className="trace-iteration-head">
@@ -2404,9 +2422,15 @@ export function Chat({
 
     if (ev.type === "action") {
       flushCmdChunkNow();
+      const ak = String(ev.actionKey ?? "").trim();
       appendTurnEvent(
         ev.ts ? ev : { ...ev, ts: Date.now() },
-        (x) => x.type === "action" && x.actionKey === ev.actionKey && x.iteration === ev.iteration
+        ak
+          ? (x) =>
+              x.type === "action" &&
+              Number(x.iteration ?? 1) === Number(ev.iteration ?? 1) &&
+              String((x as UIEvent).actionKey ?? "").trim() === ak
+          : undefined,
       );
       return;
     }
