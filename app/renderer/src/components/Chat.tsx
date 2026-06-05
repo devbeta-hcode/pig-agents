@@ -471,6 +471,45 @@ function stripLeadingBareToolJson(buf: string): string {
   return "";
 }
 
+/** Model monologue before THOUGHT: — internal planning, not user-facing thought. */
+function isAgentInternalMonologue(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length < 120) return false;
+  if (/\bTHOUGHT\s*:/i.test(t)) return false;
+  const signals = [
+    /We have a mismatch/i,
+    /From the observation/i,
+    /\[WP_[A-Z_]+\]/i,
+    /\bLet's (read|use|try|do|craft)\b/i,
+    /\bActions:\b/i,
+    /\bThe plan:/i,
+    /\bOptions:/i,
+    /\bWe need to (start|read|diagnose|re-)/i,
+    /\bI'll (now|craft|apply|use)\b/i,
+    /\bAlso, we (need|should)\b/i,
+    /\bbrowser_eval\b/i,
+    /\bwrite_patch failed\b/i,
+    /\bTôi (cần|sẽ|đã) đọc lại\b/i,
+  ];
+  if (signals.some((r) => r.test(t))) return true;
+  return t.length > 500 && /\b(read_file|write_patch|create_file|run_command)\b/i.test(t);
+}
+
+/** Drop observation echoes / patch errors that models sometimes paste into THOUGHT/reasoning. */
+function sanitizeThoughtPreview(text: string): string {
+  let out = text.trim();
+  if (!out) return "";
+  if (isAgentInternalMonologue(out)) return "";
+  if (/\[WP_[A-Z_]+\]/i.test(out) && out.length > 400) {
+    const cut = out.search(/\n\n(?=[A-ZÀ-ỹ"'])/);
+    if (cut > 80) out = out.slice(0, cut).trim();
+  }
+  out = out.replace(/\n*\[WP_[A-Z_]+\][^\n]*/gi, "");
+  out = out.replace(/\n*We have a mismatch:[\s\S]*?(?=\n\n|$)/i, "");
+  out = out.replace(/\n*From the observation,[\s\S]*?(?=\n\n|$)/i, "");
+  return out.trim();
+}
+
 /** Content BEFORE THOUGHT: — the raw reasoning trace shown in the streaming box. */
 function streamingReasoningExtract(buf: string): string {
   let norm = normalizeStreamXmlMarkers(buf);
@@ -479,7 +518,7 @@ function streamingReasoningExtract(buf: string): string {
   const m = norm.match(
     /^[\s\S]*?(?=\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,40}"(?:type|patches)"\s*:|$)/i,
   );
-  return (m?.[0] ?? "").trim();
+  return sanitizeThoughtPreview((m?.[0] ?? "").trim());
 }
 
 /** Content AFTER THOUGHT: — shown as plain text log once THOUGHT: appears. */
@@ -489,10 +528,12 @@ function streamingThoughtExtract(buf: string): string {
     /\bTHOUGHT\s*:\s*([\s\S]*?)(?=\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,40}"(?:type|patches)"\s*:|$)/i,
   );
   if (!m) return "";
-  return m[1]
-    .replace(/\bACTION\s*:[\s\S]*$/i, "")
-    .replace(/\bFINAL\s*:[\s\S]*$/i, "")
-    .trim();
+  return sanitizeThoughtPreview(
+    m[1]
+      .replace(/\bACTION\s*:[\s\S]*$/i, "")
+      .replace(/\bFINAL\s*:[\s\S]*$/i, "")
+      .trim(),
+  );
 }
 
 /** Hard cap on the in-flight streaming buffer for a single iteration. Without
@@ -507,15 +548,32 @@ function capStreamingBuffer(s: string): string {
   return s.slice(s.length - STREAMING_BUFFER_CAP);
 }
 
+/** True when buffer has a user-facing FINAL block (not mid-iteration tool/thought noise). */
+function bufferHasCleanFinal(buf: string): boolean {
+  const norm = normalizeStreamXmlMarkers(buf);
+  if (!/(?:^|\n)\s*FINAL:\s*/i.test(norm)) return false;
+  const tail = norm.replace(/^[\s\S]*?\bFINAL\s*:\s*/i, "");
+  return !/\b(THOUGHT|ACTION)\s*:/i.test(tail);
+}
+
+/** Strip leaked agent-internal monologue from a FINAL preview. */
+function sanitizeFinalPreview(text: string): string {
+  let out = text.trim();
+  out = out.replace(/\n+(THOUGHT|ACTION)\s*:[\s\S]*$/i, "");
+  out = out.replace(/\n*\[WP_[A-Z_]+\][^\n]*/gi, "");
+  out = out.replace(/\n*We have a mismatch:[\s\S]*?(?=\n\n|\n[A-ZÀ-ỹ]|$)/i, "");
+  out = out.replace(/\n*From the observation,[\s\S]*?(?=\n\n|\n[A-ZÀ-ỹ]|$)/i, "");
+  return out.trim();
+}
+
 /** Extract the FINAL: body from a streaming buffer so we can render token-by-token
  *  before the `final` SSE event arrives. Tolerates any trailing garbage. */
 function streamingFinalExtract(buf: string): string {
-  const m = normalizeStreamXmlMarkers(buf).match(/(?:^|\n)\s*FINAL:\s*([\s\S]*)$/i);
+  if (!bufferHasCleanFinal(buf)) return "";
+  const norm = normalizeStreamXmlMarkers(buf);
+  const m = norm.match(/(?:^|\n)\s*FINAL:\s*([\s\S]*?)(?=\n\s*(?:THOUGHT|ACTION)\s*:|$)/i);
   if (!m) return "";
-  // Strip a trailing partial THOUGHT/ACTION header if model started another block (rare).
-  return m[1]
-    .replace(/\n+(THOUGHT|ACTION)\s*:[\s\S]*$/i, "")
-    .trimEnd();
+  return sanitizeFinalPreview(m[1]);
 }
 
 /** Mirror of backend stream normalizers so THOUGHT/ACTION render while tokens arrive. */
@@ -572,6 +630,7 @@ function isRedundantUiLog(ev: UIEvent): boolean {
   if (/^(Ask|Agent) mode starting:/.test(msg)) return true;
   if (/^Selected \d+ relevant files\.?$/.test(msg)) return true;
   if (/^Created checkpoint \(/.test(msg)) return true;
+  if (/Missing THOUGHT/i.test(msg)) return true;
   return false;
 }
 
@@ -1164,12 +1223,12 @@ function AssistantMessageBase({
         if (e.type === "reasoning") return 0;
         if (e.type === "thought") return 1;
         if (e.type === "activity") return 2;
-        if (e.type === "log") return 3;
-        if (e.type === "policy_decision") return 4;
-        if (e.type === "action") return 5;
-        if (e.type === "observation") return 6;
+        if (e.type === "policy_decision") return 3;
+        if (e.type === "action") return 4;
+        if (e.type === "observation") return 5;
+        if (e.type === "log") return 6;
         if (e.type === "final") return 7;
-        return 5;
+        return 4;
       };
       const ra = typeRank(a as UIEvent);
       const rb = typeRank(b as UIEvent);
@@ -1200,7 +1259,7 @@ function AssistantMessageBase({
     const raw = turnMode === "ask" ? streamingText : streamingFinalExtract(streamingText);
     return closeUnmatchedMarkdown(raw);
   }, [isStreaming, streamingText, finalText, turnMode]);
-  const displayedFinalText = finalText || streamingFinalText;
+  const displayedFinalText = (finalText ? sanitizeFinalPreview(finalText) : "") || streamingFinalText;
   const errorText = errorEv?.message ?? "";
   const duration = turn.endedAt && turn.startedAt ? formatDuration(turn.endedAt - turn.startedAt) : null;
   const streamingThoughtMarkdown = useMemo(() => {
@@ -1309,7 +1368,9 @@ function AssistantMessageBase({
 
         function collectThoughtMarkdown(iter: number): string {
           if (iter === streamThoughtIter && isStreaming) {
-            return mergeThoughtBody(streamingReasoningMarkdown, streamingThoughtMarkdown);
+            const reasoning =
+              isAgentInternalMonologue(streamingReasoningMarkdown) ? "" : streamingReasoningMarkdown;
+            return mergeThoughtBody(reasoning, streamingThoughtMarkdown);
           }
           let reasoning = "";
           let thought = "";
@@ -1551,10 +1612,11 @@ function AssistantMessageBase({
 
           if (ev.type === "log") {
             const level = ev.level === "error" ? "error" : ev.level === "warn" ? "warn" : "info";
+            const logIter = Number(ev.iteration) || Number((traceSteps[i - 1] as UIEvent | undefined)?.iteration) || currentIter;
             pushNode(
               <TraceLogRow key={`log-${i}`} level={level} message={String(ev.message ?? "")} />,
               undefined,
-              undefined,
+              logIter,
             );
             return;
           }
@@ -1576,9 +1638,10 @@ function AssistantMessageBase({
           if (ev.type === "final") {
             const finalIt = Number(ev.iteration) || currentIter;
             pushThoughtForIter(finalIt);
+            const finalBody = sanitizeFinalPreview(String(ev.result ?? ""));
             pushNode(
               <div key={`final-row-${i}`} className="assistant-answer msg-text">
-                <Markdown>{ev.result ?? ""}</Markdown>
+                <Markdown>{finalBody}</Markdown>
               </div>,
               undefined,
               finalIt,
@@ -1714,9 +1777,12 @@ function AssistantMessageBase({
           }
         }
 
-        const hasStreamingFinal = isStreaming && streamingFinalText.trim().length > 0;
+        const hasStreamingFinal =
+          isStreaming &&
+          streamingFinalText.trim().length > 0 &&
+          bufferHasCleanFinal(streamingText) &&
+          !finalEv;
         if (hasStreamingFinal) {
-          pushThoughtForIter(streamThoughtIter);
           pushNode(
             <div key={`streaming-final-row`} className="assistant-answer msg-text">
               <Markdown>{streamingFinalText}</Markdown>
@@ -1728,7 +1794,7 @@ function AssistantMessageBase({
           );
         }
 
-        if (!liveFoldInjected && wantLiveThoughtPanel) {
+        if (!liveFoldInjected && wantLiveThoughtPanel && !hasStreamingFinal) {
           pushLiveThoughtIfNeeded("eof_tail");
         }
 
@@ -2284,7 +2350,7 @@ export function Chat({
 
     const persistReasoningFromBuffer = (iteration: number, partial: string): void => {
       const reasoning = streamingReasoningExtract(partial).trim();
-      if (!reasoning) return;
+      if (!reasoning || isAgentInternalMonologue(reasoning)) return;
       setSettledReasoning((m) => {
         const next = new Map(m);
         const byIter = new Map(next.get(turnId) ?? []);
@@ -2349,11 +2415,7 @@ export function Chat({
       }
       stampedThoughtMs = finalizeThoughtDuration(turnId, ti);
       if (cur) {
-        // Preserve FINAL: tail so streaming answer stays visible token-by-token
-        // instead of disappearing until the complete `final` event arrives.
-        const finalTail = streamingFinalExtract(cur.partial);
-        const kept = finalTail ? `FINAL: ${finalTail}` : "";
-        const next = { iteration: cur.iteration, partial: kept, startedAt: cur.startedAt };
+        const next = { iteration: cur.iteration, partial: "", startedAt: cur.startedAt };
         thinkingRef.current = next;
         setThinking(next);
       }
@@ -2372,10 +2434,7 @@ export function Chat({
       }
       const startedAt = Date.now();
       markThoughtStart(turnId, it);
-      // Carry over any FINAL: tail so the streaming answer keeps rendering.
-      const prevFinal = cur ? streamingFinalExtract(cur.partial) : "";
-      const kept = prevFinal ? `FINAL: ${prevFinal}` : "";
-      const next = { iteration: it, partial: kept, startedAt };
+      const next = { iteration: it, partial: "", startedAt };
       thinkingRef.current = next;
       setThinking(next);
       tokenIterRef.current = it;

@@ -285,7 +285,15 @@ export async function applyPatch(block: PatchBlock): Promise<PatchResult> {
 
     const idx = beforeLF.indexOf(searchLF);
     if (idx === -1) {
-      return { path: block.path, applied: false, diff: "", error: "SEARCH text not found" };
+      const firstSearchLine = searchLF.split("\n").find((l) => l.trim().length > 0)?.trim() ?? "";
+      const short = firstSearchLine.slice(0, 72);
+      let hint = "";
+      if (short && beforeLF.includes(short)) {
+        hint = " — first SEARCH line appears in file but full block mismatched (check spaces, CRLF, or read exact tail with read_file start_line)";
+      } else if (short) {
+        hint = ` — first SEARCH line not in file: "${short}${firstSearchLine.length > 72 ? "…" : ""}"`;
+      }
+      return { path: block.path, applied: false, diff: "", error: `SEARCH text not found${hint}` };
     }
     const occurrences = beforeLF.split(searchLF).length - 1;
     if (occurrences > 1) {

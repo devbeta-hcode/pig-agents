@@ -343,14 +343,28 @@ export const api = {
     onSessionEnded?: (end: { status: string; result?: string; error?: string }) => void,
   ): { close: () => void; done: Promise<void> } {
     let resolveDone!: () => void;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolveDone();
+    };
     const done = new Promise<void>((res) => { resolveDone = res; });
     const h = pig.streamOpen("session", { sessionId }, (m: Record<string, unknown>) => {
       const t = (m as { type?: string }).type;
       if (t === "session_info") onSessionInfo?.(m as unknown as SessionInfo);
-      else if (t === "session_ended") { onSessionEnded?.(m as never); resolveDone(); }
-      else onEvent(m as unknown as AgentEvent);
+      else if (t === "session_ended") {
+        onSessionEnded?.(m as never);
+        finish();
+      } else {
+        onEvent(m as unknown as AgentEvent);
+        // Fallback: older cores may not emit session_ended — unblock UI after terminal events.
+        if (t === "final" || t === "error" || t === "aborted") {
+          setTimeout(finish, 400);
+        }
+      }
     });
-    return { close: () => { h.close(); resolveDone(); }, done };
+    return { close: () => { h.close(); finish(); }, done };
   },
 };
 

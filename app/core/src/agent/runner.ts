@@ -86,7 +86,7 @@ function buildUserContent(
 export type AgentMode = "ask" | "agent";
 
 export type AgentEvent =
-  | { type: "log"; level: "info" | "warn" | "error"; message: string }
+  | { type: "log"; level: "info" | "warn" | "error"; message: string; iteration?: number }
   | import("./activity.js").ActivityAgentEvent
   | { type: "iter_start"; iteration: number }
   | { type: "token"; iteration: number; delta: string }
@@ -902,9 +902,16 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // cancel the early-scheduled tools or skip the observation — that would lose
     // real tool results and leave the UI stuck on "reading…" forever.
     const missingThought =
-      !step.thought.trim() && (step.kind === "action" || step.kind === "multi_action");
+      !step.thought.trim() &&
+      !/\bTHOUGHT\s*:/i.test(raw) &&
+      (step.kind === "action" || step.kind === "multi_action");
     if (missingThought) {
-      emit({ type: "log", level: "warn", message: "Missing THOUGHT — nudging model to include reasoning in next turn." });
+      emit({
+        type: "log",
+        level: "warn",
+        message: "Missing THOUGHT — nudging model to include reasoning in next turn.",
+        iteration: i,
+      });
     }
 
     if (step.thought) emit({ type: "thought", iteration: i, thought: step.thought });

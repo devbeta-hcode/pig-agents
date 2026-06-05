@@ -72,6 +72,15 @@ export interface ToolContext {
   writtenPaths?: Set<string>;
 }
 
+/** Drop all cached read_file slices for a path (bare key + start_line variants). */
+function invalidateReadCacheForPath(cache: Map<string, string> | undefined, relPath: string): void {
+  if (!cache) return;
+  const norm = relPath.replace(/\\/g, "/").trim();
+  for (const key of [...cache.keys()]) {
+    if (key === norm || key.startsWith(`${norm}:`)) cache.delete(key);
+  }
+}
+
 async function captureRunSnapshotBeforeWrite(
   ctx: ToolContext,
   relPath: string,
@@ -235,8 +244,10 @@ export async function executeTool(
       case "read_file": {
         const p = String(input.path || "");
         if (!p) return { ok: false, summary: "read_file: missing 'path'" };
-        const startLine = input.start_line != null ? Number(input.start_line) : undefined;
-        const endLine = input.end_line != null ? Number(input.end_line) : undefined;
+        const startRaw = input.start_line ?? input.startLine ?? input.offset;
+        const endRaw = input.end_line ?? input.endLine;
+        const startLine = startRaw != null ? Number(startRaw) : undefined;
+        const endLine = endRaw != null ? Number(endRaw) : undefined;
         const cacheKey =
           startLine != null || endLine != null
             ? `${p}:${startLine ?? ""}:${endLine ?? ""}`
@@ -287,7 +298,11 @@ export async function executeTool(
             ? body.slice(0, maxLen) + `\n…[+${Math.floor((body.length - maxLen) / 1000)}k chars]`
             : body;
         const header = `${p} lines ${sliced.from}-${sliced.to} of ${sliced.totalLines}`;
-        const summary = `${header}:\n${truncated}`;
+        const moreHint =
+          sliced.to < sliced.totalLines
+            ? `\n[!] File has ${sliced.totalLines} lines — use read_file with start_line: ${sliced.to + 1} (and end_line) to read the rest. Do not assume lines 1-${sliced.to} is the whole file.`
+            : "";
+        const summary = `${header}:\n${truncated}${moreHint}`;
         ctx.readCache?.set(cacheKey, summary);
         return { ok: true, summary, data: body };
       }
@@ -596,8 +611,9 @@ export async function executeTool(
           const oneLine = (r.error ?? "unknown").replace(/\s+/g, " ").trim();
           return `FAIL [${code}] ${r.path} — ${oneLine}`;
         });
-        // Invalidate read cache for patched files so subsequent reads get fresh content
-        results.filter(r => r.applied).forEach(r => ctx.readCache?.delete(r.path));
+        for (const r of results) {
+          invalidateReadCacheForPath(ctx.readCache, r.path);
+        }
         let validation: ValidationReport = { ran: [], ok: true };
         if (ok) validation = await autoValidate();
         const valSummary = ok ? `\n${summarizeValidation(validation)}` : "";
@@ -645,10 +661,24 @@ export async function executeTool(
         // Treat unreadable / non-existent as an empty file (mark the patch as a
         // create-from-absent so revert will delete the path instead of leaving
         // an empty stub on disk).
+        let existsOnDisk = false;
+        try {
+          await readFile(p);
+          existsOnDisk = true;
+        } catch {
+          /* new file */
+        }
+        if (existsOnDisk && !ctx.writtenPaths?.has(p)) {
+          return {
+            ok: false,
+            summary:
+              `[CF_EXISTS] ${p} already exists on disk. Use write_patch with an exact SEARCH/REPLACE block (read_file with start_line for tail lines), not create_file — create_file overwrites the entire file.`,
+          };
+        }
         const { before, createdFromAbsent } = await captureRunSnapshotBeforeWrite(ctx, p);
         await writeFile(p, content);
         ctx.writtenPaths?.add(p);
-        ctx.readCache?.delete(p);
+        invalidateReadCacheForPath(ctx.readCache, p);
         const diff = makeUnifiedDiff(p, before, content, { markCreatedFromAbsent: createdFromAbsent });
         const diffs = diff ? [diff] : [];
         return { ok: true, summary: `Created ${p} (${content.length} chars)`, diffs };

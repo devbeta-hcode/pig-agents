@@ -31,9 +31,18 @@ export interface AgentSession {
 
 type SessionListener = (event: AgentEvent) => void;
 
+export type SessionEndedPayload = {
+  status: SessionStatus;
+  result?: string;
+  error?: string;
+};
+
+type SessionEndedListener = (end: SessionEndedPayload) => void;
+
 interface SessionState {
   session: AgentSession;
   listeners: Set<SessionListener>;
+  endedListeners: Set<SessionEndedListener>;
   abortController: AbortController;
 }
 
@@ -112,6 +121,7 @@ export function startSession(
   const state: SessionState = {
     session,
     listeners: new Set(),
+    endedListeners: new Set(),
     abortController,
   };
   
@@ -126,6 +136,24 @@ export function startSession(
   logger.info(`Started background session: ${id} for task: "${task.slice(0, 50)}..."`);
   
   return session;
+}
+
+function notifySessionEnded(state: SessionState): void {
+  const { session } = state;
+  if (session.status === "running") return;
+  const payload: SessionEndedPayload = {
+    status: session.status,
+    result: session.result?.result,
+    error: session.error,
+  };
+  for (const listener of state.endedListeners) {
+    try {
+      listener(payload);
+    } catch (err) {
+      logger.warn("Session ended listener error:", err);
+    }
+  }
+  state.endedListeners.clear();
 }
 
 /**
@@ -192,6 +220,7 @@ async function runAgentInBackground(state: SessionState): Promise<void> {
         logger.warn(`runSnapshots finalize: ${(e as Error).message}`),
       );
     }
+    notifySessionEnded(state);
   }
 }
 
@@ -237,12 +266,26 @@ export function getRunningSessions(workspace?: string): AgentSession[] {
 export function subscribeToSession(
   sessionId: string,
   listener: SessionListener,
-  replay = true
+  replay = true,
+  onEnded?: SessionEndedListener,
 ): (() => void) | null {
   const state = sessions.get(sessionId);
   if (!state) return null;
 
   let unsubscribed = false;
+
+  if (onEnded) {
+    state.endedListeners.add(onEnded);
+    if (state.session.status !== "running") {
+      queueMicrotask(() => {
+        if (!unsubscribed) onEnded({
+          status: state.session.status,
+          result: state.session.result?.result,
+          error: state.session.error,
+        });
+      });
+    }
+  }
 
   // Replay existing events in chunks so a huge buffer never blocks the event loop
   // (same tick as other API routes / agent ticks).
@@ -279,6 +322,7 @@ export function subscribeToSession(
   return () => {
     unsubscribed = true;
     state.listeners.delete(listener);
+    if (onEnded) state.endedListeners.delete(onEnded);
   };
 }
 

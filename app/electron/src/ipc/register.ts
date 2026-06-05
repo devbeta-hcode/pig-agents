@@ -97,13 +97,15 @@ function startStream(kind: string, params: Record<string, any>, send: Send): () 
         completedAt: session.completedAt,
         eventCount: session.events.length,
       });
-      const unsub = subscribeToSession(String(params.sessionId), (event) => send(event), true);
+      const unsub = subscribeToSession(
+        String(params.sessionId),
+        (event) => send(event),
+        true,
+        (end) => send({ type: "session_ended", ...end }),
+      );
       if (!unsub) {
         send({ type: "error", message: "failed to subscribe to session" });
         return () => {};
-      }
-      if (session.status !== "running") {
-        send({ type: "session_ended", status: session.status, result: session.result?.result, error: session.error });
       }
       return () => unsub();
     }

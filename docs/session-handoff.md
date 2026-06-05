@@ -56,6 +56,7 @@ Last updated: 2026-05-31
 - **2026-06-03** — Agent `delete_path` tool: one workspace-relative path (no `*`, `**`, `..`, absolute drives); file or directory via `deleteAgentPath` → `deleteEntry` + `safeJoin`; `delete_file` alias; prompts updated.
 - **2026-06-03** — Checkpoint disk blow-up fix: auto `auto-pre-run` / `auto-pre-restore` no longer fall back to full-workspace file copy under `~/.pig-agents/backups` (git-only or skip); file backups manual-only (max 3); expanded ignore list; `checkpointPurgeFileBackups` + `scripts/purge-checkpoint-file-backups.mjs`.
 - **2026-06-03** — Cursor/Copilot-style rollback: per-chat **run-files** snapshots (`runSnapshots.ts`) under `~/.pig-agents/chats/<ws>/snapshots/<chatId>/<runId>/` — only files touched before write; auto checkpoint with `chatId` uses this instead of full copy; `chatDelete` purges snapshots + chat-tagged checkpoints; restore UI supports `backupType: run-files`.
+- **2026-06-03** — Chat hang fix: background sessions now emit `session_ended` when `runAgentInBackground` finishes (`notifySessionEnded` + IPC subscribe callback); renderer `streamSession.done` also falls back on `final`/`error`/`aborted` so “Agent is working…” clears.
 - **2026-06-05** — Log chronological rendering & streaming Markdown:
   - Modified `Chat.tsx` to include `final` events in `traceSteps` so finalized answers are rendered chronologically inside the step timeline.
   - Implemented inline rendering of streaming final text inside the timeline's active iteration (`streamThoughtIter`).

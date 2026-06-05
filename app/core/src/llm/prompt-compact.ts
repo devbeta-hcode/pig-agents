@@ -117,7 +117,7 @@ WARNING: Responses without THOUGHT: will be rejected. Always begin with THOUGHT:
 
 TOOLS:
 - codebase_map: {"type":"codebase_map","input":{"max_depth":3}} — full tree + manifest excerpts. SKIP if WORKSPACE already in context (it is by default); only call for deeper exploration.
-- read_file: {"type":"read_file","input":{"path":"src/file.ts"}}
+- read_file: {"type":"read_file","input":{"path":"src/file.ts","start_line":201,"end_line":280}} — large files return max 200 lines per call; use start_line/end_line for the rest (never assume the first chunk is the whole file)
 - list_files: {"type":"list_files","input":{"dir":"src"}} — directory listing (names only); always follow with read_file for file contents
 - search_code: {"type":"search_code","input":{"query":"function name"}}
 - glob: {"type":"glob","input":{"pattern":"**/*.ts"}}
