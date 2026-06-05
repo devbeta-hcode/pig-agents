@@ -2306,7 +2306,11 @@ export function Chat({
       }
       stampedThoughtMs = finalizeThoughtDuration(turnId, ti);
       if (cur) {
-        const next = { iteration: cur.iteration, partial: "", startedAt: cur.startedAt };
+        // Preserve FINAL: tail so streaming answer stays visible token-by-token
+        // instead of disappearing until the complete `final` event arrives.
+        const finalTail = streamingFinalExtract(cur.partial);
+        const kept = finalTail ? `FINAL: ${finalTail}` : "";
+        const next = { iteration: cur.iteration, partial: kept, startedAt: cur.startedAt };
         thinkingRef.current = next;
         setThinking(next);
       }
@@ -2325,7 +2329,10 @@ export function Chat({
       }
       const startedAt = Date.now();
       markThoughtStart(turnId, it);
-      const next = { iteration: it, partial: "", startedAt };
+      // Carry over any FINAL: tail so the streaming answer keeps rendering.
+      const prevFinal = cur ? streamingFinalExtract(cur.partial) : "";
+      const kept = prevFinal ? `FINAL: ${prevFinal}` : "";
+      const next = { iteration: it, partial: kept, startedAt };
       thinkingRef.current = next;
       setThinking(next);
       tokenIterRef.current = it;
@@ -2334,6 +2341,9 @@ export function Chat({
 
     if (ev.type === "final" || ev.type === "error" || ev.type === "aborted") {
       flushCmdChunkNow();
+      // Flush remaining tokens INTO the buffer BEFORE clearing it so the
+      // final snapshot of reasoning/thought text is complete.
+      flushPendingTokensNow();
       const cur = thinkingRef.current;
       if (cur?.partial.trim()) {
         persistReasoningFromBuffer(cur.iteration, cur.partial);
@@ -2343,9 +2353,6 @@ export function Chat({
       }
       thinkingRef.current = null;
       setThinking(null);
-      if (ev.type === "final" || ev.type === "error" || ev.type === "aborted") {
-        flushPendingTokensNow();
-      }
     }
     if (ev.type === "context_usage") {
       const usage = contextUsageFromEvent(ev as Record<string, unknown>);
@@ -2372,7 +2379,10 @@ export function Chat({
 
     if (ev.type === "action") {
       flushCmdChunkNow();
-      appendTurnEvent(ev.ts ? ev : { ...ev, ts: Date.now() });
+      appendTurnEvent(
+        ev.ts ? ev : { ...ev, ts: Date.now() },
+        (x) => x.type === "action" && x.actionKey === ev.actionKey && x.iteration === ev.iteration
+      );
       return;
     }
 
@@ -2406,7 +2416,16 @@ export function Chat({
       }
       appendTurnEvent(
         stamped,
-        ev.type === "thought" ? (x) => x.type === "thought" && Number(x.iteration) === Number(ev.iteration ?? 1) : undefined,
+        ev.type === "iter_start"
+          ? (x) => x.type === "iter_start" && x.iteration === (ev.iteration ?? 1)
+          : ev.type === "observation"
+            ? (x) =>
+                x.type === "observation" &&
+                x.iteration === ev.iteration &&
+                (ev.actionKey ? x.actionKey === ev.actionKey : x.summary === ev.summary)
+            : ev.type === "thought"
+              ? (x) => x.type === "thought" && Number(x.iteration) === Number(ev.iteration ?? 1)
+              : undefined,
       );
       if (ev.type === "observation" && ev.diffs && ev.diffs.length) onDiffs(ev.diffs);
     });

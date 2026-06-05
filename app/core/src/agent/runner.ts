@@ -1182,12 +1182,16 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
           });
         }
       } else {
+        const act = stepActions[0];
+        const key = actionScheduleKey(act.type, act.input);
         emit({
           type: "observation",
           iteration: i,
           ok: allOk,
           summary: combinedSummary,
           diffs: combinedDiffs,
+          tool: act.type,
+          actionKey: key,
         });
       }
     }
