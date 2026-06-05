@@ -46,6 +46,19 @@ export function activeUserTaskSlice(task: string): string {
   return task.trim();
 }
 
+/** Safe slice to avoid cutting surrogate pairs in half */
+export function safeSlice(str: string, len: number): string {
+  if (str.length <= len) return str;
+  let s = str.slice(0, Math.floor(len));
+  if (s.length > 0) {
+    const lastCode = s.charCodeAt(s.length - 1);
+    if (lastCode >= 0xD800 && lastCode <= 0xDBFF) {
+      s = s.slice(0, -1);
+    }
+  }
+  return s;
+}
+
 /** Detect consultation/feasibility questions */
 export function taskSignalsConsultationFirst(task: string): boolean {
   const t = activeUserTaskSlice(task);
@@ -233,7 +246,7 @@ export function buildContextMessageCompact(
       : skipFilePreviews
         ? relevant.map((f) => `[${f.path}] (preview omitted — see HISTORY or read_file)`).join("\n")
         : relevant
-            .map((f) => `[${f.path}]\n${f.preview.slice(0, previewLen)}${f.preview.length > previewLen ? "…" : ""}`)
+            .map((f) => `[${f.path}]\n${safeSlice(f.preview, previewLen)}${f.preview.length > previewLen ? "…" : ""}`)
             .join("\n\n");
 
   let historyCap = 8;
@@ -251,7 +264,7 @@ export function buildContextMessageCompact(
       const content =
         m.role === "user" && m.content.includes("OBSERVATION")
           ? truncateObservation(m.content, obsCap)
-          : m.content.slice(0, msgCap);
+          : safeSlice(m.content, msgCap);
       return `[${m.role.toUpperCase()}] ${content}`;
     })
     .join("\n\n");
@@ -302,7 +315,7 @@ function truncateObservation(content: string, maxLen: number): string {
   if (mid.length > maxLen - header.length - footer.length - 20) {
     return `${header}\n…[${Math.floor(mid.length/1000)}k chars truncated]…\n${footer}`;
   }
-  return content.slice(0, maxLen) + '…';
+  return safeSlice(content, maxLen) + '…';
 }
 
 /**
@@ -325,10 +338,10 @@ export function buildAskMessageCompact(
   const filesBlock =
     relevant.length === 0
       ? "(none)"
-      : relevant.map((f) => `[${f.path}]\n${f.preview.slice(0, fileCap)}`).join("\n\n");
+      : relevant.map((f) => `[${f.path}]\n${safeSlice(f.preview, fileCap)}`).join("\n\n");
   const recent = history
     .slice(-histN)
-    .map((m) => `[${m.role}] ${m.content.slice(0, histCap)}`)
+    .map((m) => `[${m.role}] ${safeSlice(m.content, histCap)}`)
     .join("\n\n");
   return `Q: ${task}
 
@@ -402,11 +415,11 @@ function trimCompactContextMessage(msg: string, maxChars: number): string {
   while (total() > budget && filesBlock.length > 80) {
     const mid = Math.floor(filesBlock.length / 2);
     const cut = filesBlock.lastIndexOf("\n\n", mid);
-    filesBlock = cut > 40 ? filesBlock.slice(0, cut) : filesBlock.slice(0, mid);
+    filesBlock = cut > 40 ? safeSlice(filesBlock, cut) : safeSlice(filesBlock, mid);
   }
   let out = head + filesKey + filesBlock + histKey + historyBlock;
   if (out.length > budget) {
-    out = out.slice(0, budget);
+    out = safeSlice(out, budget);
   }
   return out + note;
 }

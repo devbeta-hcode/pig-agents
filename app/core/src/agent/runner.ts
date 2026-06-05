@@ -8,7 +8,6 @@ import {
   buildContextMessageCompact,
   buildAskMessageCompact,
   selectPromptVersion,
-  estimateTokens,
   clampUserMessageToInputBudget,
 } from "../llm/prompt-compact.js";
 import {
@@ -66,11 +65,11 @@ function chatAbortSignal(user: AbortSignal | undefined): AbortSignal {
  * When images are present, returns an array of ContentParts; otherwise returns a plain string.
  */
 function buildUserContent(
-  text: string, 
+  text: string,
   images?: { dataUrl: string; name: string }[]
 ): string | ContentPart[] {
   if (!images || images.length === 0) return text;
-  
+
   const parts: ContentPart[] = [{ type: "text", text }];
   for (const img of images) {
     parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
@@ -93,15 +92,15 @@ export type AgentEvent =
   /** Live stdout/stderr while run_command child is running (event-driven stream; no poll loop). */
   | { type: "command_chunk"; iteration: number; stream: "stdout" | "stderr"; text: string }
   | {
-      type: "observation";
-      iteration: number;
-      ok: boolean;
-      summary: string;
-      diffs?: string[];
-      /** Set when multiple tools run in one iteration — pairs UI row to this action. */
-      tool?: string;
-      actionKey?: string;
-    }
+    type: "observation";
+    iteration: number;
+    ok: boolean;
+    summary: string;
+    diffs?: string[];
+    /** Set when multiple tools run in one iteration — pairs UI row to this action. */
+    tool?: string;
+    actionKey?: string;
+  }
   | { type: "final"; result: string }
   | { type: "error"; message: string }
   | { type: "aborted"; message: string }
@@ -111,22 +110,24 @@ export type AgentEvent =
   // Policy gate: command needs the user's blessing before it runs.
   | { type: "policy_ask"; askId: string; cmd: string; suggestedAllow: string }
   // Outcome of the policy gate, including auto-allow / hard-deny outcomes.
-  | { type: "policy_decision"; decision: "allow_once" | "allow_always" | "allow_auto" | "deny";
-      cmd: string; originalCmd?: string; matched?: string; reason?: string }
   | {
-      type: "context_usage";
-      iteration: number;
-      segments: { id: string; label: string; tokens: number; chars: number; color: string }[];
-      inputTokens: number;
-      inputTokensMeasured: number;
-      promptTokensApi?: number;
-      completionTokensApi?: number;
-      limitTokens: number;
-      percent: number;
-      source: "measured" | "api" | "preview";
-      trimmed: boolean;
-      relevantFileCount: number;
-    };
+    type: "policy_decision"; decision: "allow_once" | "allow_always" | "allow_auto" | "deny";
+    cmd: string; originalCmd?: string; matched?: string; reason?: string
+  }
+  | {
+    type: "context_usage";
+    iteration: number;
+    segments: { id: string; label: string; tokens: number; chars: number; color: string }[];
+    inputTokens: number;
+    inputTokensMeasured: number;
+    promptTokensApi?: number;
+    completionTokensApi?: number;
+    limitTokens: number;
+    percent: number;
+    source: "measured" | "api" | "preview";
+    trimmed: boolean;
+    relevantFileCount: number;
+  };
 
 export interface AgentRunOptions {
   task: string;
@@ -448,7 +449,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   if (mode === "ask") {
     checkAbort();
     emit({ type: "iter_start", iteration: 1 });
-    
+
     const promptMode = normalizePromptMode(process.env.PROMPT_MODE);
     const askTier = promptModeToContextTier(promptMode);
     let systemPrompt: string;
@@ -567,7 +568,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   /** Stuck detection: consecutive parse errors */
   let consecutiveParseErrors = 0;
   const MAX_CONSECUTIVE_PARSE_ERRORS = 3;
-  
+
   /** Stuck detection: repeated identical actions */
   let lastActionSignature = "";
   let sameActionCount = 0;
@@ -581,7 +582,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     chatId: opts.chatId,
     /** Current ReAct iteration — run_command streams tag with this for the UI. */
     iteration: 0,
-    emit: (e: { type: string; [k: string]: unknown }) => emit(e as AgentEvent),
+    emit: (e: { type: string;[k: string]: unknown }) => emit(e as AgentEvent),
     /** Cache file reads for the duration of this run to avoid duplicate token waste. */
     readCache: new Map(),
     writtenPaths: new Set(),
@@ -596,7 +597,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   for (let i = 1; i <= maxIter; i++) {
     toolCtx.iteration = i;
     checkAbort();
-    
+
     let systemPrompt: string;
     let userMsg: string;
 
@@ -703,36 +704,28 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
             promise: Promise.resolve(undefined as unknown as ToolOutcome),
           };
           earlyScheduled.set(key, entryRef);
-          const promise = executeTool(act.type, act.input, toolCtx).then((outcome) => {
+          entryRef.promise = executeTool(act.type, act.input, toolCtx).then((outcome) => {
             if (isWriteTool(act.type)) {
               emit({ type: "tool_disk_settled", iteration: i, actionKey: key, ok: outcome.ok });
-              // Stream a per-file observation as soon as the disk write
-              // settles. This unblocks the diff sidebar — when the model
-              // dispatches 5 create_file calls in a single turn the user
-              // sees each file appear in the diff list immediately instead
-              // of waiting for all 5 to finish + the iteration to wrap up.
-              if (outcome.diffs?.length) {
-                entryRef.streamedObservation = true;
-                emit({
-                  type: "observation",
-                  iteration: i,
-                  ok: outcome.ok,
-                  summary: outcome.summary,
-                  diffs: outcome.diffs,
-                  tool: act.type,
-                  actionKey: key,
-                });
-              }
             }
+            entryRef.streamedObservation = true;
+            emit({
+              type: "observation",
+              iteration: i,
+              ok: outcome.ok,
+              summary: outcome.summary,
+              diffs: outcome.diffs,
+              tool: act.type,
+              actionKey: key,
+            });
             return outcome;
           });
-          entryRef.promise = promise;
           emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
         }
       }
     } catch (err) {
       // Clean up any in-flight early execution before surfacing the error.
-      await Promise.all([...earlyScheduled.values()].map((e) => e.promise.catch(() => {})));
+      await Promise.all([...earlyScheduled.values()].map((e) => e.promise.catch(() => { })));
       if (opts.signal?.aborted) {
         emit({ type: "aborted", message: "Agent aborted by user" });
         return { result: "aborted", iterations: i, diffs, events };
@@ -871,10 +864,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     if (step.kind === "error") {
       consecutiveParseErrors++;
       emit({ type: "log", level: "warn", message: `Parse error (${consecutiveParseErrors}/${MAX_CONSECUTIVE_PARSE_ERRORS}): ${step.error}` });
-      
+
       // After too many consecutive parse errors, the model probably can't follow ReAct format
       if (consecutiveParseErrors >= MAX_CONSECUTIVE_PARSE_ERRORS) {
-        const bailMessage = 
+        const bailMessage =
           `Agent stopped: Model returned ${consecutiveParseErrors} consecutive unparseable responses. ` +
           `This usually means the model doesn't follow the ReAct (THOUGHT/ACTION/FINAL) format well.\n\n` +
           `**Suggestions:**\n` +
@@ -886,12 +879,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         emit({ type: "final", result: bailMessage });
         return { result: bailMessage, iterations: i, diffs, events, checkpoint: preRunCheckpoint ?? undefined };
       }
-      
+
       history.push({ role: "assistant", content: raw });
       history.push({ role: "user", content: `Your previous response could not be parsed (${step.error}). Re-emit using the strict ReAct format.` });
       continue;
     }
-    
+
     // Reset parse error counter on successful parse
     consecutiveParseErrors = 0;
 
@@ -907,34 +900,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     if (step.thought) emit({ type: "thought", iteration: i, thought: step.thought });
 
-    // Write tools finish on disk as soon as each ACTION JSON closes, but the model may
-    // still be streaming THOUGHT/FINAL. Emit observation immediately once we know this
-    // turn won't batch with other tools so the UI doesn't sit on "saving…" for minutes.
-    let iterationObservationEmitted = false;
-    let loneEarlyWrite: EarlyToolExec | null = null;
-    if (earlyScheduled.size === 1) {
-      const only = [...earlyScheduled.values()][0];
-      if (isWriteTool(only.type) && only.outcome) loneEarlyWrite = only;
-    }
-    if (
-      loneEarlyWrite?.outcome &&
-      (step.kind === "final" || actionsMatchEarly(step, { type: loneEarlyWrite.type, input: loneEarlyWrite.input }))
-    ) {
-      // Per-tool observation may have already streamed mid-iteration with the
-      // diffs payload; in that case still mark the iteration as observed but
-      // avoid emitting a second observation event (prevents duplicate trace
-      // rows + duplicate diff entries on the sidebar).
-      if (!loneEarlyWrite.streamedObservation) {
-        emit({
-          type: "observation",
-          iteration: i,
-          ok: loneEarlyWrite.outcome.ok,
-          summary: loneEarlyWrite.outcome.summary,
-          diffs: loneEarlyWrite.outcome.diffs,
-        });
-      }
-      iterationObservationEmitted = true;
-    }
+    // Write tools finish on disk as soon as each ACTION JSON closes.
+    // Observations are emitted immediately per-tool in the .then() handlers above.
 
     if (step.kind === "final") {
       // If the model's FINAL is itself a consultation — asking the user questions /
@@ -942,7 +909,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       // fighting it with premature / lazy / scaffold nudges.
       if (finalContainsConsultation(step.result)) {
         finalResult = sanitizeFinalOrKeep(step.result);
-        if (!iterationObservationEmitted && earlyScheduled.size > 0) {
+        if (earlyScheduled.size > 0) {
           const list = [...earlyScheduled.values()];
           const allOk = list.every((e) => e.outcome?.ok !== false);
           const summary = list.length === 1
@@ -1058,23 +1025,6 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       finalResult = sanitizeFinalOrKeep(step.result);
       // ACTION(s) + FINAL in the same assistant message — append OBSERVATION to history if tools ran.
       if (earlyScheduled.size > 0) {
-        if (!iterationObservationEmitted) {
-          const list = [...earlyScheduled.values()];
-          const allOkEarly = list.every((e) => e.outcome?.ok !== false);
-          const summaryEarly =
-            list.length === 1
-              ? list[0].outcome!.summary
-              : list.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
-          // Skip diffs that already streamed per-tool to avoid duplicates.
-          const diffsEarly = list.flatMap((e) => (e.streamedObservation ? [] : e.outcome?.diffs ?? []));
-          emit({
-            type: "observation",
-            iteration: i,
-            ok: allOkEarly,
-            summary: summaryEarly,
-            diffs: diffsEarly,
-          });
-        }
         history.push({ role: "assistant", content: raw });
         const listForHist = [...earlyScheduled.values()];
         const allOkHist = listForHist.every((e) => e.outcome?.ok !== false);
@@ -1097,11 +1047,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
           : [];
 
     // Stuck detection — use a combined signature across all actions.
-    const actionSignature = stepActions.map(a => `${a.type}:${JSON.stringify(a.input)}`).join("|");
+    const actionSignature = stepActions.map(a => `${a.type}:${JSON.stringify(a.input).replace(/\s+/g, "")}`).join("|");
     if (actionSignature === lastActionSignature) {
       sameActionCount++;
       if (sameActionCount >= MAX_SAME_ACTION_REPEAT) {
-        const bailMessage = 
+        const bailMessage =
           `Agent stopped: Same action(s) repeated ${sameActionCount} times in a row.\n\n` +
           `**Action:** \`${stepActions[0]?.type ?? "unknown"}\`\n` +
           `**Input:** \`${JSON.stringify(stepActions[0]?.input ?? {}).slice(0, 200)}\`\n\n` +
@@ -1129,6 +1079,15 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         if (isWriteTool(act.type)) {
           emit({ type: "tool_disk_settled", iteration: i, actionKey: key, ok: outcome.ok });
         }
+        emit({
+          type: "observation",
+          iteration: i,
+          ok: outcome.ok,
+          summary: outcome.summary,
+          diffs: outcome.diffs,
+          tool: act.type,
+          actionKey: key,
+        });
         return outcome;
       });
     });
@@ -1163,43 +1122,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       return o.diffs ?? [];
     });
 
-    if (!iterationObservationEmitted) {
-      if (stepActions.length > 1) {
-        for (let j = 0; j < outcomes.length; j++) {
-          const act = stepActions[j];
-          const outcome = outcomes[j];
-          const key = actionScheduleKey(act.type, act.input);
-          const early = earlyScheduled.get(key);
-          if (early?.streamedObservation && isWriteTool(act.type)) continue;
-          emit({
-            type: "observation",
-            iteration: i,
-            ok: outcome.ok,
-            summary: outcome.summary,
-            diffs: outcome.diffs,
-            tool: act.type,
-            actionKey: key,
-          });
-        }
-      } else {
-        const act = stepActions[0];
-        const key = actionScheduleKey(act.type, act.input);
-        emit({
-          type: "observation",
-          iteration: i,
-          ok: allOk,
-          summary: combinedSummary,
-          diffs: combinedDiffs,
-          tool: act.type,
-          actionKey: key,
-        });
-      }
-    }
 
     history.push({ role: "assistant", content: raw });
     const thoughtNudge = missingThought
       ? "\n\n⚠️ FORMAT: Your previous response was missing the required THOUGHT: block. " +
-        "Every response MUST start with THOUGHT: (1–6 sentences of reasoning) before ACTION: or FINAL:."
+      "Every response MUST start with THOUGHT: (1–6 sentences of reasoning) before ACTION: or FINAL:."
       : "";
     history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}${thoughtNudge}` });
 
@@ -1219,7 +1146,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     // No-progress nudge: if we've done 6+ iterations without writing anything, remind the agent
     if (!didWrite && i >= 6 && i % 3 === 0) {
-      const noProgressNote = 
+      const noProgressNote =
         `\n\n[system] ⚠️ NO CHANGES YET: You've run ${i} iterations without making any file changes. ` +
         `If your task requires file edits, use write_patch now. ` +
         `If you have enough information, emit FINAL with your answer. ` +

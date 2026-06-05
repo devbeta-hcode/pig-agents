@@ -15,6 +15,10 @@ export function childSpawnEnv(extra: Record<string, string | undefined> = {}): N
   delete env.PORT;
   delete env.BACKEND_PORT;
   delete env.AGENT_PORT;
+  
+  // Prevent dev servers (Create React App, Vite, Next.js) from automatically opening the system browser
+  if (!env.BROWSER) env.BROWSER = "none";
+  
   // Piped stdio is not a TTY — Python (and some other tools) block-buffer without this.
   if (!env.PYTHONUNBUFFERED) env.PYTHONUNBUFFERED = "1";
   if (process.platform === "win32" && !env.PYTHONIOENCODING) env.PYTHONIOENCODING = "utf-8";

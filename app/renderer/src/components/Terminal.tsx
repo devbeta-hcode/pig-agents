@@ -121,6 +121,24 @@ export function TerminalView({ active, workspace, initialCommand, onCommandSent 
 
     const inputSub = term.onData((d) => { handle?.write(d); });
 
+    const selectionSub = term.onSelectionChange(() => {
+      const text = term.getSelection();
+      if (text) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    });
+
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      // Putty style: right click pastes
+      navigator.clipboard.readText().then((text) => {
+        if (text && handle) {
+          handle.write(text);
+        }
+      }).catch(() => {});
+    };
+    host.addEventListener("contextmenu", onContextMenu);
+
     const onHostClick = () => { try { term.focus(); } catch { /* noop */ } };
     host.addEventListener("click", onHostClick);
 
@@ -128,8 +146,10 @@ export function TerminalView({ active, workspace, initialCommand, onCommandSent 
       disposed = true;
       window.removeEventListener("resize", onWinResize);
       host.removeEventListener("click", onHostClick);
+      host.removeEventListener("contextmenu", onContextMenu);
       ro.disconnect();
       inputSub.dispose();
+      selectionSub.dispose();
       try { handle?.kill(); } catch { /* noop */ }
       try { term.dispose(); } catch { /* noop */ }
       termRef.current = null;

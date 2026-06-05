@@ -951,10 +951,7 @@ function ThoughtFold({
       <div ref={scrollRef} className="assistant-stream-thought-scroll assistant-thought-content">
         {hasMd ? (
           <div className="assistant-stream-thought-md">
-            {isStreamingAssistant
-              ? <div className="streaming-plaintext">{displayMarkdown}</div>
-              : <Markdown>{displayMarkdown}</Markdown>
-            }
+            <Markdown>{displayMarkdown}</Markdown>
           </div>
         ) : (
           <div className="assistant-stream-thought-placeholder">Thought…</div>
@@ -1122,6 +1119,7 @@ function AssistantMessageBase({
         e.type === "action" ||
         e.type === "observation" ||
         e.type === "command_chunk" ||
+        e.type === "final" ||
         (e.type === "activity" &&
           ["prepare", "index", "context"].includes(String(e.phase ?? ""))) ||
         (e.type === "log" && !isRedundantUiLog(e)) ||
@@ -1146,6 +1144,7 @@ function AssistantMessageBase({
         if (e.type === "policy_decision") return 4;
         if (e.type === "action") return 5;
         if (e.type === "observation") return 6;
+        if (e.type === "final") return 7;
         return 5;
       };
       const ra = typeRank(a as UIEvent);
@@ -1170,10 +1169,11 @@ function AssistantMessageBase({
   const finalText = finalEv?.result ?? "";
   // While streaming, parse FINAL: out of the live token buffer so the answer
   // appears token-by-token instead of waiting for the SSE `final` event.
-  const streamingFinalText = useMemo(
-    () => (isStreaming && !finalText ? streamingFinalExtract(streamingText) : ""),
-    [isStreaming, streamingText, finalText],
-  );
+  const streamingFinalText = useMemo(() => {
+    if (!isStreaming || finalText) return "";
+    if (turnMode === "ask") return streamingText;
+    return streamingFinalExtract(streamingText);
+  }, [isStreaming, streamingText, finalText, turnMode]);
   const displayedFinalText = finalText || streamingFinalText;
   const errorText = errorEv?.message ?? "";
   const duration = turn.endedAt && turn.startedAt ? formatDuration(turn.endedAt - turn.startedAt) : null;
@@ -1545,6 +1545,21 @@ function AssistantMessageBase({
             return;
           }
 
+          if (ev.type === "final") {
+            const finalIt = Number(ev.iteration) || currentIter;
+            pushThoughtForIter(finalIt);
+            pushNode(
+              <div key={`final-row-${i}`} className="assistant-answer msg-text">
+                <Markdown>{ev.result ?? ""}</Markdown>
+              </div>,
+              undefined,
+              finalIt,
+              undefined,
+              "other",
+            );
+            return;
+          }
+
           pushNode(
             <TraceStep
               key={`misc-${i}`}
@@ -1671,6 +1686,20 @@ function AssistantMessageBase({
           }
         }
 
+        const hasStreamingFinal = isStreaming && streamingFinalText.trim().length > 0;
+        if (hasStreamingFinal) {
+          pushThoughtForIter(streamThoughtIter);
+          pushNode(
+            <div key={`streaming-final-row`} className="assistant-answer msg-text">
+              <Markdown>{streamingFinalText}</Markdown>
+            </div>,
+            undefined,
+            streamThoughtIter,
+            undefined,
+            "other",
+          );
+        }
+
         if (!liveFoldInjected && wantLiveThoughtPanel) {
           pushLiveThoughtIfNeeded("eof_tail");
         }
@@ -1767,19 +1796,8 @@ function AssistantMessageBase({
       <div className="msg-content">
         {phaseBanners}
         {assistantStepListJsx}
-        {displayedFinalText && (
-          <div className="assistant-answer msg-text">
-            {/* During streaming, skip markdown parse (react-markdown+prism is too
-                expensive at 60fps). Render plain pre-wrap text; full Markdown
-                renders once the turn settles and finalText arrives. */}
-            {(isStreaming && !finalText)
-              ? <div className="streaming-plaintext">{displayedFinalText}</div>
-              : <Markdown>{displayedFinalText}</Markdown>
-            }
-          </div>
-        )}
 
-        {errorText && !displayedFinalText && (
+        {errorText && !finalText && (
           <div className="msg-error">
             <div className="msg-error-head">
               <span><IconAlertTriangle size={13} style={{ marginRight: 4 }} />Error</span>
@@ -2413,6 +2431,8 @@ export function Chat({
       let stamped: UIEvent = ev;
       if (ev.type === "thought" && stampedThoughtMs != null) {
         stamped = { ...ev, thoughtMs: stampedThoughtMs };
+      } else if (ev.type === "final") {
+        stamped = { ...ev, iteration: ev.iteration ?? tokenIterRef.current ?? thinkingRef.current?.iteration ?? 1 };
       }
       appendTurnEvent(
         stamped,
