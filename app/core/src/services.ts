@@ -43,6 +43,7 @@ import { runGit, isRepo } from "./utils/git.js";
 import {
   clearAgentCommands,
   deleteAgentCommand,
+  killAgentCommand,
   getAgentCommand,
   listAgentCommands,
 } from "./agent/commandLog.js";
@@ -52,6 +53,7 @@ import {
   listSessions,
   getRunningSessions,
   abortSession,
+  abortAllRunningSessions,
   deleteSession,
   getStats as getSessionStats,
 } from "./agent/sessionManager.js";
@@ -308,6 +310,17 @@ export function agentCommandDelete(id: string) {
   return { ok: true as const, id };
 }
 
+/**
+ * Kill the child process of a running command without removing it from the
+ * log. The process's `close` event resolves `runSmartCommand` so the agent
+ * receives an error result and continues to the next step.
+ */
+export function agentCommandKill(id: string) {
+  const ok = killAgentCommand(id);
+  if (!ok) throw new Error("not found or pid not yet available");
+  return { ok: true as const, id };
+}
+
 // ===========================================================================
 // Agent sessions
 // ===========================================================================
@@ -352,6 +365,12 @@ export function sessionGet(id: string) {
 export function sessionAbort(id: string) {
   if (!abortSession(id)) throw new Error("session not found or not running");
   return { ok: true as const, id };
+}
+
+export function sessionAbortAll(workspace?: string) {
+  const ws = workspace?.trim() || undefined;
+  const stopped = abortAllRunningSessions(ws);
+  return { ok: true as const, stopped, workspace: ws ?? null };
 }
 
 export function sessionDelete(id: string) {

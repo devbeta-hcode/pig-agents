@@ -70,3 +70,8 @@ Last updated: 2026-05-31
 - **2026-06-05** â€” write_patch EOL matching line ending (CRLF vs LF) fix:
   - Updated `applyPatch` in `patch.ts` to normalize all line endings (`before`, `block.search`, and `block.replace`) to LF (`\n`) during matching and string replacement.
   - Detected if the original file used CRLF line endings, and restored them to CRLF before writing it back to disk. This fixes continuous `WP_SEARCH_MISS` failures on Windows files.
+- **2026-06-01** â€” Terminal + agent stop fixes:
+  - Explorer delete no longer kills PTY when target is a sibling file under the same cwd (`terminalTouchesPath` only matches deleted dir or parent-of-cwd).
+  - Agent abort: `sessionAbortAll`, immediate `aborted` event + approval cancel; runner races tool batch vs abort signal; Chat Stop resets UI immediately and aborts all workspace sessions; WorkspaceManager "Stop all" button.
+
+- **2026-06-06**: Fix stop/abort khi agent dang ch?y un_command. Tru?c dây khi nh?n Stop, LLM stream d?ng nhung child process cmd v?n ch?y ti?p. Fix b?ng cách: (1) thêm signal?: AbortSignal vào SmartCommandOptions + x? lý abort listener d? SIGKILL child process ngay; (2) thêm signal? vào ToolContext; (3) truy?n opts.signal t? AgentRunOptions ? 	oolCtx ? unSmartCommand. Files: 	ools/smartCommand.ts, gent/executor.ts, gent/runner.ts.

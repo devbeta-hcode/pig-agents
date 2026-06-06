@@ -2455,6 +2455,10 @@ export function Chat({
       }
       thinkingRef.current = null;
       setThinking(null);
+      if (ev.type === "aborted") {
+        setRunning(false);
+        setAwaitingStop(false);
+      }
     }
     if (ev.type === "context_usage") {
       const usage = contextUsageFromEvent(ev as Record<string, unknown>);
@@ -2996,17 +3000,22 @@ export function Chat({
   function stop() {
     stoppedRef.current = true;
     setAwaitingStop(true);
-    // Close the SSE stream first
+    setRunning(false);
+    thinkingRef.current = null;
+    setThinking(null);
     ctrlRef.current?.close();
-    // Abort the backend session so agent stops even if we disconnect
+    const aborts: Promise<unknown>[] = [];
     if (activeSessionId) {
-      api.abortSession(activeSessionId).catch((err) => {
-        console.warn("[Chat] Failed to abort session:", err);
+      aborts.push(api.abortSession(activeSessionId));
+    }
+    if (workspace) {
+      aborts.push(api.abortAllSessions(workspace));
+    }
+    if (aborts.length > 0) {
+      void Promise.all(aborts).catch((err) => {
+        console.warn("[Chat] Failed to abort session(s):", err);
       });
     }
-    // Aborting the SSE causes the backend to reject all pending approvals
-    // for this run. Drop them from the UI too — the modal would otherwise
-    // sit there asking about a command that will never be executed.
     setApprovalQueue([]);
   }
 

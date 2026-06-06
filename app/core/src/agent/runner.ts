@@ -587,6 +587,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const toolCtx: ToolContext = {
     runId,
     chatId: opts.chatId,
+    /** Abort signal — kills in-flight run_command child process on user stop. */
+    signal: opts.signal,
     /** Current ReAct iteration — run_command streams tag with this for the UI. */
     iteration: 0,
     emit: (e: { type: string;[k: string]: unknown }) => emit(e as AgentEvent),
@@ -676,6 +678,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         maxTokens: maxOutputTokensForMode(promptMode),
         onUsage: (u) => { apiUsage = u; },
       })) {
+        if (opts.signal?.aborted) {
+          emit({ type: "aborted", message: "Agent aborted by user" });
+          if (opts.runId) cancelAllForRun(opts.runId, "agent aborted");
+          return { result: "aborted", iterations: i, diffs, events };
+        }
         raw += delta;
         emit({ type: "token", iteration: i, delta });
         // Large write_patch/create_file JSON may stream for a long time; surface a trace row (tool_payload_streaming).
@@ -1119,7 +1126,30 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     });
 
     checkAbort();
-    const outcomes = await Promise.all(outcomePromises);
+    let outcomes: ToolOutcome[];
+    try {
+      outcomes = await Promise.race([
+        Promise.all(outcomePromises),
+        new Promise<ToolOutcome[]>((_, reject) => {
+          if (opts.signal?.aborted) {
+            reject(new Error("aborted"));
+            return;
+          }
+          opts.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+            { once: true },
+          );
+        }),
+      ]);
+    } catch (err) {
+      if ((err as Error).message === "aborted") {
+        emit({ type: "aborted", message: "Agent aborted by user" });
+        if (opts.runId) cancelAllForRun(opts.runId, "agent aborted");
+        return { result: "aborted", iterations: i, diffs, events };
+      }
+      throw err;
+    }
 
     // Aggregate diffs/write tracking — mid-stream actions already counted toward didWrite.
     for (let j = 0; j < outcomes.length; j++) {

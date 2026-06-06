@@ -63,6 +63,11 @@ export interface ToolContext {
   runId?: string;
   /** Chat session — per-file snapshots stored under ~/.pig-agents/chats/.../snapshots/<chatId>/ */
   chatId?: string;
+  /**
+   * Abort signal from the agent runner. When fired, run_command kills the
+   * in-flight child process immediately instead of waiting for it to finish.
+   */
+  signal?: AbortSignal;
   /** ReAct iteration (for command_chunk SSE tagging). */
   iteration?: number;
   emit?: (event: { type: string; [k: string]: unknown }) => void;
@@ -498,6 +503,7 @@ export async function executeTool(
               ctx.emit?.({ type: "command_chunk", iteration: iter, stream: streamName, text });
               cmdHandle.appendChunk(streamName, text);
             },
+            signal: ctx.signal,
           });
         } finally {
           /* stream flushed per chunk in onStreamChunk */

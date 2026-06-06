@@ -10,6 +10,7 @@ import { runAgent as runAgentCore } from "./runner.js";
 import { logger } from "../utils/logger.js";
 import { runWithWorkspace } from "../utils/workspace.js";
 import { finalizeRunSnapshot } from "../utils/runSnapshots.js";
+import { cancelAllForRun } from "../utils/approvals.js";
 
 export type SessionStatus = "running" | "completed" | "error" | "aborted";
 
@@ -192,8 +193,14 @@ async function runAgentInBackground(state: SessionState): Promise<void> {
       }),
     );
 
-    session.status = "completed";
-    session.result = result;
+    if (result.result === "aborted" || abortController.signal.aborted) {
+      session.status = "aborted";
+      session.error = "Aborted by user";
+      session.result = result;
+    } else {
+      session.status = "completed";
+      session.result = result;
+    }
     session.completedAt = Date.now();
 
     // `runAgent` already emitted `final` through onEvent (and it's in session.events).
@@ -329,15 +336,44 @@ export function subscribeToSession(
 /**
  * Abort a running session
  */
+function emitSessionEvent(state: SessionState, event: AgentEvent): void {
+  if (state.session.events.length < MAX_EVENTS_PER_SESSION) {
+    state.session.events.push(event);
+  }
+  for (const listener of state.listeners) {
+    try {
+      listener(event);
+    } catch (err) {
+      logger.warn("Session listener error:", err);
+    }
+  }
+}
+
 export function abortSession(sessionId: string): boolean {
   const state = sessions.get(sessionId);
   if (!state || state.session.status !== "running") {
     return false;
   }
-  
+
   state.abortController.abort();
+  cancelAllForRun(sessionId, "session aborted");
+  const abortedEv: AgentEvent = { type: "aborted", message: "Agent aborted by user" };
+  if (!state.session.events.some((e) => e.type === "aborted")) {
+    emitSessionEvent(state, abortedEv);
+  }
   logger.info(`Aborted session: ${sessionId}`);
   return true;
+}
+
+/** Stop every running background session (optionally scoped to one workspace). */
+export function abortAllRunningSessions(workspace?: string): string[] {
+  const stopped: string[] = [];
+  for (const [id, state] of sessions) {
+    if (state.session.status !== "running") continue;
+    if (workspace && state.session.workspace !== workspace) continue;
+    if (abortSession(id)) stopped.push(id);
+  }
+  return stopped;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlayTriangle } from "./ChevronExpand";
-import { IconX, IconMenu, IconZap, IconAlertTriangle, IconTrash, IconPlus, IconMoreHorizontal } from "./Icons";
+import { IconX, IconMenu, IconZap, IconAlertTriangle, IconTrash, IconPlus, IconMoreHorizontal, IconSquareFill } from "./Icons";
 import { TerminalView } from "./Terminal";
 import { AgentTerminalView } from "./AgentTerminalView";
 import { api, type AgentCommandSummary } from "../lib/api";
@@ -306,7 +306,19 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
                     <IconZap size={13} />
                   </span>
                   <span className="terminals-item-name">{r.cmd.length > 30 ? r.cmd.slice(0, 30) + "…" : r.cmd}</span>
-                  <span className="terminals-item-meta" style={{ color: "var(--warn)", display: "flex", alignItems: "center" }}><IconMoreHorizontal size={14} /></span>
+                  <button
+                    className="terminals-item-close"
+                    title="Kill this command (agent keeps running)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      api.killAgentCommand(r.id).catch((err) => {
+                        console.warn("killAgentCommand failed:", err);
+                      });
+                    }}
+                    style={{ color: "var(--warn)" }}
+                  >
+                    <IconSquareFill size={11} />
+                  </button>
                 </div>
               ))}
               {agents.map((r) => (
@@ -383,6 +395,7 @@ function AgentItem({
 
 function LiveTerminalView({ run }: { run: LiveAgentTab }) {
   const preRef = useRef<HTMLPreElement>(null);
+  const [killing, setKilling] = useState(false);
 
   useEffect(() => {
     const el = preRef.current;
@@ -392,15 +405,35 @@ function LiveTerminalView({ run }: { run: LiveAgentTab }) {
   const startedAt = new Date(run.startedAt).toLocaleTimeString();
   const elapsed = Math.floor((Date.now() - run.startedAt) / 1000);
 
+  function handleKill(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (killing) return;
+    setKilling(true);
+    api.killAgentCommand(run.id).catch((err) => {
+      console.warn("killAgentCommand failed:", err);
+      setKilling(false);
+    });
+  }
+
   return (
     <div className="agent-term">
       <div className="agent-term-header">
         <span className="agent-term-prompt" style={{ color: "var(--warn)" }}>$</span>
         <span className="agent-term-cmd" title={run.cmd}>{run.cmd}</span>
-        <span className="agent-term-exit" style={{ color: "var(--warn)", animation: "pulse 1s infinite" }}>
-          running…
+        <span className="agent-term-exit" style={{ color: "var(--warn)", animation: killing ? undefined : "pulse 1s infinite" }}>
+          {killing ? "stopping…" : "running…"}
         </span>
         <span className="agent-term-meta">{elapsed}s · {startedAt}</span>
+        <button
+          id={`kill-cmd-${run.id}`}
+          className="agent-term-copy"
+          title="Kill this command (agent keeps running)"
+          onClick={handleKill}
+          disabled={killing}
+          style={{ color: killing ? undefined : "var(--err, #f87171)", fontWeight: 600 }}
+        >
+          <IconSquareFill size={12} />
+        </button>
       </div>
       <div className="agent-term-cwd">cwd: {run.cwd}</div>
       <pre ref={preRef} className="agent-term-output" style={{ overflowY: "auto", maxHeight: "100%" }}>

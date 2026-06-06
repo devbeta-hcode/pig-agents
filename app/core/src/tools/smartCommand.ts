@@ -175,6 +175,12 @@ export interface SmartCommandOptions {
    * resolve early and the caller needs to be able to kill the process later).
    */
   onChildSpawn?: (pid: number) => void;
+  /**
+   * When aborted, the child process is killed immediately (SIGKILL on Windows,
+   * SIGTERM→SIGKILL on Unix). The promise resolves with mode="failed" and
+   * exitCode=130 so the agent knows it was interrupted.
+   */
+  signal?: AbortSignal;
 }
 
 // Keep track of background processes so we can clean them up
@@ -278,6 +284,22 @@ export async function runSmartCommand(
   
   const shell = shellCommandSpawn(trimmed);
 
+  const abortSignal = opts.signal;
+
+  // Reject immediately if already aborted before we even spawn
+  if (abortSignal?.aborted) {
+    return Promise.resolve({
+      cmd: trimmed,
+      mode: "failed",
+      exitCode: 130,
+      stdout: "",
+      stderr: "[aborted before start]",
+      truncated: false,
+      durationMs: 0,
+      hint: "Command was aborted before it started.",
+    });
+  }
+
   return new Promise<SmartCommandResult>((resolve) => {
     const start = Date.now();
     const child = spawn(shell.file, shell.args, {
@@ -317,6 +339,7 @@ export async function runSmartCommand(
       if (wallTimer !== undefined) clearTimeout(wallTimer);
       if (aliveTimer !== undefined) clearTimeout(aliveTimer);
       if (idleWatch !== undefined) clearInterval(idleWatch);
+      if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
       // Strip ANSI codes from output
       resolve({
         ...result,
@@ -325,6 +348,24 @@ export async function runSmartCommand(
         readySignal: result.readySignal ? stripAnsi(result.readySignal) : undefined,
       });
     };
+
+    // Handle abort signal: kill child immediately
+    const onAbort = () => {
+      if (resolved) return;
+      killShellProcess(child, "SIGKILL");
+      if (child.pid) backgroundProcesses.delete(child.pid);
+      doResolve({
+        cmd: trimmed,
+        mode: "failed",
+        exitCode: 130,
+        stdout: outBuf,
+        stderr: errBuf + "\n[aborted by user]",
+        truncated,
+        durationMs: Date.now() - start,
+        hint: "Command was killed because the agent run was stopped by the user.",
+      });
+    };
+    if (abortSignal) abortSignal.addEventListener("abort", onAbort, { once: true });
 
     const scanCombined = () => {
       if (resolved) return;

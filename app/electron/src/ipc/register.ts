@@ -29,14 +29,13 @@ type TerminalEntry = { pty: PtyLike; cwd: string };
 // Global map to track active PTY instances so we can clean them up gracefully on app quit.
 const terminals = new Map<string, TerminalEntry>();
 
+/** Kill PTY only when delete removes the shell's cwd or a parent directory — not sibling files. */
 function terminalTouchesPath(termCwd: string, targetAbs: string): boolean {
   const cwd = path.resolve(termCwd);
   const target = path.resolve(targetAbs);
   if (cwd === target) return true;
   const sep = path.sep;
-  if (target.startsWith(cwd + sep)) return true;
-  if (cwd.startsWith(target + sep)) return true;
-  return false;
+  return cwd.startsWith(target + sep);
 }
 
 /** Kill UI terminal tabs that may hold dev servers locking files under `targetAbs`. */

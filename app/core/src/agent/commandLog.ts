@@ -153,6 +153,20 @@ export function deleteAgentCommand(id: string): boolean {
   return true;
 }
 
+/**
+ * Kill a running command's child process WITHOUT removing it from the pending
+ * map or emitting "delete". The child's `close` event will resolve
+ * `runSmartCommand` naturally (exit code 130 / "failed") so the agent can
+ * continue to the next step. Use this when the user wants to interrupt a
+ * specific command but keep the agent running.
+ */
+export function killAgentCommand(id: string): boolean {
+  const p = pending.get(id);
+  if (!p) return false;          // already finished or unknown id
+  if (p.pid == null) return false; // PID not yet registered (too early)
+  return killBackgroundProcess(p.pid);
+}
+
 export interface CommandStreamCallbacks {
   onRun: (r: AgentCommandSummary) => void;
   onClear: () => void;

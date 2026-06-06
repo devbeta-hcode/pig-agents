@@ -86,10 +86,19 @@ export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace, onSelect
     e.stopPropagation();
     try {
       await api.abortSession(sessionId);
-      // Refresh the list
       fetchRunningSessions();
     } catch (err) {
       console.error("[WorkspaceManager] Failed to abort session:", err);
+    }
+  };
+
+  const handleAbortAll = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await api.abortAllSessions();
+      fetchRunningSessions();
+    } catch (err) {
+      console.error("[WorkspaceManager] Failed to abort all sessions:", err);
     }
   };
 
@@ -128,7 +137,17 @@ export function WorkspaceManager({ currentWorkspace, onSwitchWorkspace, onSelect
         <div className="workspace-manager-dropdown-inner">
           <div className="workspace-manager-dropdown">
           <div className="dropdown-header">
-            Running Agents
+            <span>Running Agents</span>
+            {totalCount > 0 && (
+              <button
+                type="button"
+                className="abort-all-btn"
+                onClick={handleAbortAll}
+                title="Stop all running agents"
+              >
+                Stop all
+              </button>
+            )}
           </div>
           
           {workspaceGroups.map((group) => (

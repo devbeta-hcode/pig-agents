@@ -274,6 +274,9 @@ export const api = {
   getAgentCommand: (id: string): Promise<AgentCommandRun> => pig.rpc("agentCommandGet", [id]),
   clearAgentCommands: (): Promise<{ ok: true; removed: number }> => pig.rpc("agentCommandsClear", []),
   deleteAgentCommand: (id: string): Promise<{ ok: true; id: string }> => pig.rpc("agentCommandDelete", [id]),
+  /** Kill the child process of an in-progress command without removing it from
+   *  the log. The agent receives an error result and continues to the next step. */
+  killAgentCommand: (id: string): Promise<{ ok: true; id: string }> => pig.rpc("agentCommandKill", [id]),
 
   streamAgentCommands(handlers: {
     onHello?: (runs: AgentCommandSummary[], live: Array<{ id: string; cmd: string; cwd: string; startedAt: number; output: string }>) => void;
@@ -334,6 +337,10 @@ export const api = {
   getAllRunningSessions: (): Promise<{ running: AgentSession[] }> => pig.rpc("sessionAllRunning", []),
   getSession: (id: string): Promise<{ session: AgentSession }> => pig.rpc("sessionGet", [id]),
   abortSession: (id: string): Promise<{ ok: true; id: string }> => pig.rpc("sessionAbort", [id]),
+  abortAllSessions: (
+    workspace?: string,
+  ): Promise<{ ok: true; stopped: string[]; workspace: string | null }> =>
+    pig.rpc("sessionAbortAll", workspace ? [workspace] : []),
   deleteSession: (id: string): Promise<{ ok: true; id: string }> => pig.rpc("sessionDelete", [id]),
 
   streamSession(
