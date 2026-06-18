@@ -14,6 +14,7 @@ import {
 } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api, type AgentEvent, type AgentSession, type ChatSessionMeta, type Checkpoint, type SettingsPayload } from "../lib/api";
+import { pig } from "../lib/pig.js";
 import { ChatsList } from "./ChatsList";
 import { Markdown } from "./Markdown";
 import { ComposerEditable } from "./ComposerEditable";
@@ -81,10 +82,16 @@ function buildSelectElMeta(
     };
   });
 }
-// Key for storing active session ID in sessionStorage (survives F5)
-// Keyed by workspace path so multiple tabs with different workspaces don't conflict
-function getActiveSessionKey(workspace: string): string {
-  // Use a hash of workspace path to avoid special characters in storage key
+// Key for storing active backend agent session ID in sessionStorage (survives F5).
+// Must include the UI chat id. Workspace-only storage makes a new chat reconnect
+// to an old chat's running backend session and inherit its context.
+function getActiveSessionKey(workspace: string, chatId: string): string {
+  const raw = `${workspace}::${chatId}`;
+  const hash = raw.split('').reduce((a, b) => ((a << 5) - a + b.charCodeAt(0)) | 0, 0).toString(36);
+  return `pig-agents.active-session.${hash}`;
+}
+
+function getLegacyWorkspaceActiveSessionKey(workspace: string): string {
   const hash = workspace.split('').reduce((a, b) => ((a << 5) - a + b.charCodeAt(0)) | 0, 0).toString(36);
   return `pig-agents.active-session.${hash}`;
 }
@@ -1933,6 +1940,7 @@ export function Chat({
   const [taskHasContent, setTaskHasContent] = useState(false);
   const browserElementRefsRef = useRef(new Map<string, BrowserElementRef>());
   const nextSelectElRef = useRef(1);
+  const acceptingSelectElPicksRef = useRef(true);
 
   // Stable onChange — does NOT call setTask, so Chat does
   // not re-render on every keystroke. Uses startTransition so React 18 marks
@@ -1967,6 +1975,7 @@ export function Chat({
   }, [commitComposerValue]);
 
   const addBrowserElementPick = useCallback((pick: BrowserElementPickDetail) => {
+    if (!acceptingSelectElPicksRef.current) return;
     const n = nextSelectElRef.current++;
     const key = selectElKeyFromIndex(n);
     const token = formatSelectElToken(n);
@@ -2016,6 +2025,10 @@ export function Chat({
   const [awaitingStop, setAwaitingStop] = useState(false);
   const [thinking, setThinking] = useState<{ iteration: number; partial: string; startedAt: number } | null>(null);
   const thinkingRef = useRef<{ iteration: number; partial: string; startedAt: number } | null>(null);
+
+  useEffect(() => {
+    acceptingSelectElPicksRef.current = !running && !awaitingStop;
+  }, [running, awaitingStop]);
   /** Reasoning Trace content saved per iteration when iter_start resets the live buffer. */
   const [settledReasoning, setSettledReasoning] = useState<Map<string, Map<number, string>>>(new Map());
   /** THOUGHT content saved per iteration independently from Reasoning Trace. */
@@ -2126,7 +2139,12 @@ export function Chat({
   // Keyed by workspace so different tabs don't interfere
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
     if (!workspace) return null;
-    try { return sessionStorage.getItem(getActiveSessionKey(workspace)); } catch { return null; }
+    try {
+      // Drop the old workspace-scoped key so a new chat never attaches to the
+      // previous chat's backend run.
+      sessionStorage.removeItem(getLegacyWorkspaceActiveSessionKey(workspace));
+      return sessionStorage.getItem(getActiveSessionKey(workspace, session.id));
+    } catch { return null; }
   });
   const logRef = useRef<HTMLDivElement | null>(null);
   const ctrlRef = useRef<{ close: () => void; done: Promise<void> } | null>(null);
@@ -2535,9 +2553,23 @@ export function Chat({
   useEffect(() => {
     if (reconnectAttemptedRef.current) return;
     reconnectAttemptedRef.current = true;
+
+    const storageKey = workspace ? getActiveSessionKey(workspace, session.id) : "";
+    const sessionMatchesThisChat = (backendSession: Pick<AgentSession, "chatId">): boolean =>
+      backendSession.chatId === session.id;
+    const runningForThisChat = (running: AgentSession[]): AgentSession | undefined =>
+      running.find((s) => sessionMatchesThisChat(s));
     
     // Helper to connect to a running session
-    const connectToSession = (backendSession: { id: string; task: string; mode: "ask" | "agent"; status: string; createdAt: number }) => {
+    const connectToSession = (backendSession: AgentSession) => {
+      if (!sessionMatchesThisChat(backendSession)) {
+        console.warn("[Chat] Ignoring running backend session from another chat:", {
+          backendSessionId: backendSession.id,
+          backendChatId: backendSession.chatId,
+          currentChatId: session.id,
+        });
+        return;
+      }
       console.log("[Chat] Reconnecting to running session:", backendSession.id);
       setRunning(true);
       enableAutoScroll();
@@ -2545,9 +2577,9 @@ export function Chat({
       setAwaitingStop(false);
       stoppedRef.current = false;
       
-      // Store session ID for future reconnects (keyed by workspace)
-      if (workspace) {
-        try { sessionStorage.setItem(getActiveSessionKey(workspace), backendSession.id); } catch { /* noop */ }
+      // Store session ID for future reconnects (keyed by workspace + chat id)
+      if (storageKey) {
+        try { sessionStorage.setItem(storageKey, backendSession.id); } catch { /* noop */ }
       }
       setActiveSessionId(backendSession.id);
       
@@ -2578,6 +2610,14 @@ export function Chat({
         (e) => processSessionEvent(e as UIEvent, turnId),
         (info) => {
           console.log("[Chat] Session info:", info);
+          if (info.chatId && info.chatId !== session.id) {
+            console.warn("[Chat] Closing stream for backend session from another chat:", info.chatId);
+            ctrlRef.current?.close();
+            setRunning(false);
+            setAwaitingStop(false);
+            setActiveSessionId(null);
+            return;
+          }
           if (info.status !== "running") {
             patchSession((s) => {
               const turns = s.turns.slice();
@@ -2591,8 +2631,8 @@ export function Chat({
             setAwaitingStop(false);
             thinkingRef.current = null;
             setThinking(null);
-            if (workspace) {
-              try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
+            if (storageKey) {
+              try { sessionStorage.removeItem(storageKey); } catch { /* noop */ }
             }
             setActiveSessionId(null);
           }
@@ -2615,8 +2655,8 @@ export function Chat({
           setAwaitingStop(false);
           thinkingRef.current = null;
           setThinking(null);
-          if (workspace) {
-            try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
+          if (storageKey) {
+            try { sessionStorage.removeItem(storageKey); } catch { /* noop */ }
           }
           setActiveSessionId(null);
           onAfterRun();
@@ -2638,37 +2678,37 @@ export function Chat({
     const storedSessionId = activeSessionId;
     if (storedSessionId) {
       api.getSession(storedSessionId).then(({ session: backendSession }) => {
-        if (backendSession.status === "running") {
+        if (backendSession.status === "running" && sessionMatchesThisChat(backendSession)) {
           connectToSession(backendSession);
         } else {
-          // Session done, clear and check for other running sessions
-          if (workspace) {
-            try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
+          // Session done or belongs to a different UI chat; clear only this chat's key.
+          if (storageKey) {
+            try { sessionStorage.removeItem(storageKey); } catch { /* noop */ }
           }
           setActiveSessionId(null);
-          // Fall through to check running sessions
           return api.getRunningSessions();
         }
       }).then((result) => {
-        if (result && result.running && result.running.length > 0) {
-          // Found a running session for this workspace
-          connectToSession(result.running[0]);
+        const match = result?.running ? runningForThisChat(result.running) : undefined;
+        if (match) {
+          connectToSession(match);
         }
       }).catch((err) => {
         console.warn("[Chat] Failed to check stored session:", err);
-        // Try finding any running sessions
         api.getRunningSessions().then(({ running }) => {
-          if (running.length > 0) {
-            connectToSession(running[0]);
+          const match = runningForThisChat(running);
+          if (match) {
+            connectToSession(match);
           }
         }).catch(() => { /* no running sessions */ });
       });
     } else {
-      // No stored session, check for any running sessions for this workspace
+      // No stored session: only reconnect a running backend session for this exact UI chat.
       api.getRunningSessions().then(({ running }) => {
-        if (running.length > 0) {
-          console.log("[Chat] Found orphaned running session:", running[0].id);
-          connectToSession(running[0]);
+        const match = runningForThisChat(running);
+        if (match) {
+          console.log("[Chat] Found running session for this chat:", match.id);
+          connectToSession(match);
         }
       }).catch((err) => {
         console.warn("[Chat] Failed to check running sessions:", err);
@@ -2712,7 +2752,7 @@ export function Chat({
           thinkingRef.current = null;
           setThinking(null);
           if (workspace) {
-            try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
+            try { sessionStorage.removeItem(getActiveSessionKey(workspace, session.id)); } catch { /* noop */ }
           }
           setActiveSessionId(null);
           ctrlRef.current?.close();
@@ -2734,7 +2774,7 @@ export function Chat({
       void checkSessionStatus();
     }, 8000);
     return () => window.clearInterval(interval);
-  }, [running, activeSessionId, workspace]);
+  }, [running, activeSessionId, workspace, session.id]);
 
   const lastTurn = session.turns[session.turns.length - 1];
   const status = lastTurn?.status ?? "idle";
@@ -2805,6 +2845,8 @@ export function Chat({
   const runTask = useCallback(async (t: string) => {
     if (!t.trim() && attachedImages.length === 0) return;
     if (running) return;
+    acceptingSelectElPicksRef.current = false;
+    void pig.browserInspectStop().catch(() => { /* Browser may not be open; non-fatal. */ });
     
     // Capture current images before clearing
     const refs = browserElementRefsRef.current;
@@ -2835,6 +2877,8 @@ export function Chat({
     }));
     setTaskExternal("");
     setAttachedImages([]); // Clear images after capturing
+    browserElementRefsRef.current.clear();
+    setSelectElRefsVersion((v) => v + 1);
     setRunning(true);
     enableAutoScroll();
     stickToBottom();
@@ -2852,13 +2896,13 @@ export function Chat({
         agentTask,
         runMode,
         images.map((img) => ({ dataUrl: img.dataUrl, name: img.name })),
-        sessionRef.current.id,
+        base.id,
       );
       const sessionId = backendSession.id;
       
       // Store session ID so we can reconnect after F5/reload
       if (workspace) {
-        try { sessionStorage.setItem(getActiveSessionKey(workspace), sessionId); } catch { /* noop */ }
+        try { sessionStorage.setItem(getActiveSessionKey(workspace, base.id), sessionId); } catch { /* noop */ }
       }
       setActiveSessionId(sessionId);
       
@@ -2915,6 +2959,7 @@ export function Chat({
         return { ...s, turns, updatedAt: Date.now() };
       });
     } finally {
+      acceptingSelectElPicksRef.current = true;
       setRunning(false);
       setAwaitingStop(false);
       thinkingRef.current = null;
@@ -2922,7 +2967,7 @@ export function Chat({
       ctrlRef.current = null;
       // Clear stored session ID
       if (workspace) {
-        try { sessionStorage.removeItem(getActiveSessionKey(workspace)); } catch { /* noop */ }
+        try { sessionStorage.removeItem(getActiveSessionKey(workspace, base.id)); } catch { /* noop */ }
       }
       setActiveSessionId(null);
       onAfterRun();

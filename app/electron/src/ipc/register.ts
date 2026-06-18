@@ -95,6 +95,7 @@ function startStream(kind: string, params: Record<string, any>, send: Send): () 
         status: session.status,
         createdAt: session.createdAt,
         completedAt: session.completedAt,
+        chatId: session.chatId,
         eventCount: session.events.length,
       });
       const unsub = subscribeToSession(

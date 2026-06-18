@@ -392,6 +392,7 @@ export interface AgentSession {
   createdAt: number;
   completedAt?: number;
   workspace: string;
+  chatId?: string;
 }
 
 export interface SessionStats {
@@ -409,4 +410,5 @@ export interface SessionInfo {
   createdAt: number;
   completedAt?: number;
   eventCount: number;
+  chatId?: string;
 }

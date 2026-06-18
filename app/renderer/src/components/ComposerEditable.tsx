@@ -280,6 +280,11 @@ export function ComposerEditable({
     if (!root) return;
     const current = serializeEditable(root);
     if (current === value) return;
+    if (!value) {
+      setChipTip(null);
+      setOpen(false);
+      setSlashOpen(false);
+    }
     syncingRef.current = true;
     renderValueToEditable(root, value, selectElRefs);
     placeCaretAtEnd(root);

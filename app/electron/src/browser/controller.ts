@@ -627,6 +627,7 @@ export async function browserStartInspect(): Promise<void> {
 
 export async function browserStopInspect(): Promise<void> {
   inspectModeWanted = false;
+  getWindow()?.webContents.send("pig:browser:inspectCancel");
   const contents = wc();
   if (!contents) return;
   try {
