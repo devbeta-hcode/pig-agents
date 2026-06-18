@@ -39,9 +39,12 @@ import {
 import { newAskId, waitForApproval, type ApprovalAnswer } from "../utils/approvals.js";
 import { webFetch, webSearch } from "../tools/web.js";
 import { browserSession } from "../browser/session.js";
+import { isWorkspaceFileUrl, resolveBrowserNavigateUrl } from "../browser/resolveUrl.js";
 import { externalBrowserLaunchHint } from "../tools/browserGuard.js";
 import { preferAgentToolOverShellHint } from "../tools/commandProbeGuard.js";
 import { rejectDestructiveShellCommand } from "../tools/destructiveShellGuard.js";
+import { runCommandSucceeded } from "../tools/runCommandOutcome.js";
+import { taskHasExplicitDeleteIntent } from "./taskShape.js";
 
 export interface ToolOutcome {
   ok: boolean;
@@ -63,6 +66,8 @@ export interface ToolContext {
   runId?: string;
   /** Chat session — per-file snapshots stored under ~/.pig-agents/chats/.../snapshots/<chatId>/ */
   chatId?: string;
+  /** The full task string for this run (history + current message). Used to gate destructive tools. */
+  userTask?: string;
   /**
    * Abort signal from the agent runner. When fired, run_command kills the
    * in-flight child process immediately instead of waiting for it to finish.
@@ -135,6 +140,11 @@ async function gateWebApproval(
   kind: "web_fetch" | "web_search" | "browser",
   initial: string,
 ): Promise<{ ok: true; value: string } | { ok: false; reason: string }> {
+  if (kind === "browser" && (isWorkspaceFileUrl(initial) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(initial))) {
+    ctx.emit?.({ type: "policy_decision", decision: "allow_auto", cmd: initial, kind });
+    return { ok: true, value: initial };
+  }
+
   const policy = await loadAgentPolicy().catch(() => null);
   if (policy?.autoApproveWeb) {
     ctx.emit?.({ type: "policy_decision", decision: "allow_auto", cmd: initial, kind });
@@ -522,6 +532,7 @@ export async function executeTool(
           stderr: r.stderr,
           truncated: r.truncated,
           pid: r.pid,
+          background: r.mode === "background",
         });
 
         // Build output summary based on result mode
@@ -584,8 +595,7 @@ export async function executeTool(
           out += `\n[i] ${toolPreferHint}`;
         }
 
-        // Determine success: completed with exit 0, or background mode (server started)
-        const ok = r.mode === "completed" ? r.exitCode === 0 : r.mode === "background";
+        const ok = runCommandSucceeded(r, cmd);
         return { ok, summary: out, data: r };
       }
       case "write_patch": {
@@ -638,6 +648,30 @@ export async function executeTool(
           normalizeAgentDeletePath(raw);
         } catch (err) {
           return { ok: false, summary: (err as Error).message };
+        }
+        // Guard against weak models mapping a vague follow-up ("thực hiện lại
+        // đi", "làm lại") to deleting the whole project. Only allow delete when
+        // the user's CURRENT message explicitly authorizes it, OR the agent is
+        // cleaning up a file it created earlier in this same run.
+        const normRel = raw.replace(/\\/g, "/").replace(/^\.\//, "").trim();
+        const selfCreated = !!ctx.writtenPaths && (ctx.writtenPaths.has(raw) || ctx.writtenPaths.has(normRel));
+        if (ctx.userTask && !selfCreated && !taskHasExplicitDeleteIntent(ctx.userTask)) {
+          ctx.emit?.({
+            type: "policy_decision",
+            decision: "deny",
+            cmd: `delete_path ${raw}`,
+            kind: "delete_path",
+            reason: "no explicit delete intent in current message",
+          });
+          return {
+            ok: false,
+            summary:
+              `[DELETE_GUARD] Refusing to delete "${raw}". The user's current message did not ask to delete, ` +
+              `remove, or rebuild from scratch — it reads as a re-run / continuation. ` +
+              `Do NOT delete or recreate existing files. To show the result, use browser_show + browser_navigate ` +
+              `(url="index.html" or http://localhost:PORT). If you truly believe deletion is needed, ask the user ` +
+              `to confirm in plain words (e.g. "xóa hết làm lại") in FINAL instead of calling delete_path.`,
+          };
         }
         const gate = await gateDeleteApproval(ctx, raw);
         if (!gate.ok) return { ok: false, summary: gate.reason };
@@ -787,14 +821,14 @@ export async function executeTool(
             ok: true,
             summary:
               "Browser panel opened (embedded webview). " +
-              `URL: ${url || "about:blank"}. Load a page with browser_navigate + a https URL.`,
+              `URL: ${url || "about:blank"}. Load a page with browser_navigate + url (https://, localhost, or workspace index.html).`,
             data: { url, panelOpen: true },
           };
         }
-        const url = rawUrl;
-        const approved = await gateWebApproval(ctx, "browser", url);
+        const resolved = resolveBrowserNavigateUrl(rawUrl);
+        const approved = await gateWebApproval(ctx, "browser", resolved);
         if (!approved.ok) return { ok: false, summary: approved.reason };
-        const targetUrl = approved.value.trim() || url;
+        const targetUrl = approved.value.trim() || resolved;
         await browserSession.navigate(targetUrl);
         const finalUrl = browserSession.currentUrl();
         const title = await browserSession.getTitle();

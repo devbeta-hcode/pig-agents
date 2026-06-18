@@ -1,5 +1,5 @@
 import { chat, chatStream, type ChatMessage, type ContentPart } from "../llm/client.js";
-import { SYSTEM_PROMPT, ASK_SYSTEM_PROMPT, buildContextMessage, buildAskMessage, taskSignalsConsultationFirst, activeUserTaskSlice } from "../llm/prompt.js";
+import { SYSTEM_PROMPT, ASK_SYSTEM_PROMPT, buildContextMessage, buildAskMessage, taskSignalsConsultationFirst, activeUserTaskSlice, taskHasPriorChat } from "../llm/prompt.js";
 import {
   SYSTEM_PROMPT_COMPACT,
   SYSTEM_PROMPT_MINIMAL,
@@ -387,7 +387,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   };
 
   const wsRoot = getWorkspace();
-  emit(activityEvent("prepare", "Preparing workspace…"));
+  const followUp = taskHasPriorChat(opts.task);
+  emit(activityEvent("prepare", followUp ? "Continuing task…" : "Preparing workspace…"));
   const loadedRules = loadProjectRules(wsRoot);
   const projectRulesBlock =
     loadedRules.text.length > 0
@@ -413,7 +414,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 3));
   const maxActionsPerIter = readMaxActionsPerIteration();
-  emit(activityEvent("index", "Indexing workspace…"));
+  emit(activityEvent("index", followUp ? "Refreshing context…" : "Indexing workspace…"));
   const taskForRanking = activeUserTaskSlice(opts.task);
   let indexStatus = { symbols: 0, embeddingChunks: 0 };
   try {
@@ -450,6 +451,20 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       if (opts.runId) cancelAllForRun(opts.runId, "agent aborted");
       throw new Error("aborted");
     }
+  };
+
+  const abortedPromise = <T>(): Promise<T> =>
+    new Promise<T>((_, reject) => {
+      if (opts.signal?.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      opts.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+
+  const raceAbort = <T>(promise: Promise<T>): Promise<T> => {
+    if (!opts.signal) return promise;
+    return Promise.race([promise, abortedPromise<T>()]);
   };
 
   // ---------- ASK MODE: single LLM call, plain markdown reply, no tools ----------
@@ -587,6 +602,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const toolCtx: ToolContext = {
     runId,
     chatId: opts.chatId,
+    /** Full task (history + current msg) — gates destructive tools like delete_path. */
+    userTask: opts.task,
     /** Abort signal — kills in-flight run_command child process on user stop. */
     signal: opts.signal,
     /** Current ReAct iteration — run_command streams tag with this for the UI. */
@@ -667,7 +684,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     // These are declared per-iteration so each loop pass starts clean.
     let raw = "";
-    /** ACTION JSON objects that became complete mid-stream — each tool runs without waiting for later ACTION blocks. */
+    /** Complete <tool> blocks scheduled mid-stream — parallel dispatch without waiting for stream end. */
     const earlyScheduled = new Map<string, EarlyToolExec>();
     let streamingPayloadHintEmitted = false;
     let apiUsage: LLMUsage | undefined;
@@ -685,7 +702,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         }
         raw += delta;
         emit({ type: "token", iteration: i, delta });
-        // Large write_patch/create_file JSON may stream for a long time; surface a trace row (tool_payload_streaming).
+        // Large write_patch/create_file payloads may stream for a long time; surface tool_payload_streaming.
         if (earlyScheduled.size === 0 && !streamingPayloadHintEmitted) {
           const streamingTool = detectStreamingToolPayload(raw);
           if (streamingTool) {
@@ -693,7 +710,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
             emit({ type: "tool_payload_streaming", iteration: i, tool: streamingTool.tool });
           }
         }
-        // Every complete ACTION: {...} in the buffer so far — fire new ones as each closes (true parallel multi-file).
+        // Every complete <tool> in the buffer so far — fire new ones as each closes.
         const completeActions = extractAllActions(raw);
         for (const act of completeActions) {
           let key = actionScheduleKey(act.type, act.input);
@@ -739,12 +756,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         }
       }
     } catch (err) {
-      // Clean up any in-flight early execution before surfacing the error.
-      await Promise.all([...earlyScheduled.values()].map((e) => e.promise.catch(() => { })));
       if (opts.signal?.aborted) {
         emit({ type: "aborted", message: "Agent aborted by user" });
         return { result: "aborted", iterations: i, diffs, events };
       }
+      // Clean up any in-flight early execution before surfacing the error.
+      await raceAbort(Promise.all([...earlyScheduled.values()].map((e) => e.promise.catch(() => { }))));
       const msg =
         err instanceof Error && err.name === "AbortError"
           ? `LLM timed out after ${readLlmTimeoutMs()}ms (raise LLM_TIMEOUT_MS on the server if needed).`
@@ -772,7 +789,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     }
 
     // Resolve every tool that started streaming so guardrails see real writes before FINAL checks.
-    await Promise.all(
+    await raceAbort(Promise.all(
       [...earlyScheduled.values()].map((e) =>
         e.promise
           .then((o) => {
@@ -782,7 +799,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
             e.outcome = { ok: false, summary: `Tool error: ${err.message}`, diffs: [] as string[] };
           }),
       ),
-    );
+    ));
     for (const e of earlyScheduled.values()) {
       if (!isWriteTool(e.type)) continue;
       const o = e.outcome!;
@@ -840,7 +857,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       emit({ type: "action", iteration: i, tool: act.type, input: act.input, actionKey: key });
     }
     if (earlyScheduled.size > earlyCountBeforeLate) {
-      await Promise.all(
+      await raceAbort(Promise.all(
         [...earlyScheduled.values()].slice(earlyCountBeforeLate).map((e) =>
           e.promise
             .then((o) => {
@@ -850,7 +867,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
               e.outcome = { ok: false, summary: `Tool error: ${err.message}`, diffs: [] as string[] };
             }),
         ),
-      );
+      ));
       for (const e of [...earlyScheduled.values()].slice(earlyCountBeforeLate)) {
         if (!isWriteTool(e.type)) continue;
         const o = e.outcome!;
@@ -864,15 +881,14 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     if (
       earlyScheduled.size === 0 &&
-      /ACTION:\s*\{[\s\S]*"type"\s*:\s*"create_file"/i.test(raw) &&
-      /<!DOCTYPE\s+html|<html[\s>]/i.test(raw)
+      /<tool\s+name=["']create_file["']/i.test(raw) &&
+      !extractAllActions(raw).some((a) => a.type === "create_file")
     ) {
       emit({
         type: "log",
         level: "warn",
         message:
-          "create_file ACTION present but not executed (broken JSON — unescaped quotes in HTML). " +
-          "Salvage runs after </html> or when the LLM stream ends.",
+          "create_file <tool> present but not executed (incomplete XML — waiting for </tool> and </content>).",
       });
     }
 
@@ -881,11 +897,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       consecutiveParseErrors++;
       emit({ type: "log", level: "warn", message: `Parse error (${consecutiveParseErrors}/${MAX_CONSECUTIVE_PARSE_ERRORS}): ${step.error}` });
 
-      // After too many consecutive parse errors, the model probably can't follow ReAct format
+      // After too many consecutive parse errors, the model probably can't follow XML tool format
       if (consecutiveParseErrors >= MAX_CONSECUTIVE_PARSE_ERRORS) {
         const bailMessage =
           `Agent stopped: Model returned ${consecutiveParseErrors} consecutive unparseable responses. ` +
-          `This usually means the model doesn't follow the ReAct (THOUGHT/ACTION/FINAL) format well.\n\n` +
+          `This usually means the model doesn't follow THOUGHT + <tool> / FINAL format well.\n\n` +
           `**Suggestions:**\n` +
           `• Try a larger/smarter model (GPT-4o, Claude, Qwen 32B+)\n` +
           `• Use "Ask" mode instead of "Agent" for simple questions\n` +
@@ -897,7 +913,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
 
       history.push({ role: "assistant", content: raw });
-      history.push({ role: "user", content: `Your previous response could not be parsed (${step.error}). Re-emit using the strict ReAct format.` });
+      history.push({ role: "user", content: `Your previous response could not be parsed (${step.error}). Re-emit using THOUGHT + <tool name="…">…</tool> or THOUGHT + FINAL.` });
       continue;
     }
 
@@ -923,7 +939,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     if (step.thought) emit({ type: "thought", iteration: i, thought: step.thought });
 
-    // Write tools finish on disk as soon as each ACTION JSON closes.
+    // Write tools finish on disk as soon as each <tool> block closes.
     // Observations are emitted immediately per-tool in the .then() handlers above.
 
     if (step.kind === "final") {
@@ -963,9 +979,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       if (!didWrite && !falseCreateFinalNudgeUsed && finalClaimsCreatedWithoutDisk(step.result, step.thought)) {
         falseCreateFinalNudgeUsed = true;
         const nudge =
-          `You said you created a file but nothing was saved (ACTION JSON may be invalid — HTML with raw " quotes breaks create_file). ` +
-          `Re-emit ONE ACTION: prefer write_patch with FILE:index.html\\nSEARCH\\n\\nREPLACE\\n<full html>\\nEND, ` +
-          `or create_file with properly escaped JSON. Do NOT emit FINAL until the tool succeeds.`;
+          `You said you created a file but nothing was saved (create_file <tool> may be incomplete). ` +
+          `Re-emit ONE <tool name="write_patch"> with CDATA patches FILE:index.html\\nSEARCH\\n\\nREPLACE\\n<full html>\\nEND, ` +
+          `or a closed create_file with <content><![CDATA[…]]></content>. Do NOT emit FINAL until the tool succeeds.`;
         emit({ type: "log", level: "warn", message: "FINAL claimed create but didWrite=false — re-prompting." });
         history.push({ role: "assistant", content: raw });
         history.push({ role: "user", content: nudge });
@@ -980,7 +996,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         pasteOnlyFinalNudgeUsed = true;
         const nudge =
           `You replied as if this were browser ChatGPT. This is Pig Agents Desktop — write_patch and create_file ARE available and write to WORKSPACE_PATH. ` +
-          `Do not ask the user to paste or save files manually. Emit ACTION write_patch/create_file now. ` +
+          `Do not ask the user to paste or save files manually. Emit <tool name="write_patch"> or create_file now. ` +
           `If their target folder is not WORKSPACE_PATH, tell them to Open Folder in the app, then write with tools.`;
         emit({ type: "log", level: "warn", message: "Paste-only / permission refusal FINAL — re-prompting." });
         history.push({ role: "assistant", content: raw });
@@ -1000,9 +1016,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       ) {
         prematureFinalNudgeUsed = true;
         const nudge =
-          `You emitted FINAL without running any ACTION this turn, but your THOUGHT described concrete file edits. ` +
+          `You emitted FINAL without running any tool this turn, but your THOUGHT described concrete file edits. ` +
           `In agent mode nothing is saved until you call tools. ` +
-          `Emit an ACTION next: use read_file if needed, then write_patch (or run_command) — do NOT reply with FINAL alone until the edits exist on disk.`;
+          `Emit <tool> next: read_file if needed, then write_patch — do NOT reply with FINAL alone until edits exist on disk.`;
         emit({ type: "log", level: "warn", message: "Premature FINAL (no tools) — re-prompting agent." });
         history.push({ role: "assistant", content: raw });
         history.push({ role: "user", content: nudge });
@@ -1020,7 +1036,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         const nudge =
           `You ended with FINAL containing code, but you never called write_patch — so nothing was actually saved to disk. ` +
           `In agent mode, the user expects a real file. ` +
-          `Please re-emit a write_patch ACTION that writes that code to ${where} (use empty SEARCH for a new file), then FINAL with a short summary.`;
+          `Please re-emit a write_patch <tool> that writes that code to ${where} (empty SEARCH for new file), then FINAL with a short summary.`;
         emit({ type: "log", level: "warn", message: "Lazy FINAL detected — re-prompting agent to write the file." });
         history.push({ role: "assistant", content: raw });
         history.push({ role: "user", content: nudge });
@@ -1073,7 +1089,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         type: "log",
         level: "warn",
         message:
-          `Iteration ${i}: model emitted ${stepActions.length} ACTION blocks — capped at ${maxActionsPerIter}. ` +
+          `Iteration ${i}: model emitted ${stepActions.length} <tool> blocks — capped at ${maxActionsPerIter}. ` +
           `Raise MAX_ACTIONS_PER_ITERATION if needed; prefer fewer browser_eval calls per turn.`,
       });
       stepActions = stepActions.slice(0, maxActionsPerIter);
@@ -1128,20 +1144,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     checkAbort();
     let outcomes: ToolOutcome[];
     try {
-      outcomes = await Promise.race([
-        Promise.all(outcomePromises),
-        new Promise<ToolOutcome[]>((_, reject) => {
-          if (opts.signal?.aborted) {
-            reject(new Error("aborted"));
-            return;
-          }
-          opts.signal?.addEventListener(
-            "abort",
-            () => reject(new Error("aborted")),
-            { once: true },
-          );
-        }),
-      ]);
+      outcomes = await raceAbort(Promise.all(outcomePromises));
     } catch (err) {
       if ((err as Error).message === "aborted") {
         emit({ type: "aborted", message: "Agent aborted by user" });
@@ -1182,7 +1185,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     history.push({ role: "assistant", content: raw });
     const thoughtNudge = missingThought
       ? "\n\n⚠️ FORMAT: Your previous response was missing the required THOUGHT: block. " +
-      "Every response MUST start with THOUGHT: (1–6 sentences of reasoning) before ACTION: or FINAL:."
+      "Every response MUST start with THOUGHT: (1–6 sentences of reasoning) before <tool> or FINAL:."
       : "";
     history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOk}):\n${combinedSummary}${thoughtNudge}` });
 

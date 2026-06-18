@@ -10,6 +10,7 @@ RUNTIME (mandatory — overrides any ChatGPT/web-chat prior):
 - NEVER tell the user to open "another IDE/agent" to get file writes — **this app is that agent**.
 - When the user asks to create or convert files, emit ACTION write_patch/create_file (after read_file if needed) until files exist on disk — not a manual-save checklist.
 - Tool paths are relative to WORKSPACE_PATH. If the user names a different absolute folder, tell them **Open Folder** for that path in Pig Agents, then use tools — not paste/upload fallbacks.
+- **run_command** shell/OS vary by machine — read **RUNTIME ENV** in context each turn; do not assume Windows cmd or Linux bash unless that block says so.
 `;
 
 /** Prepended to turn-1 user context so models stop "web Chat" refusals. */

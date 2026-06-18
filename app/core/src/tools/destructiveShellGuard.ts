@@ -5,16 +5,21 @@
  */
 import path from "node:path";
 import { getWorkspace } from "../utils/workspace.js";
+import { rejectShellPathsOutsideWorkspace } from "../utils/pathSandbox.js";
 
 const RECURSIVE_DELETE_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\brd\s+(\/s\s+)?\/q\b/i, label: "rd /s /q" },
   { re: /\brmdir\s+(\/s\s+)?\/q\b/i, label: "rmdir /s /q" },
   { re: /\bdel\s+\/f\s*\/s\s*\/q\b/i, label: "del /f /s /q" },
+  { re: /\bdel\s+\/s\b/i, label: "del /s" },
+  { re: /\berase\s+\/s\b/i, label: "erase /s" },
   { re: /\bRemove-Item\b[^\n;|&]*-Recurse/i, label: "Remove-Item -Recurse" },
   { re: /\brm\s+-[a-z]*f[a-z]*\b/i, label: "rm -rf" },
+  { re: /\brm\s+-[a-z]*r[a-z]*\b/i, label: "rm -r" },
   { re: /\bformat\s+[A-Za-z]:\b/i, label: "format drive" },
   { re: /\bdiskpart\b/i, label: "diskpart" },
   { re: /\bcipher\s+\/w\b/i, label: "cipher /w" },
+  { re: /\b(?:rd|rmdir|del)\s+[A-Za-z]:[\\/]/i, label: "recursive delete on drive path" },
 ];
 
 /** Drive root or bare `D:` targets inside a delete command. */
@@ -24,6 +29,9 @@ const DRIVE_ROOT_TARGET =
 export function rejectDestructiveShellCommand(cmd: string): string | null {
   const trimmed = cmd.trim();
   if (!trimmed) return null;
+
+  const outside = rejectShellPathsOutsideWorkspace(trimmed, getWorkspace());
+  if (outside) return outside;
 
   for (const { re, label } of RECURSIVE_DELETE_PATTERNS) {
     if (re.test(trimmed)) {

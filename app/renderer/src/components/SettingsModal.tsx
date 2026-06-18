@@ -769,7 +769,7 @@ export function SettingsModal({ onClose }: Props) {
             style={{ width: "100%" }}
           />
           <div className="hint">
-            Hard cap on the ReAct loop (THOUGHT → ACTION steps). Use <code>30–100</code> for complex multi-file projects,
+            Hard cap on the agent loop (THOUGHT → tool steps). Use <code>30–100</code> for complex multi-file projects,
             <code>200+</code> for large refactors. Defaults to <code>50</code>.
           </div>
         </div>

@@ -49,6 +49,10 @@ export function preferAgentToolOverShellHint(cmd: string): string | null {
       hint: "Prefer read_file / search_code unless PowerShell is clearly the right tool.",
     },
     {
+      re: /\bstart(\s+""|\s+\/[\w]+)*\s+["']?[\w./\\-]+\.(html?|htm)\b/i,
+      hint: "browser_navigate url=\"index.html\" opens the site in the embedded Browser tab; start/explorer often fails on Windows.",
+    },
+    {
       re: /\bcd\s+[\w./\\-]+\s*&&\s*(?:findstr|find\s|grep\s|rg\s|node\s+-e|node\s+--eval|type\s|cat\s|head\s|tail\s|powershell)/i,
       hint: "cwd is already workspace root — try search_code/read_file with paths like subdir/file.tsx before cd && shell.",
     },

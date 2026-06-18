@@ -1,5 +1,5 @@
 import path from "node:path";
-import { activeUserTaskSlice } from "../llm/prompt-compact.js";
+import { activeUserTaskSlice, taskHasPriorChat } from "../llm/prompt-compact.js";
 
 /** User wants multiple new files / project layout (not a one-line fix). */
 export function looksLikeMultiFileCreateTask(task: string): boolean {
@@ -91,9 +91,48 @@ export function looksLikeFrontendMigrateTask(task: string): boolean {
   );
 }
 
+/**
+ * Explicit destroy/rebuild intent in the user's CURRENT message — the only case
+ * where deleting files or scaffolding from scratch is authorized. Weak models
+ * otherwise map vague follow-ups ("thực hiện lại đi") to "delete everything".
+ */
+export function taskHasExplicitDeleteIntent(task: string): boolean {
+  const t = activeUserTaskSlice(task).toLowerCase();
+  if (!t.trim()) return false;
+  return (
+    /\b(x[óo]a|xoá|delete|remove|g[ỡo]\s*b[ỏo]|clear|d[ọo]n\s*s[ạa]ch|wipe|purge|rm\s+-rf?)\b/i.test(t) ||
+    /\b(from\s*scratch|start\s*over|reset\s*all)\b/i.test(t) ||
+    /(t[ừu]\s*đ[ầa]u|l[àa]m\s*m[ớo]i\s*ho[àa]n\s*to[àa]n|x[óo]a\s*h[ếe]t)/i.test(t)
+  );
+}
+
+/** User wants to re-run, demo, or show existing work — not rebuild from scratch. */
+export function taskSignalsFollowUpContinuation(task: string): boolean {
+  if (!taskHasPriorChat(task)) return false;
+  const t = activeUserTaskSlice(task).trim();
+  if (t.length < 2 || t.length > 120) return false;
+  if (taskHasExplicitDeleteIntent(task)) return false;
+  const en =
+    /\b(run\s*(it\s*)?again|do\s*(it\s*)?again|retry|re-?run|show\s*(me|it)|demo|open\s*(it|again)|serve\s*again|launch\s*again|start\s*(it|the\s*server)\s*again|execute\s*(it\s*)?again|do\s*it|continue|proceed)\b/i;
+  const vi =
+    /^(làm\s*lại|lam\s*lai|chạy\s*lại|chay\s*lai|run\s*lại|mở\s*lại|mo\s*lai|xem\s*lại|cho\s*(tôi\s*)?xem|cho\s*xem|chạy\s*(giúp|đi|lại)|run\s*(giúp|đi|lại)|thử\s*lại|demo\s*lại|thực\s*hiện(\s*lại)?|thực\s*thi(\s*lại)?|tiếp\s*tục|làm\s*tiếp|tiếp\s*đi)/i;
+  const viLoose =
+    /\b(làm\s*lại|chạy\s*lại|run\s*lại|mở\s*lại|xem\s*lại|cho\s*xem|thử\s*lại|thực\s*hiện\s*lại|thực\s*thi\s*lại)\b/i.test(t) &&
+    !/\b(tạo|tao|build|scaffold|viết|viet|code|file)\b/i.test(t);
+  return en.test(t) || vi.test(t) || viLoose;
+}
+
 /** Short hint injected into agent context (CURRENT TASK). */
 export function taskShapeContextHint(task: string, workspacePath?: string): string {
   let hint = workspacePath ? workspaceMismatchHint(task, workspacePath) : "";
+  if (taskSignalsFollowUpContinuation(task)) {
+    hint +=
+      "\n[continuation: PRIOR CHAT describes work ALREADY built in this workspace. This message is a re-run/show/continue request — NOT a rebuild. " +
+      "STRICT: do NOT delete_path any file, do NOT recreate/overwrite existing files from scratch, do NOT re-read every source file, do NOT restore checkpoints. " +
+      "Even if your earlier reply offered a \"delete and start over\" option, a short \"thực hiện lại / làm lại / run lại\" does NOT confirm deletion — only an explicit \"xóa hết\"/\"từ đầu\" does. " +
+      "To show the result: browser_show + browser_navigate url=\"index.html\" (or http://localhost:PORT after python -m http.server). Only edit a file if it is actually broken.]";
+    return hint;
+  }
   if (looksLikeFrontendMigrateTask(task)) {
     hint +=
       "\n[migration: FILES may include index.html/style.css/script.js previews. list_files returns names only — " +

@@ -503,7 +503,7 @@ async function* _sseStream(
 /**
  * Like `chat()` but yields each token delta as an async generator so the
  * caller can process tokens incrementally — e.g. to fire a tool as soon as
- * its ACTION JSON is complete without waiting for the full response.
+ * its <tool> XML is complete without waiting for the full response.
  *
  * 429 retries: attempted only when no tokens have been yielded yet (clean
  * slate). Mid-stream 429s are re-thrown because the partial response cannot

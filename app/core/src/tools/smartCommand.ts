@@ -657,7 +657,11 @@ export function killBackgroundProcess(pid: number): boolean {
 /**
  * Get list of tracked background processes
  */
-export function listBackgroundProcesses(): number[] {
+export function isBackgroundProcessRunning(pid: number): boolean {
+  return backgroundProcesses.has(pid);
+}
+
+export function listBackgroundProcessPids(): number[] {
   return Array.from(backgroundProcesses.keys());
 }
 

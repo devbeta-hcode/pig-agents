@@ -21,6 +21,12 @@ import {
   IconTerminal, IconFolderOpen, IconSearch, IconEye, IconDot,
 } from "./components/Icons";
 import { api, getSessionWorkspace, setSessionWorkspace, type SettingsPayload, type ChatSessionMeta } from "./lib/api";
+import {
+  isChatNotFoundError,
+  readChatBootstrap,
+  rpcWithRetry,
+  writeChatBootstrap,
+} from "./lib/chatBootstrap";
 import { pig } from "./lib/pig.js";
 import { useBrowserOverlayGuard } from "./lib/useBrowserOverlayGuard.js";
 import { dispatchBrowserElementPick } from "./lib/browserElementPick.js";
@@ -105,6 +111,44 @@ interface OpenTab {
   displayPath?: string;
 }
 
+function initialWorkspacePath(): string {
+  const saved = getSessionWorkspace();
+  if (saved) return saved;
+  try {
+    return localStorage.getItem("pig-agents.ws.path.v1") || "";
+  } catch {
+    return "";
+  }
+}
+
+function initialChatFromBootstrap(ws: string): {
+  chatList: ChatSessionMeta[];
+  activeSessionId: string;
+  activeSession: ChatSession | null;
+} {
+  if (!ws) return { chatList: [], activeSessionId: "", activeSession: null };
+  const boot = readChatBootstrap(ws);
+  if (!boot) return { chatList: [], activeSessionId: "", activeSession: null };
+  return {
+    chatList: boot.chatList,
+    activeSessionId: boot.activeSessionId,
+    activeSession: boot.activeSession,
+  };
+}
+
+function shellSessionFromMeta(meta: ChatSessionMeta, ws: string): ChatSession {
+  return {
+    id: meta.id,
+    title: meta.title,
+    workspace: ws,
+    mode: meta.mode,
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+    turns: [],
+    pendingDiffs: [],
+  };
+}
+
 export default function App() {
   useReleaseInitialFocus();
   useUiZoomShortcuts();
@@ -114,7 +158,10 @@ export default function App() {
     return pig.onWindowMaximized(setWinMaximized);
   }, []);
   const dlg = useDialogs();
-  const [workspace, setWorkspace] = useState<string>("");
+  const initialWs = initialWorkspacePath();
+  const [workspace, setWorkspace] = useState<string>(initialWs);
+  /** Main process has confirmed workspace via IPC (avoids listFiles before setWorkspace). */
+  const [workspaceReady, setWorkspaceReady] = useState(!initialWs);
   const [view, setView] = useState<ActivityView>("explorer");
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const tabsRef = useRef<OpenTab[]>([]);
@@ -139,14 +186,23 @@ export default function App() {
   //   - `chatList` : lightweight metadata for the sidebar (cheap to render)
   //   - `activeSession` : the full session (turns + events), loaded on demand
   // Saving is debounced so streaming agent events don't hammer the disk.
-  const [chatList, setChatList] = useState<ChatSessionMeta[]>([]);
+  const initialChatBootRef = useRef(initialChatFromBootstrap(initialWorkspacePath()));
+  const initialChatBoot = initialChatBootRef.current;
+  const [chatList, setChatList] = useState<ChatSessionMeta[]>(initialChatBoot.chatList);
   const chatListRef = useRef<ChatSessionMeta[]>([]);
   useEffect(() => {
     chatListRef.current = chatList;
   }, [chatList]);
-  const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
-  const [activeSessionId, setActiveSessionId] = useState<string>("");
+  const [activeSession, setActiveSession] = useState<ChatSession | null>(initialChatBoot.activeSession);
+  const [activeSessionId, setActiveSessionId] = useState<string>(initialChatBoot.activeSessionId);
   const sessionCacheRef = useRef<Map<string, ChatSession>>(new Map());
+  const chatLoadGenRef = useRef(0);
+  const prevWorkspaceRef = useRef("");
+  useEffect(() => {
+    if (initialChatBoot.activeSession) {
+      sessionCacheRef.current.set(initialChatBoot.activeSession.id, initialChatBoot.activeSession);
+    }
+  }, []);
   const saveTimerRef = useRef<number | null>(null);
   const pendingSaveRef = useRef<ChatSession | null>(null);
   /** Block debounced saves for sessions the user deleted (prevents ghost index rows). */
@@ -159,7 +215,7 @@ export default function App() {
   const pendingActiveSessionRef = useRef<ChatSession | null>(null);
   const activeSessionRafRef = useRef<number | null>(null);
 
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(() => !initialWorkspacePath());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [pendingChatInject, setPendingChatInject] = useState<string>("");
@@ -205,31 +261,53 @@ export default function App() {
     } catch { /* private mode / quota — non-fatal */ }
   }, []);
 
-  // load workspace once.
-  // Each browser tab keeps its own folder in sessionStorage so multiple tabs
-  // can work on different projects. Legacy localStorage "confirmed" migrates
-  // once into sessionStorage (same path as server's last POST /workspace).
+  // Restore workspace + sync to main before any filesystem RPC.
   useEffect(() => {
-    api.getSettings().then(setSettings).catch(() => { /* noop */ });
+    let cancelled = false;
+    void api.getSettings().then(setSettings).catch(() => { /* noop */ });
+
     const saved = getSessionWorkspace();
-    if (saved) {
-      setWorkspace(saved);
-      setPickerOpen(false);
+    const savedPath =
+      saved ||
+      (() => {
+        try {
+          return localStorage.getItem("pig-agents.ws.path.v1") || "";
+        } catch {
+          return "";
+        }
+      })();
+
+    if (!savedPath) {
+      setPickerOpen(true);
+      setWorkspaceReady(true);
       return;
     }
-    let savedPath = "";
-    try { savedPath = localStorage.getItem("pig-agents.ws.path.v1") || ""; } catch { /* noop */ }
-    if (savedPath) {
-      // Restore last workspace without trusting the backend's default (which
-      // resets to the pig-agents project root on every restart).
-      setSessionWorkspace(savedPath);
-      setWorkspace(savedPath);
-      setPickerOpen(false);
-      // Also tell the backend so its in-memory currentWorkspace is correct.
-      api.setWorkspace(savedPath).catch(() => { /* noop */ });
-    } else {
-      setPickerOpen(true);
-    }
+
+    if (!saved) setSessionWorkspace(savedPath);
+    setWorkspace((cur) => cur || savedPath);
+    setPickerOpen(false);
+    setWorkspaceReady(false);
+
+    void (async () => {
+      try {
+        const r = await api.setWorkspace(savedPath);
+        if (cancelled) return;
+        setWorkspace(r.workspace);
+        setSessionWorkspace(r.workspace);
+        setWorkspaceReady(true);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("setWorkspace on restore failed:", err);
+        setWorkspace("");
+        setSessionWorkspace("");
+        setPickerOpen(true);
+        setWorkspaceReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function sanitizePendingDiffs(raw: unknown): DiffItem[] {
@@ -281,13 +359,13 @@ export default function App() {
   // Visibility-gated so background tabs don't pile up requests.
   useVisibleInterval(
     () => {
-      if (!workspace) return;
+      if (!workspace || !workspaceReady) return;
       void api.gitStatus().then((s) => {
         setGitChangeCount(s.ok && s.files ? s.files.length : 0);
       }).catch(() => { /* offline / not a repo */ });
     },
     10000,
-    !!workspace,
+    !!workspace && workspaceReady,
     true,
   );
 
@@ -303,7 +381,7 @@ export default function App() {
   //   - external edits (git pull, IDE-side saves, etc.)
   // The hook itself debounces, so we don't risk a refresh-storm.
   useFsWatcher({
-    enabled: !!workspace,
+    enabled: !!workspace && workspaceReady,
     workspace,
     onChanges: () => setRefreshKey((k) => k + 1),
   });
@@ -352,6 +430,17 @@ export default function App() {
       turnCount: s.turns.length,
     };
   }
+
+  const chatPanelSession = useMemo(() => {
+    if (!workspace || !activeSessionId) return null;
+    if (activeSession?.id === activeSessionId) return activeSession;
+    const cached = sessionCacheRef.current.get(activeSessionId);
+    if (cached) return cached;
+    const meta = chatList.find((m) => m.id === activeSessionId);
+    if (meta) return shellSessionFromMeta(meta, workspace);
+    if (chatList.length > 0) return shellSessionFromMeta(chatList[0], workspace);
+    return null;
+  }, [workspace, activeSessionId, activeSession, chatList]);
 
   function flushSave() {
     if (saveTimerRef.current !== null) {
@@ -403,49 +492,92 @@ export default function App() {
     }
   }
 
-  // Load chat list whenever the workspace changes. Lightweight — no events.
+  function persistChatBootstrap(
+    ws: string,
+    list: ChatSessionMeta[],
+    sessionId: string,
+    session: ChatSession | null,
+  ) {
+    writeChatBootstrap(ws, {
+      chatList: list,
+      activeSessionId: sessionId,
+      activeSession: session,
+    });
+  }
+
+  // Load chat list whenever the workspace changes. Keeps cached UI visible while refreshing.
   useEffect(() => {
     if (!workspace) {
-      // Reset chat state so we don't render a stale session from a previous folder.
       sessionCacheRef.current.clear();
       setChatList([]);
       setActiveSessionId("");
       setActiveSession(null);
       setDiffs([]);
+      prevWorkspaceRef.current = "";
       return;
     }
+
+    const wsChanged = prevWorkspaceRef.current !== workspace;
+    prevWorkspaceRef.current = workspace;
+
+    if (wsChanged) {
+      const boot = readChatBootstrap(workspace);
+      if (boot) {
+        setChatList(boot.chatList);
+        setActiveSessionId(boot.activeSessionId);
+        if (boot.activeSession) {
+          sessionCacheRef.current.set(boot.activeSession.id, boot.activeSession);
+          setActiveSession(boot.activeSession);
+          setDiffs(sanitizePendingDiffs(boot.activeSession.pendingDiffs));
+        } else {
+          setActiveSession(null);
+        }
+      } else {
+        sessionCacheRef.current.clear();
+        setChatList([]);
+        setActiveSessionId("");
+        setActiveSession(null);
+        setDiffs([]);
+      }
+    }
+
+    const gen = ++chatLoadGenRef.current;
     let cancelled = false;
-    sessionCacheRef.current.clear();
-    setActiveSession(null);
-    setActiveSessionId("");
-    setDiffs([]);
+
     (async () => {
       try {
         await migrateLegacyChatsOnce(workspace);
-        if (cancelled) return;
-        const r = await api.listChats(workspace);
-        if (cancelled) return;
+        if (cancelled || gen !== chatLoadGenRef.current) return;
+
+        const r = await rpcWithRetry(() => api.listChats(workspace));
+        if (cancelled || gen !== chatLoadGenRef.current) return;
+
         if (r.sessions.length === 0) {
-          // No history yet — create an empty session and persist it server-side
-          // so the index stays in sync.
           const s = newSession(workspace);
-          await api.putChat(workspace, s);
-          if (cancelled) return;
+          await rpcWithRetry(() => api.putChat(workspace, s));
+          if (cancelled || gen !== chatLoadGenRef.current) return;
           sessionCacheRef.current.set(s.id, s);
           setChatList([metaFromSession(s)]);
           setActiveSessionId(s.id);
           setActiveSession(s);
-        } else {
-          const sorted = r.sessions.slice().sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
-          setChatList(sorted);
-          setActiveSessionId((current) => {
-            if (current && sorted.some((s) => s.id === current)) return current;
-            return sorted[0].id;
-          });
+          setDiffs([]);
+          persistChatBootstrap(workspace, [metaFromSession(s)], s.id, s);
+          return;
         }
+
+        const sorted = r.sessions
+          .slice()
+          .sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
+        setChatList(sorted);
+        setActiveSessionId((current) => {
+          const pick =
+            current && sorted.some((s) => s.id === current) ? current : sorted[0].id;
+          return pick;
+        });
       } catch (err) {
         console.warn("listChats failed:", err);
-        if (!cancelled) {
+        if (cancelled || gen !== chatLoadGenRef.current) return;
+        if (chatListRef.current.length === 0) {
           const s = newSession(workspace);
           sessionCacheRef.current.set(s.id, s);
           setChatList([metaFromSession(s)]);
@@ -455,7 +587,11 @@ export default function App() {
         }
       }
     })();
-    return () => { cancelled = true; flushSave(); };
+
+    return () => {
+      cancelled = true;
+      flushSave();
+    };
   }, [workspace]);
 
   // Load full session whenever the active id changes (lazy, with cache).
@@ -468,12 +604,13 @@ export default function App() {
       const d = sanitizePendingDiffs(cached.pendingDiffs);
       setDiffs(d);
       if (d.length === 0) migrateLegacyBrowserDiffsOnce(workspace, cached);
+      persistChatBootstrap(workspace, chatListRef.current, idLoading, cached);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const s = await api.getChat<ChatSession>(workspace, idLoading);
+        const s = await rpcWithRetry(() => api.getChat<ChatSession>(workspace, idLoading));
         if (cancelled) return;
         if (!Array.isArray(s.turns)) s.turns = [];
         const d = sanitizePendingDiffs(s.pendingDiffs);
@@ -482,9 +619,13 @@ export default function App() {
         setActiveSession(normalized);
         setDiffs(d);
         if (d.length === 0) migrateLegacyBrowserDiffsOnce(workspace, normalized);
+        persistChatBootstrap(workspace, chatListRef.current, idLoading, normalized);
       } catch (err) {
         console.warn("getChat failed:", err);
         if (cancelled) return;
+        if (!isChatNotFoundError(err)) {
+          return;
+        }
         deletedChatIdsRef.current.add(idLoading);
         sessionCacheRef.current.delete(idLoading);
         try {
@@ -500,6 +641,7 @@ export default function App() {
             api.putChat(workspace, s).catch(() => { /* noop */ });
             setActiveSessionId(s.id);
             setActiveSession(s);
+            persistChatBootstrap(workspace, [metaFromSession(s)], s.id, s);
             return [metaFromSession(s)];
           }
           if (activeSessionId === idLoading) setActiveSessionId(next[0].id);
@@ -511,6 +653,42 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [workspace, activeSessionId]);
+
+  // Persist sidebar + active chat for instant restore on next app open.
+  useEffect(() => {
+    if (!workspace || !activeSessionId) return;
+    const t = window.setTimeout(() => {
+      persistChatBootstrap(workspace, chatList, activeSessionId, activeSession);
+    }, 600);
+    return () => window.clearTimeout(t);
+  }, [workspace, chatList, activeSessionId, activeSession]);
+
+  // If IPC failed on cold start, retry when the window regains focus.
+  useEffect(() => {
+    if (!workspace) return;
+    const retryIfEmpty = () => {
+      if (document.visibilityState === "hidden") return;
+      if (chatListRef.current.length > 0) return;
+      void rpcWithRetry(() => api.listChats(workspace), { attempts: 2, delayMs: 200 })
+        .then((r) => {
+          if (r.sessions.length === 0) return;
+          const sorted = r.sessions
+            .slice()
+            .sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
+          setChatList(sorted);
+          setActiveSessionId((cur) =>
+            cur && sorted.some((s) => s.id === cur) ? cur : sorted[0].id,
+          );
+        })
+        .catch(() => { /* noop */ });
+    };
+    document.addEventListener("visibilitychange", retryIfEmpty);
+    window.addEventListener("focus", retryIfEmpty);
+    return () => {
+      document.removeEventListener("visibilitychange", retryIfEmpty);
+      window.removeEventListener("focus", retryIfEmpty);
+    };
+  }, [workspace]);
 
   // Persist pending diff tray on change (same session file as chat).
   useEffect(() => {
@@ -548,6 +726,7 @@ export default function App() {
         // we'd otherwise clobber the freshly-loaded active session.
         if (latest.id !== activeSessionId) return;
         setActiveSession(latest);
+        persistChatBootstrap(workspace, chatListRef.current, latest.id, latest);
         // Only touch chatList when the metadata that's actually rendered in
         // the sidebar changed — avoids a full re-sort + Chats re-render on
         // every event-level updatedAt bump.
@@ -952,6 +1131,7 @@ export default function App() {
   }, [diffs, dlg]);
 
   async function pickWorkspace(p: string, targetSessionId?: string) {
+    setWorkspaceReady(false);
     try {
       const r = await api.setWorkspace(p);
       setSessionWorkspace(r.workspace);
@@ -967,11 +1147,13 @@ export default function App() {
       setActive(undefined);
       setRefreshKey((k) => k + 1);
       setPickerOpen(false);
+      setWorkspaceReady(true);
       try {
         localStorage.setItem("pig-agents.ws.confirmed.v1", "1");
         localStorage.setItem("pig-agents.ws.path.v1", r.workspace);
       } catch { /* noop */ }
     } catch (err) {
+      setWorkspaceReady(!!workspace);
       void dlg.alert((err as Error).message);
     }
   }
@@ -1131,7 +1313,7 @@ export default function App() {
                       {view === "explorer" && (
                         <FileTree
                           selected={active}
-                          workspace={workspace}
+                          workspace={workspaceReady ? workspace : undefined}
                           onOpen={(p) => openFile(p)}
                           refreshKey={refreshKey}
                           onPathsDeleted={closeTabsForDeletedPaths}
@@ -1467,10 +1649,10 @@ export default function App() {
                       <button className="ws-empty-btn" onClick={() => setPickerOpen(true)}><IconFolderOpen size={14} style={{ marginRight: 6 }} />Open folder…</button>
                     </div>
                   </div>
-                ) : activeSession ? (
+                ) : chatPanelSession ? (
                   <Chat
-                    key={activeSession.id}
-                    session={activeSession}
+                    key={chatPanelSession.id}
+                    session={chatPanelSession}
                     onUpdate={updateSession}
                     onDiffs={appendDiffs}
                     onAfterRun={() => setRefreshKey((k) => k + 1)}

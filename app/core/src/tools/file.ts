@@ -3,7 +3,8 @@ import fssync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { safeJoin, toRel } from "../utils/workspace.js";
+import { safeJoin, toRel, assertWithinWorkspaceAbs } from "../utils/workspace.js";
+import { normalizeWorkspaceRelPath } from "../utils/pathSandbox.js";
 import { workspaceWatcher } from "../utils/watcher.js";
 import { isWindows } from "../utils/shell.js";
 import { cleanupAllBackgroundProcesses } from "./smartCommand.js";
@@ -254,28 +255,7 @@ async function deleteEntryAttempts(abs: string, rel: string): Promise<void> {
  * Validate agent delete_path input: one workspace-relative path, no globs or traversal.
  */
 export function normalizeAgentDeletePath(raw: string): string {
-  const p = String(raw ?? "")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/\/+/g, "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "");
-  if (!p || p === ".") {
-    throw new Error("delete_path: 'path' is required (workspace-relative, e.g. src/old.ts or portfolio-react)");
-  }
-  if (/[*?[\]{}]/.test(p) || p.includes("**")) {
-    throw new Error(`delete_path: wildcards are not allowed in path: ${p}`);
-  }
-  if (/(^|\/)\.\.(\/|$)/.test(p)) {
-    throw new Error("delete_path: '..' is not allowed — use a path under the workspace root");
-  }
-  if (/^[A-Za-z]:[/\\]/.test(p) || p.startsWith("\\\\")) {
-    throw new Error("delete_path: use workspace-relative path only, not an absolute drive path");
-  }
-  if (p.startsWith("//")) {
-    throw new Error("delete_path: invalid path");
-  }
-  return p;
+  return normalizeWorkspaceRelPath(raw);
 }
 
 /** Agent-safe delete (file or directory) — same guards as file-tree deleteEntry. */
@@ -294,12 +274,9 @@ export async function deleteAgentPath(rawPath: string): Promise<{ path: string; 
 }
 
 export async function deleteEntry(rel: string): Promise<void> {
-  const abs = safeJoin(rel);
+  const normRel = normalizeWorkspaceRelPath(rel);
+  const abs = safeJoin(normRel);
   const wsRoot = path.resolve(safeJoin("."));
-  const normRel = (rel || ".").replace(/\\/g, "/").replace(/\/+$/, "") || ".";
-  if (normRel === "." || normRel === "") {
-    throw new Error("Cannot delete the workspace root folder.");
-  }
   if (path.resolve(abs) === wsRoot) {
     throw new Error(`Cannot delete workspace root: ${wsRoot}`);
   }
@@ -313,6 +290,26 @@ export async function deleteEntry(rel: string): Promise<void> {
   }
 }
 
+/** Rename/move within workspace (Explorer drag, F2, cut/paste). */
+export async function renameEntry(fromRel: string, toRel: string): Promise<void> {
+  const fromNorm = normalizeWorkspaceRelPath(fromRel);
+  const toNorm = normalizeWorkspaceRelPath(toRel);
+  const fromAbs = safeJoin(fromNorm);
+  const toAbs = safeJoin(toNorm);
+  const wsRoot = path.resolve(safeJoin("."));
+  if (path.resolve(fromAbs) === wsRoot) {
+    throw new Error("Cannot rename the workspace root folder.");
+  }
+  if (path.resolve(toAbs) === wsRoot) {
+    throw new Error("Cannot replace the workspace root folder.");
+  }
+  await fs.mkdir(path.dirname(toAbs), { recursive: true });
+  assertWithinWorkspaceAbs(path.dirname(toAbs), path.dirname(toNorm));
+  assertWithinWorkspaceAbs(toAbs, toNorm);
+  await fs.rename(fromAbs, toAbs);
+  assertWithinWorkspaceAbs(toAbs, toNorm);
+}
+
 /**
  * Copy a file or directory. If the destination already exists, derive a
  * non-conflicting name by suffixing " copy", " copy 2", … (before the
@@ -320,11 +317,19 @@ export async function deleteEntry(rel: string): Promise<void> {
  * destination path so the client can refresh + reveal it.
  */
 export async function copyEntry(fromRel: string, toRel: string): Promise<string> {
-  const fromAbs = safeJoin(fromRel);
-  const toAbsRequested = safeJoin(toRel);
+  const fromNorm = normalizeWorkspaceRelPath(fromRel);
+  const toNorm = normalizeWorkspaceRelPath(toRel);
+  const fromAbs = safeJoin(fromNorm);
+  const toAbsRequested = safeJoin(toNorm);
+  const wsRoot = path.resolve(safeJoin("."));
+  if (path.resolve(fromAbs) === wsRoot) {
+    throw new Error("Cannot copy the workspace root folder.");
+  }
   const stat = await fs.stat(fromAbs);
   await fs.mkdir(path.dirname(toAbsRequested), { recursive: true });
+  assertWithinWorkspaceAbs(path.dirname(toAbsRequested), path.dirname(toNorm));
   const finalAbs = await uniquePath(toAbsRequested, stat.isDirectory());
+  assertWithinWorkspaceAbs(finalAbs, toNorm);
   await fs.cp(fromAbs, finalAbs, { recursive: true, errorOnExist: false, force: false });
   return toRelClean(finalAbs);
 }

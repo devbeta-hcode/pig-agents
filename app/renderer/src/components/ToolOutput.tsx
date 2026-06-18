@@ -14,12 +14,12 @@ export interface ToolOutputProps {
   streamPreview?: string;
   /**
    * Partial patches / file body from the live token buffer (write_patch +
-   * create_file) while ACTION JSON is still arriving.
+   * create_file) while <tool> XML is still streaming.
    */
   streamingArgPreview?: string;
   /** Disk write finished (SSE tool_disk_settled) before observation is emitted. */
   diskSettledOk?: boolean;
-  /** Turn ended but disk write never confirmed (broken ACTION JSON, etc.). */
+  /** Turn ended but disk write never confirmed (incomplete <tool>, etc.). */
   saveFailed?: boolean;
   /** Hide the Copilot-style top row — used when the row is rendered in `<summary>`. */
   suppressHeader?: boolean;
@@ -558,13 +558,15 @@ function RunCommandOutput({
     if (el) el.scrollTop = el.scrollHeight;
   }, [streamPreview, observation]);
 
-  const statusLabel = isBackground 
-    ? "Running" 
-    : exitCode === 0 
-      ? "Done" 
-      : exitCode !== null 
-        ? `Exit ${exitCode}` 
-        : undefined;
+  const statusLabel = isBackground
+    ? "Running"
+    : observation?.ok
+      ? "Done"
+      : exitCode === 0
+        ? "Done"
+        : exitCode !== null
+          ? `Exit ${exitCode}`
+          : undefined;
 
   return (
     <div className="tool-output tool-run-command">

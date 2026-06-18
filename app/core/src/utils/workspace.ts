@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { assertPathWithinRoot, resolveRealRoot, normalizeWorkspaceRelPath } from "./pathSandbox.js";
 
 /** Listeners are notified whenever the active workspace changes. The
  *  filesystem watcher subscribes here so it can re-target itself. We use a
@@ -26,6 +27,10 @@ const workspaceALS = new AsyncLocalStorage<string>();
  * user having to set WORKSPACE_ROOT, and avoids defaulting to `app/backend/`.
  */
 function resolveInitial(): string {
+  // Desktop: never default to the bundled/dev repo tree — user picks a folder in UI.
+  if (process.env.PIG_DESKTOP === "1") {
+    return "";
+  }
   const env = process.env.WORKSPACE_ROOT;
   if (env && env.trim().length > 0) {
     return path.resolve(env);
@@ -48,6 +53,10 @@ export function getWorkspace(): string {
   const fromReq = workspaceALS.getStore();
   if (fromReq !== undefined) return fromReq;
   return currentWorkspace;
+}
+
+export function hasWorkspace(): boolean {
+  return getWorkspace().trim().length > 0;
 }
 
 /**
@@ -88,9 +97,23 @@ export function workspaceFromRequestHeader(req: { get(name: string): string | un
   return validateWorkspacePath(raw.trim());
 }
 
+let cachedRealRoot = "";
+let cachedRealRootKey = "";
+
+/** Canonical workspace root (symlink-resolved). Invalidated on setWorkspace. */
+export function getRealWorkspaceRoot(): string {
+  const ws = path.resolve(getWorkspace());
+  if (cachedRealRootKey === ws && cachedRealRoot) return cachedRealRoot;
+  cachedRealRootKey = ws;
+  cachedRealRoot = resolveRealRoot(ws);
+  return cachedRealRoot;
+}
+
 export function setWorkspace(p: string): string {
   const abs = validateWorkspacePath(p);
   currentWorkspace = abs;
+  cachedRealRootKey = "";
+  cachedRealRoot = "";
   for (const cb of workspaceListeners) {
     try { cb(abs); } catch { /* listener errors must not block workspace switch */ }
   }
@@ -106,13 +129,33 @@ export function runWithWorkspace<T>(abs: string, fn: () => T): T {
 }
 
 export function safeJoin(rel: string): string {
-  const root = getWorkspace();
-  const target = path.resolve(root, rel || ".");
+  const rootRaw = getWorkspace();
+  if (!rootRaw.trim()) {
+    throw new Error("No workspace opened — open a folder first.");
+  }
+  const root = path.resolve(rootRaw);
+  const wsReal = getRealWorkspaceRoot();
+  const normRel =
+    rel === "." || rel === "./"
+      ? "."
+      : normalizeWorkspaceRelPath(rel);
+  const target = normRel === "." ? root : path.resolve(root, normRel);
   if (target !== root && !target.startsWith(root + path.sep)) {
     throw new Error(`Path escapes workspace: ${rel}`);
   }
+  assertPathWithinRoot(target, wsReal, normRel === "." ? "." : normRel);
   return target;
 }
+
+/** Re-check absolute path after mkdir/rename/copy (symlink targets). */
+export function assertWithinWorkspaceAbs(absPath: string, relForError?: string): void {
+  if (!hasWorkspace()) {
+    throw new Error("No workspace opened — open a folder first.");
+  }
+  assertPathWithinRoot(absPath, getRealWorkspaceRoot(), relForError);
+}
+
+export { normalizeWorkspaceRelPath } from "./pathSandbox.js";
 
 export function toRel(abs: string): string {
   const root = getWorkspace();

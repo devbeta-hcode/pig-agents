@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlayTriangle } from "./ChevronExpand";
-import { IconX, IconMenu, IconZap, IconAlertTriangle, IconTrash, IconPlus, IconMoreHorizontal, IconSquareFill } from "./Icons";
+import { IconX, IconMenu, IconZap, IconPlus, IconSquareFill } from "./Icons";
 import { TerminalView } from "./Terminal";
-import { AgentTerminalView } from "./AgentTerminalView";
-import { api, type AgentCommandSummary } from "../lib/api";
-import { useDialogs } from "./DialogProvider";
+import { api } from "../lib/api";
 
 interface TerminalsHandle {
   reveal: (cwd: string) => void;
@@ -23,12 +21,6 @@ interface ShellTab {
   initial?: string;
 }
 
-interface AgentTab {
-  kind: "agent";
-  id: string;
-  run: AgentCommandSummary;
-}
-
 interface LiveAgentTab {
   kind: "live";
   id: string;
@@ -36,9 +28,37 @@ interface LiveAgentTab {
   cwd: string;
   startedAt: number;
   output: string;
+  pid?: number;
+  background?: boolean;
 }
 
-type TerminalTab = ShellTab | AgentTab | LiveAgentTab;
+function liveTabFromServer(
+  info: { id: string; cmd: string; cwd: string; startedAt: number; output?: string; pid?: number; background?: boolean },
+  outputFallback = "",
+): LiveAgentTab {
+  return {
+    kind: "live",
+    id: info.id,
+    cmd: info.cmd,
+    cwd: info.cwd,
+    startedAt: info.startedAt,
+    output: info.output ?? outputFallback,
+    pid: info.pid,
+    background: info.background,
+  };
+}
+
+function mergeLiveFromServer(
+  cur: LiveAgentTab[],
+  incoming: Array<{ id: string; cmd: string; cwd: string; startedAt: number; output: string; pid?: number; background?: boolean }>,
+): LiveAgentTab[] {
+  const prevOut = new Map(cur.map((r) => [r.id, r.output]));
+  return incoming
+    .map((l) => liveTabFromServer(l, prevOut.get(l.id) ?? l.output ?? ""))
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+type TerminalTab = ShellTab | LiveAgentTab;
 
 let nextShellOrd = 1;
 
@@ -52,21 +72,20 @@ function makeShell(initial?: string): ShellTab {
 }
 
 export function Terminals({ registerHandle, onClose, workspace }: Props) {
-  const dlg = useDialogs();
   const [shells, setShells] = useState<ShellTab[]>([makeShell()]);
-  const [agents, setAgents] = useState<AgentCommandSummary[]>([]);
   const [liveRuns, setLiveRuns] = useState<LiveAgentTab[]>([]);
   const [activeId, setActiveId] = useState<string>(shells[0].id);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(140);
   const sidebarResizing = useRef(false);
+  const shellsRef = useRef(shells);
+  shellsRef.current = shells;
 
   const allTabs: TerminalTab[] = useMemo(() => {
     const s: TerminalTab[] = shells.map((x) => ({ ...x }));
     const l: TerminalTab[] = liveRuns.map((r) => ({ ...r }));
-    const a: TerminalTab[] = agents.map((r) => ({ kind: "agent", id: r.id, run: r }));
-    return [...s, ...l, ...a];
-  }, [shells, liveRuns, agents]);
+    return [...s, ...l];
+  }, [shells, liveRuns]);
 
   const activeTab = useMemo(
     () => allTabs.find((t) => t.id === activeId) ?? allTabs[0],
@@ -87,48 +106,52 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    const refresh = () => {
-      if (cancelled) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      api.listAgentCommands()
-        .then((r) => { if (!cancelled) setAgents(r.runs); })
-        .catch(() => { /* noop */ });
+    const focusLiveShell = (finishedId: string) => {
+      setActiveId((aid) => {
+        if (aid !== finishedId) return aid;
+        const sh = shellsRef.current;
+        return sh.length > 0 ? sh[sh.length - 1].id : aid;
+      });
     };
-    refresh();
-    const poll = window.setInterval(refresh, 10000);
-    const onBecameVisible = () => {
-      if (document.visibilityState === "visible") refresh();
+    const syncLiveFromServer = () => {
+      void api.agentCommandsLive().then((r) => {
+        if (cancelled) return;
+        setLiveRuns((cur) => mergeLiveFromServer(cur, r.live));
+      }).catch(() => { /* noop */ });
     };
-    document.addEventListener("visibilitychange", onBecameVisible);
-    window.addEventListener("focus", refresh);
     const sub = api.streamAgentCommands({
-      onHello: (runs, live) => {
-        if (!cancelled) {
-          setAgents(runs);
-          if (live.length > 0) {
-            setLiveRuns(live.map((r) => ({ kind: "live" as const, ...r })));
-          }
+      onHello: (_runs, live) => {
+        if (cancelled) return;
+        if (live.length > 0) {
+          setLiveRuns((cur) => mergeLiveFromServer(cur, live));
+        } else {
+          syncLiveFromServer();
         }
       },
       onRun: (run) => {
         if (cancelled) return;
+        if (run.background && run.pid) {
+          setLiveRuns((cur) => {
+            const existing = cur.find((r) => r.id === run.id);
+            const tab = liveTabFromServer(run, existing?.output ?? "");
+            return [tab, ...cur.filter((r) => r.id !== run.id)];
+          });
+          return;
+        }
         setLiveRuns((cur) => cur.filter((r) => r.id !== run.id));
-        setAgents((cur) => [run, ...cur.filter((r) => r.id !== run.id)]);
+        focusLiveShell(run.id);
       },
       onClear: () => {
-        if (!cancelled) {
-          setAgents([]);
-          setLiveRuns([]);
-        }
+        if (!cancelled) setLiveRuns([]);
       },
       onDelete: (id) => {
         if (cancelled) return;
-        setAgents((cur) => cur.filter((r) => r.id !== id));
         setLiveRuns((cur) => cur.filter((r) => r.id !== id));
+        focusLiveShell(id);
       },
       onRunStart: (info) => {
         if (cancelled) return;
-        const tab: LiveAgentTab = { kind: "live", ...info, output: "" };
+        const tab = liveTabFromServer(info);
         setLiveRuns((cur) => [tab, ...cur.filter((r) => r.id !== info.id)]);
         setActiveId(info.id);
       },
@@ -141,11 +164,11 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
         );
       },
     });
+    syncLiveFromServer();
+    const poll = window.setInterval(syncLiveFromServer, 2500);
     return () => {
       cancelled = true;
-      clearInterval(poll);
-      document.removeEventListener("visibilitychange", onBecameVisible);
-      window.removeEventListener("focus", refresh);
+      window.clearInterval(poll);
       sub.close();
     };
   }, []);
@@ -168,31 +191,6 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
       if (activeId === id) setActiveId(next[next.length - 1].id);
       return next;
     });
-  }
-
-  function dismissAgent(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
-    setAgents((cur) => cur.filter((r) => r.id !== id));
-    setLiveRuns((cur) => cur.filter((r) => r.id !== id));
-    if (activeId === id && shells.length > 0) setActiveId(shells[shells.length - 1].id);
-    api.deleteAgentCommand(id).catch((err) => {
-      console.warn("deleteAgentCommand failed:", err);
-    });
-  }
-
-  async function clearAllAgents() {
-    if (agents.length === 0) return;
-    if (!(await dlg.confirm({
-      title: "Clear agent log",
-      message: `Clear ${agents.length} agent run${agents.length === 1 ? "" : "s"} from the log?`,
-      confirmLabel: "Clear",
-    }))) return;
-    try {
-      await api.clearAgentCommands();
-      setAgents([]);
-    } catch (err) {
-      console.warn("clearAgentCommands failed:", err);
-    }
   }
 
   function onSidebarResizeStart(e: React.MouseEvent) {
@@ -221,9 +219,7 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
   const headerLabel = activeTab
     ? activeTab.kind === "shell"
       ? shellLabel(activeTab.ordinal)
-      : activeTab.kind === "live"
-        ? `⚡ Running: ${activeTab.cmd.length > 40 ? activeTab.cmd.slice(0, 40) + "…" : activeTab.cmd}`
-        : `Agent: ${activeTab.run.cmd.length > 40 ? activeTab.run.cmd.slice(0, 40) + "…" : activeTab.run.cmd}`
+      : `⚡ Running: ${activeTab.cmd.length > 40 ? activeTab.cmd.slice(0, 40) + "…" : activeTab.cmd}`
     : "Terminal";
 
   return (
@@ -284,17 +280,11 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
 
             <div className="terminals-section">
               <div className="terminals-section-head">
-                <span>Agent runs <em>{(liveRuns.length + agents.length) > 0 ? `(${liveRuns.length + agents.length})` : ""}</em></span>
-                {agents.length > 0 && (
-                  <button
-                    className="terminals-section-btn"
-                    title="Clear all agent runs from history"
-                    onClick={clearAllAgents}
-                  >
-                    <IconTrash size={13} />
-                  </button>
-                )}
+                <span>Running <em>{liveRuns.length > 0 ? `(${liveRuns.length})` : ""}</em></span>
               </div>
+              {liveRuns.length === 0 && (
+                <div className="terminals-section-empty">No commands running</div>
+              )}
               {liveRuns.map((r) => (
                 <div
                   key={r.id}
@@ -321,15 +311,6 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
                   </button>
                 </div>
               ))}
-              {agents.map((r) => (
-                <AgentItem
-                  key={r.id}
-                  run={r}
-                  active={activeId === r.id}
-                  onClick={() => setActiveId(r.id)}
-                  onDismiss={(e) => dismissAgent(r.id, e)}
-                />
-              ))}
             </div>
           </aside>
         )}
@@ -349,46 +330,11 @@ export function Terminals({ registerHandle, onClose, workspace }: Props) {
               />
             </div>
           ))}
-          {activeTab && activeTab.kind === "agent" && (
-            <AgentTerminalView runId={activeTab.id} />
-          )}
           {activeTab && activeTab.kind === "live" && (
             <LiveTerminalView run={activeTab} />
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function AgentItem({
-  run, active, onClick, onDismiss,
-}: {
-  run: AgentCommandSummary;
-  active: boolean;
-  onClick: () => void;
-  onDismiss: (e: React.MouseEvent) => void;
-}) {
-  const ok = run.exitCode === 0;
-  const dur = run.durationMs >= 1000
-    ? `${(run.durationMs / 1000).toFixed(1)}s`
-    : `${run.durationMs}ms`;
-  return (
-    <div
-      className={`terminals-item agent ${active ? "active" : ""} ${ok ? "ok" : "fail"}`}
-      onClick={onClick}
-      title={`$ ${run.cmd}\nexit ${run.exitCode} · ${dur}`}
-    >
-      <span className="terminals-item-icon">{ok ? <IconZap size={13} /> : <IconAlertTriangle size={13} />}</span>
-      <span className="terminals-item-name">{run.cmd}</span>
-      <span className="terminals-item-meta">{dur}</span>
-      <button
-        className="terminals-item-close"
-        title="Remove from list"
-        onClick={onDismiss}
-      >
-        <IconX size={12} />
-      </button>
     </div>
   );
 }
@@ -409,10 +355,16 @@ function LiveTerminalView({ run }: { run: LiveAgentTab }) {
     e.stopPropagation();
     if (killing) return;
     setKilling(true);
-    api.killAgentCommand(run.id).catch((err) => {
-      console.warn("killAgentCommand failed:", err);
-      setKilling(false);
-    });
+    api.killAgentCommand(run.id)
+      .then((res) => {
+        // pid not registered yet (brief race) — let the user retry instead of
+        // leaving the button stuck on "stopping…".
+        if (!res.ok && res.reason === "pid-not-ready") setKilling(false);
+      })
+      .catch((err) => {
+        console.warn("killAgentCommand failed:", err);
+        setKilling(false);
+      });
   }
 
   return (

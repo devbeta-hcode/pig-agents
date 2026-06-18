@@ -14,11 +14,12 @@ import path from "node:path";
 import url from "node:url";
 import crypto from "node:crypto";
 
-import { listFiles, readFile, writeFile, createEntry, deleteEntry, copyEntry, searchCode } from "./tools/file.js";
+import { listFiles, readFile, writeFile, createEntry, deleteEntry, copyEntry, renameEntry, searchCode } from "./tools/file.js";
 import { previewContextUsage } from "./agent/contextMeasure.js";
 import { runCommand } from "./tools/command.js";
 import { BA_DIFF_CREATED_FROM_ABSENT } from "./tools/patch.js";
-import { getWorkspace, setWorkspace, safeJoin } from "./utils/workspace.js";
+import { getWorkspace, setWorkspace, safeJoin, hasWorkspace } from "./utils/workspace.js";
+import { normalizeWorkspaceRelPath } from "./utils/pathSandbox.js";
 import {
   createCheckpoint,
   deleteCheckpoint,
@@ -46,6 +47,7 @@ import {
   killAgentCommand,
   getAgentCommand,
   listAgentCommands,
+  listLiveAgentCommands,
 } from "./agent/commandLog.js";
 import {
   startSession,
@@ -89,39 +91,46 @@ export function workspaceSet(p: string) {
 }
 
 export async function listFilesSvc(dir = ".") {
+  if (!hasWorkspace()) return { dir, items: [] };
   return { dir, items: await listFiles(dir) };
 }
 
 export async function readFileSvc(p: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!p) throw new Error("path required");
-  return { path: p, content: await readFile(p) };
+  return { path: normalizeWorkspaceRelPath(p), content: await readFile(p) };
 }
 
 export async function writeFileSvc(p: string, content: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!p) throw new Error("path required");
   await writeFile(p, content ?? "");
   return { ok: true as const };
 }
 
 export async function createEntrySvc(p: string, kind: "file" | "dir") {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!p) throw new Error("path required");
   await createEntry(p, kind === "dir" ? "dir" : "file");
   return { ok: true as const };
 }
 
 export async function copyEntrySvc(from: string, to: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!from || !to) throw new Error("from and to required");
   const finalPath = await copyEntry(from, to);
   return { ok: true as const, path: finalPath };
 }
 
 export async function deleteEntrySvc(p: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!p) throw new Error("path required");
   await deleteEntry(p);
   return { ok: true as const };
 }
 
 export async function searchSvc(query: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!query) throw new Error("query required");
   return { query, hits: await searchCode(query, 100) };
 }
@@ -183,11 +192,9 @@ export async function fsBrowse(target: string, showHidden = false) {
 }
 
 export async function renameSvc(from: string, to: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!from || !to) throw new Error("from and to required");
-  const fromAbs = safeJoin(from);
-  const toAbs = safeJoin(to);
-  await fsp.mkdir(path.dirname(toAbs), { recursive: true });
-  await fsp.rename(fromAbs, toAbs);
+  await renameEntry(from, to);
   return { ok: true as const };
 }
 
@@ -294,6 +301,10 @@ export function agentCommandsList() {
   return { runs: listAgentCommands() };
 }
 
+export function agentCommandsLive() {
+  return { live: listLiveAgentCommands() };
+}
+
 export function agentCommandGet(id: string) {
   const r = getAgentCommand(id);
   if (!r) throw new Error("not found");
@@ -316,9 +327,11 @@ export function agentCommandDelete(id: string) {
  * receives an error result and continues to the next step.
  */
 export function agentCommandKill(id: string) {
-  const ok = killAgentCommand(id);
-  if (!ok) throw new Error("not found or pid not yet available");
-  return { ok: true as const, id };
+  // Best-effort: never throw on "stop" — the command may have just finished or
+  // its PID may not be registered yet. Surfacing an IPC error here only spams
+  // the console; the UI just needs to know whether the kill landed.
+  const res = killAgentCommand(id);
+  return { ok: res.ok, id, reason: res.reason };
 }
 
 // ===========================================================================
@@ -428,7 +441,12 @@ function joinFileLines(lines: string[]): string {
 function parseDiff(diff: string): { path: string; hunks: Hunk[] } | null {
   const headerMatch = /^---\s+a\/(.+)$/m.exec(diff);
   if (!headerMatch) return null;
-  const p = headerMatch[1];
+  let p: string;
+  try {
+    p = normalizeWorkspaceRelPath(headerMatch[1]);
+  } catch {
+    return null;
+  }
   const lines = diff.split("\n");
   const hunks: Hunk[] = [];
   let cur: Hunk | null = null;

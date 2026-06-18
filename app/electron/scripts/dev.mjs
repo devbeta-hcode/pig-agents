@@ -45,7 +45,7 @@ await new Promise((resolve, reject) => {
   b.on("exit", (c) => (c === 0 ? resolve() : reject(new Error(`build exit ${c}`))));
 });
 
-const devEnv = { ...process.env, PIG_DEV: "1" };
+const devEnv = { ...process.env, PIG_DEV: "1", PIG_DESKTOP: "1" };
 
 const renderer = spawn(npmCmd, ["run", "dev", "--workspace", "@pig-agents/renderer"], {
   cwd: root,

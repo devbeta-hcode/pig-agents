@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { killBackgroundProcess } from "../tools/smartCommand.js";
+import { killBackgroundProcess, isBackgroundProcessRunning } from "../tools/smartCommand.js";
 
 /**
  * Tracks every shell command the agent runs through the `run_command` tool so
@@ -20,11 +20,23 @@ export interface AgentCommandRun {
   truncated: boolean;
   /** PID of the child process, set for background (long-running) commands. */
   pid?: number;
+  /** True when the child is still running in background after runSmartCommand returned. */
+  background?: boolean;
 }
 
 export type AgentCommandSummary = Omit<AgentCommandRun, "stdout" | "stderr"> & {
   stdoutBytes: number;
   stderrBytes: number;
+};
+
+export type LiveAgentCommand = {
+  id: string;
+  cmd: string;
+  cwd: string;
+  startedAt: number;
+  output: string;
+  pid?: number;
+  background?: boolean;
 };
 
 /** Lightweight token for an in-progress agent command. */
@@ -101,6 +113,8 @@ function summarize(r: AgentCommandRun): AgentCommandSummary {
     durationMs: r.durationMs,
     exitCode: r.exitCode,
     truncated: r.truncated,
+    pid: r.pid,
+    background: r.background,
     stdoutBytes: Buffer.byteLength(r.stdout, "utf8"),
     stderrBytes: Buffer.byteLength(r.stderr, "utf8"),
   };
@@ -112,8 +126,45 @@ export function listAgentCommands(): AgentCommandSummary[] {
 }
 
 /** Return currently-in-progress command snapshots (for SSE hello on reconnect). */
-export function listPendingCommands(): Array<{ id: string; cmd: string; cwd: string; startedAt: number; output: string }> {
-  return Array.from(pending.values());
+export function listPendingCommands(): LiveAgentCommand[] {
+  return Array.from(pending.values()).map((p) => ({
+    id: p.id,
+    cmd: p.cmd,
+    cwd: p.cwd,
+    startedAt: p.startedAt,
+    output: p.output,
+    pid: p.pid,
+  }));
+}
+
+/** Pending + background servers whose OS process is still alive. */
+export function listLiveAgentCommands(): LiveAgentCommand[] {
+  const out = new Map<string, LiveAgentCommand>();
+  for (const p of pending.values()) {
+    out.set(p.id, {
+      id: p.id,
+      cmd: p.cmd,
+      cwd: p.cwd,
+      startedAt: p.startedAt,
+      output: p.output,
+      pid: p.pid,
+    });
+  }
+  for (const r of ring) {
+    if (!r.pid || !r.background) continue;
+    if (!isBackgroundProcessRunning(r.pid)) continue;
+    if (out.has(r.id)) continue;
+    out.set(r.id, {
+      id: r.id,
+      cmd: r.cmd,
+      cwd: r.cwd,
+      startedAt: r.startedAt,
+      output: [r.stdout, r.stderr].filter(Boolean).join("\n").slice(-8000),
+      pid: r.pid,
+      background: true,
+    });
+  }
+  return Array.from(out.values()).sort((a, b) => b.startedAt - a.startedAt);
 }
 
 export function getAgentCommand(id: string): AgentCommandRun | undefined {
@@ -160,11 +211,24 @@ export function deleteAgentCommand(id: string): boolean {
  * continue to the next step. Use this when the user wants to interrupt a
  * specific command but keep the agent running.
  */
-export function killAgentCommand(id: string): boolean {
+export function killAgentCommand(id: string): { ok: boolean; reason?: string } {
   const p = pending.get(id);
-  if (!p) return false;          // already finished or unknown id
-  if (p.pid == null) return false; // PID not yet registered (too early)
-  return killBackgroundProcess(p.pid);
+  if (p) {
+    if (p.pid == null) return { ok: false, reason: "pid-not-ready" };
+    killBackgroundProcess(p.pid);
+    return { ok: true };
+  }
+  // Not in pending — may be a background server still tracked on the ring
+  // (listLiveAgentCommands surfaces these as "running" too).
+  const r = ring.find((x) => x.id === id);
+  if (r) {
+    if (r.pid != null && isBackgroundProcessRunning(r.pid)) {
+      killBackgroundProcess(r.pid);
+      return { ok: true };
+    }
+    return { ok: false, reason: "already-finished" };
+  }
+  return { ok: false, reason: "unknown-id" };
 }
 
 export interface CommandStreamCallbacks {

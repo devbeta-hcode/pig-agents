@@ -3,8 +3,25 @@
  * embedded Browser panel — common model mistake when user says "open browser".
  */
 export function externalBrowserLaunchHint(cmd: string): string | null {
-  const c = cmd.trim().toLowerCase();
+  const c = cmd.trim();
   if (!c) return null;
+  const lower = c.toLowerCase();
+
+  const staticOpen =
+    /\bstart(\s+""|\s+\/[\w]+)*\s+["']?[\w./\\-]+\.(html?|htm)\b/i.test(c) ||
+    /\bstart\s+["']?[\w./\\-]+\.(html?|htm)\b/i.test(c) ||
+    /\bexplorer(\.exe)?\s+["']?[\w./\\-]+\.(html?|htm)\b/i.test(c) ||
+    /\b(?:invoke-item|ii)\s+["']?[\w./\\-]+\.(html?|htm)\b/i.test(c);
+
+  if (staticOpen) {
+    const m = c.match(/([\w./\\-]+\.(html?|htm))/i);
+    const file = m?.[1] ?? "index.html";
+    return (
+      `Do NOT open ${file} via run_command (start/explorer fails under PowerShell/Git Bash and Exit 1 is common). ` +
+      `Use browser_show then browser_navigate with url "${file}" (workspace-relative) or ` +
+      `run python -m http.server 8000 then browser_navigate http://localhost:8000/.`
+    );
+  }
 
   const blocked: RegExp[] = [
     /\bstart\s+(chrome|msedge|microsoft-edge|edge|firefox|iexplore|brave|opera|vivaldi)\b/,
@@ -17,7 +34,7 @@ export function externalBrowserLaunchHint(cmd: string): string | null {
     /\bopen\s+-a\s+(google chrome|safari|firefox)\b/,
   ];
 
-  if (!blocked.some((re) => re.test(c))) return null;
+  if (!blocked.some((re) => re.test(lower))) return null;
 
   return (
     "Do NOT launch Chrome/Edge/Firefox via run_command. " +

@@ -25,7 +25,7 @@ export function isRedundantRunLog(message: string): boolean {
   if (/^Preparing agent context for /.test(msg)) return true;
   if (/^Ranking relevant files/.test(msg)) return true;
   if (/^Context ready \(/.test(msg)) return true;
-  if (/^Agent mode: ReAct/.test(msg)) return true;
+  if (/^Agent mode:/.test(msg)) return true;
   if (/^Project rules:/.test(msg)) return true;
   return false;
 }

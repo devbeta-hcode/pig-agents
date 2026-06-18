@@ -70,6 +70,8 @@ export const DEFAULT_POLICY: Policy = {
     "rd /s /q*",
     "rmdir /s /q*",
     "del /f /s /q*",
+    "del /s*",
+    "erase /s*",
     "Remove-Item*-Recurse*",
     // Disk overwrites
     "dd if=*",

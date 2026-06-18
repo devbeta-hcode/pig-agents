@@ -21,6 +21,7 @@ export {
   subscribeAgentCommands,
   listAgentCommands,
   listPendingCommands,
+  listLiveAgentCommands,
 } from "./agent/commandLog.js";
 
 // ---- Workspace + watcher --------------------------------------------------

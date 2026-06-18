@@ -84,6 +84,10 @@ function summarizeTurnTrace(events: ChatTurn["events"], maxChars = 2400): string
         }
       } else if (tool === "run_command" && typeof inp.command === "string") {
         lines.push(`- run_command: ${String(inp.command).slice(0, 100)}`);
+      } else if (tool === "browser_navigate" && typeof inp.url === "string") {
+        lines.push(`- browser_navigate: ${String(inp.url).slice(0, 120)}`);
+      } else if (tool === "browser_show") {
+        lines.push("- browser_show");
       } else {
         lines.push(`- ${tool}`);
       }
@@ -163,4 +167,53 @@ export function composeAgentTaskWithHistory(priorTurns: ChatTurn[], currentUserM
   const cur = currentUserMessage.trim();
   if (!prefix) return cur;
   return `${prefix}\n\n---\n\nCURRENT TASK (what the user just sent):\n${cur}`;
+}
+
+/** User-visible label when a backend task string (with embedded history) leaks into UI. */
+export function displayUserTask(task: string): string {
+  const m = /CURRENT TASK\s*\([^)]*\)\s*:\s*/i.exec(task);
+  if (m && m.index !== undefined) {
+    const slice = task.slice(m.index + m[0].length).trim();
+    if (slice) return slice;
+  }
+  if (/CONVERSATION SO FAR/i.test(task)) return "(continued task)";
+  return task.trim();
+}
+
+/**
+ * Keep in-memory session ref aligned with the React `session` prop after lazy
+ * load. Without this, Chat mounts with an empty shell, sessionRef stays empty
+ * after getChat completes, and the next send wipes persisted turns.
+ */
+export function reconcileChatSessionRef(
+  prop: ChatSession,
+  ref: ChatSession,
+  opts?: { running?: boolean },
+): ChatSession {
+  if (prop.id !== ref.id) return prop;
+
+  if (prop.turns.length > ref.turns.length) {
+    return {
+      ...ref,
+      turns: prop.turns,
+      title: prop.title,
+      mode: prop.mode ?? ref.mode,
+      pendingDiffs: prop.pendingDiffs ?? ref.pendingDiffs,
+      updatedAt: Math.max(prop.updatedAt, ref.updatedAt),
+    };
+  }
+
+  if (opts?.running && ref.updatedAt >= prop.updatedAt) return ref;
+
+  if (prop.updatedAt > ref.updatedAt) {
+    return {
+      ...ref,
+      title: prop.title,
+      mode: prop.mode ?? ref.mode,
+      pendingDiffs: prop.pendingDiffs ?? ref.pendingDiffs,
+      updatedAt: prop.updatedAt,
+    };
+  }
+
+  return ref;
 }

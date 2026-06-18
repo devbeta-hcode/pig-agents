@@ -151,6 +151,7 @@ export function FileTree({ selected, workspace, onOpen, refreshKey, onPathsDelet
   }
 
   const load = useCallback(async () => {
+    if (!workspace) return;
     // Prevent concurrent loads
     if (loadingRef.current) return;
     loadingRef.current = true;

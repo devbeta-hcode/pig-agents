@@ -267,12 +267,21 @@ function isNavigationAborted(code: number, message: string): boolean {
 }
 
 const NAV_TIMEOUT_MS = 45_000;
+const LOCAL_NAV_TIMEOUT_MS = 8_000;
+const PAGE_SETTLE_TIMEOUT_MS = 1_500;
 let navGeneration = 0;
+
+function navTimeoutMs(target: string): number {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(target) || target.startsWith("file:")
+    ? LOCAL_NAV_TIMEOUT_MS
+    : NAV_TIMEOUT_MS;
+}
 
 export async function browserNavigate(url: string): Promise<void> {
   const contents = requireGuest();
   const target = normalizeUrl(url);
   const gen = ++navGeneration;
+  const timeoutMs = navTimeoutMs(target);
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -294,8 +303,8 @@ export async function browserNavigate(url: string): Promise<void> {
     };
 
     const timer = setTimeout(() => {
-      settleErr(new Error(`Navigation timed out after ${NAV_TIMEOUT_MS}ms: ${target}`));
-    }, NAV_TIMEOUT_MS);
+      settleErr(new Error(`Navigation timed out after ${timeoutMs}ms: ${target}`));
+    }, timeoutMs);
 
     const onFinish = () => {
       if (stale()) return;
@@ -317,14 +326,25 @@ export async function browserNavigate(url: string): Promise<void> {
       settleErr(new Error(`Navigation failed (${errorCode}): ${errorDescription} (${validatedURL || target})`));
     };
 
+    const onStopLoading = () => {
+      if (stale()) return;
+      // Some local/file navigations do not reliably emit did-finish-load. Once
+      // loading stops and did-fail-load did not reject, let the tool continue.
+      if (target.startsWith("file:") || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(target)) {
+        settleOk();
+      }
+    };
+
     const cleanup = () => {
       clearTimeout(timer);
       contents.removeListener("did-finish-load", onFinish);
       contents.removeListener("did-fail-load", onFail);
+      contents.removeListener("did-stop-loading", onStopLoading);
     };
 
     contents.on("did-finish-load", onFinish);
     contents.on("did-fail-load", onFail);
+    contents.on("did-stop-loading", onStopLoading);
 
     void contents.loadURL(target).catch((err: unknown) => {
       if (stale()) return;
@@ -345,15 +365,21 @@ export async function browserNavigate(url: string): Promise<void> {
 
 async function waitForPageSettled(contents: WebContents): Promise<void> {
   try {
-    await contents.executeJavaScript(
-      `(async () => {
-        if (document.readyState !== "complete") {
-          await new Promise((r) => window.addEventListener("load", r, { once: true }));
-        }
-        await new Promise((r) => setTimeout(r, 400));
-      })()`,
-      true,
-    );
+    await Promise.race([
+      contents.executeJavaScript(
+        `(async () => {
+          if (document.readyState !== "complete") {
+            await Promise.race([
+              new Promise((r) => window.addEventListener("load", r, { once: true })),
+              new Promise((r) => setTimeout(r, 1000)),
+            ]);
+          }
+          await new Promise((r) => setTimeout(r, 400));
+        })()`,
+        true,
+      ),
+      sleep(PAGE_SETTLE_TIMEOUT_MS),
+    ]);
   } catch {
     await sleep(400);
   }

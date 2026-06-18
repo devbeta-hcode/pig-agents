@@ -101,6 +101,8 @@ export interface AgentCommandSummary {
   truncated: boolean;
   stdoutBytes: number;
   stderrBytes: number;
+  pid?: number;
+  background?: boolean;
 }
 
 export interface AgentCommandRun extends Omit<AgentCommandSummary, "stdoutBytes" | "stderrBytes"> {
@@ -271,12 +273,14 @@ export const api = {
 
   // ---- Agent command log --------------------------------------------------
   listAgentCommands: (): Promise<{ runs: AgentCommandSummary[] }> => pig.rpc("agentCommandsList", []),
+  agentCommandsLive: (): Promise<{ live: Array<{ id: string; cmd: string; cwd: string; startedAt: number; output: string; pid?: number; background?: boolean }> }> =>
+    pig.rpc("agentCommandsLive", []),
   getAgentCommand: (id: string): Promise<AgentCommandRun> => pig.rpc("agentCommandGet", [id]),
   clearAgentCommands: (): Promise<{ ok: true; removed: number }> => pig.rpc("agentCommandsClear", []),
   deleteAgentCommand: (id: string): Promise<{ ok: true; id: string }> => pig.rpc("agentCommandDelete", [id]),
   /** Kill the child process of an in-progress command without removing it from
    *  the log. The agent receives an error result and continues to the next step. */
-  killAgentCommand: (id: string): Promise<{ ok: true; id: string }> => pig.rpc("agentCommandKill", [id]),
+  killAgentCommand: (id: string): Promise<{ ok: boolean; id: string; reason?: string }> => pig.rpc("agentCommandKill", [id]),
 
   streamAgentCommands(handlers: {
     onHello?: (runs: AgentCommandSummary[], live: Array<{ id: string; cmd: string; cwd: string; startedAt: number; output: string }>) => void;

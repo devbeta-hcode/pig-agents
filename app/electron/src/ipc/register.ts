@@ -11,10 +11,11 @@ import {
   getSession,
   subscribeAgentCommands,
   listAgentCommands,
-  listPendingCommands,
+  listLiveAgentCommands,
   workspaceWatcher,
   getWorkspace,
   setWorkspace,
+  validateWorkspacePath,
   createPty,
   setBeforeDeletePathHook,
   logger,
@@ -110,7 +111,7 @@ function startStream(kind: string, params: Record<string, any>, send: Send): () 
     }
 
     case "commandLog": {
-      send({ kind: "hello", runs: listAgentCommands(), live: listPendingCommands() });
+      send({ kind: "hello", runs: listAgentCommands(), live: listLiveAgentCommands() });
       const unsub = subscribeAgentCommands(
         (run) => send({ kind: "run", run }),
         () => send({ kind: "clear" }),
@@ -180,7 +181,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle("pig:terminal:create", async (e, params: { cols?: number; rows?: number; workspace?: string }) => {
     const id = randomUUID();
-    const cwd = params.workspace && params.workspace.trim() ? params.workspace.trim() : getWorkspace();
+    const raw = params.workspace && params.workspace.trim() ? params.workspace.trim() : getWorkspace();
+    let cwd: string;
+    try {
+      cwd = validateWorkspacePath(raw);
+    } catch {
+      cwd = getWorkspace();
+    }
     const pty = await createPty({ cols: params.cols, rows: params.rows, cwd });
     terminals.set(id, { pty, cwd: path.resolve(cwd) });
     const sender: WebContents = e.sender;

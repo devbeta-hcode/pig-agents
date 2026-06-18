@@ -120,6 +120,11 @@
   transition: all var(--transition-fast);
 }
 .terminals-section-btn:hover { color: var(--fg); background: var(--bg-3); }
+.terminals-section-empty {
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
 
 .terminals-item {
   display: flex; align-items: center; gap: 8px;

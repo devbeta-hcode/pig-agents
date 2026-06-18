@@ -93,20 +93,10 @@ export default function BrowserPanel({
       setReady(true);
       setError(null);
 
-      // Manual open: load default URL once when the panel is still blank.
-      // dom-ready fires on every navigation — never repeat this here.
-      const current = s.url || "";
-      if (
-        !initialNavDoneRef.current &&
-        !agentActivatingRef.current &&
-        (!current || current === "about:blank")
-      ) {
-        initialNavDoneRef.current = true;
-        const target = urlRef.current.trim() || HOME;
-        const ns = await pig.browserNavigate(target);
-        setState(ns);
-        setUrlInput(ns.url);
-      }
+      // Keep a newly-mounted Browser tab blank. Agent-driven opens are followed
+      // by an explicit browser_navigate tool call; auto-loading HOME here races
+      // that navigation and makes the app look like it reloaded.
+      initialNavDoneRef.current = true;
     } catch (err) {
       setError((err as Error).message);
     } finally {

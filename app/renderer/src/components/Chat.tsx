@@ -46,6 +46,8 @@ import {
 import {
   type ChatSession, type ChatTurn, type ChatMode, type ChatSelectElMeta, shortTitle,
   composeAgentTaskWithHistory,
+  displayUserTask,
+  reconcileChatSessionRef,
 } from "../lib/sessions";
 import {
   BROWSER_ELEMENT_PICK_EVENT,
@@ -435,42 +437,6 @@ function mergeThoughtBody(reasoning: string, thought: string): string {
   return t || r;
 }
 
-/** Drop a complete leading `{"type":...}` / `{"patches":...}` blob (not shown in Thought UI). */
-function stripLeadingBareToolJson(buf: string): string {
-  const t = buf.trimStart();
-  if (!t.startsWith("{")) return buf;
-  const head = t.slice(0, 96);
-  if (!/^\{\s*"(?:type|patches)"\s*:/.test(head)) return buf;
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < t.length; i++) {
-    const c = t[i];
-    if (esc) {
-      esc = false;
-      continue;
-    }
-    if (c === "\\" && inStr) {
-      esc = true;
-      continue;
-    }
-    if (c === '"') {
-      inStr = !inStr;
-      continue;
-    }
-    if (inStr) continue;
-    if (c === "{") depth++;
-    if (c === "}") {
-      depth--;
-      if (depth === 0) return buf.slice(buf.length - t.length + i + 1).trimStart();
-    }
-  }
-  // Incomplete tool JSON still streaming — hide it from reasoning until THOUGHT/ACTION.
-  const cut = t.match(/\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:/i);
-  if (cut?.index != null && cut.index > 0) return buf.slice(buf.length - t.length + cut.index).trimStart();
-  return "";
-}
-
 /** Model monologue before THOUGHT: — internal planning, not user-facing thought. */
 function isAgentInternalMonologue(text: string): boolean {
   const t = text.trim();
@@ -512,11 +478,9 @@ function sanitizeThoughtPreview(text: string): string {
 
 /** Content BEFORE THOUGHT: — the raw reasoning trace shown in the streaming box. */
 function streamingReasoningExtract(buf: string): string {
-  let norm = normalizeStreamXmlMarkers(buf);
-  norm = stripLeadingBareToolJson(norm);
-  // Reasoning is ONLY the prefix before THOUGHT/ACTION/FINAL — never tool JSON.
+  const norm = normalizeStreamXmlMarkers(buf);
   const m = norm.match(
-    /^[\s\S]*?(?=\bTHOUGHT\s*:|\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,40}"(?:type|patches)"\s*:|$)/i,
+    /^[\s\S]*?(?=\bTHOUGHT\s*:|\bFINAL\s*:|<\s*tool\s|$)/i,
   );
   return sanitizeThoughtPreview((m?.[0] ?? "").trim());
 }
@@ -525,13 +489,13 @@ function streamingReasoningExtract(buf: string): string {
 function streamingThoughtExtract(buf: string): string {
   const norm = normalizeStreamXmlMarkers(buf);
   const m = norm.match(
-    /\bTHOUGHT\s*:\s*([\s\S]*?)(?=\bACTION\s*:|\bFINAL\s*:|\{[\s\S]{0,40}"(?:type|patches)"\s*:|$)/i,
+    /\bTHOUGHT\s*:\s*([\s\S]*?)(?=\bFINAL\s*:|<\s*tool\s|$)/i,
   );
   if (!m) return "";
   return sanitizeThoughtPreview(
     m[1]
-      .replace(/\bACTION\s*:[\s\S]*$/i, "")
       .replace(/\bFINAL\s*:[\s\S]*$/i, "")
+      .replace(/<\s*tool[\s\S]*$/i, "")
       .trim(),
   );
 }
@@ -553,13 +517,13 @@ function bufferHasCleanFinal(buf: string): boolean {
   const norm = normalizeStreamXmlMarkers(buf);
   if (!/(?:^|\n)\s*FINAL:\s*/i.test(norm)) return false;
   const tail = norm.replace(/^[\s\S]*?\bFINAL\s*:\s*/i, "");
-  return !/\b(THOUGHT|ACTION)\s*:/i.test(tail);
+  return !/\b(THOUGHT|<\s*tool)\b/i.test(tail);
 }
 
 /** Strip leaked agent-internal monologue from a FINAL preview. */
 function sanitizeFinalPreview(text: string): string {
   let out = text.trim();
-  out = out.replace(/\n+(THOUGHT|ACTION)\s*:[\s\S]*$/i, "");
+  out = out.replace(/\n+(THOUGHT|<\s*tool)\b[\s\S]*$/i, "");
   out = out.replace(/\n*\[WP_[A-Z_]+\][^\n]*/gi, "");
   out = out.replace(/\n*We have a mismatch:[\s\S]*?(?=\n\n|\n[A-ZÀ-ỹ]|$)/i, "");
   out = out.replace(/\n*From the observation,[\s\S]*?(?=\n\n|\n[A-ZÀ-ỹ]|$)/i, "");
@@ -571,21 +535,17 @@ function sanitizeFinalPreview(text: string): string {
 function streamingFinalExtract(buf: string): string {
   if (!bufferHasCleanFinal(buf)) return "";
   const norm = normalizeStreamXmlMarkers(buf);
-  const m = norm.match(/(?:^|\n)\s*FINAL:\s*([\s\S]*?)(?=\n\s*(?:THOUGHT|ACTION)\s*:|$)/i);
+  const m = norm.match(/(?:^|\n)\s*FINAL:\s*([\s\S]*?)(?=\n\s*(?:THOUGHT|<\s*tool)\b|$)/i);
   if (!m) return "";
   return sanitizeFinalPreview(m[1]);
 }
 
-/** Mirror of backend stream normalizers so THOUGHT/ACTION render while tokens arrive. */
+/** Mirror of backend stream normalizers so THOUGHT/<tool> render while tokens arrive. */
 function normalizeStreamXmlMarkers(buf: string): string {
   let out = buf.replace(/\r\n/g, "\n");
-  out = out.replace(/(\})\s*(THOUGHT|ACTION|FINAL):/gi, "$1\n$2:");
-  out = out.replace(/(<\/\|DSML\|invoke>)\s*(THOUGHT|ACTION|FINAL):/gi, "$1\n$2:");
-  out = out.replace(/END"\s*\}\s*(THOUGHT|ACTION|FINAL):/gi, 'END"}\n$1:');
+  out = out.replace(/(<\/tool\s*>)\s*(THOUGHT|FINAL):/gi, "$1\n$2:");
   out = out.replace(/<\s*thought\s*>\s*/gi, "\nTHOUGHT: ");
   out = out.replace(/<\s*\/\s*thought\s*>\s*/gi, "\n");
-  out = out.replace(/<\s*action\s*>\s*/gi, "\nACTION: ");
-  out = out.replace(/<\s*\/\s*action\s*>\s*/gi, "\n");
   out = out.replace(/<\s*final\s*>\s*/gi, "\nFINAL: ");
   out = out.replace(/<\s*\/\s*final\s*>\s*/gi, "\n");
   return out;
@@ -1904,7 +1864,7 @@ function AssistantMessageBase({
               <button onClick={onCopy} title="Copy answer"><IconCopy size={12} />Copy</button>
             )}
             {canRegenerate && (
-              <button onClick={onRegenerate} title="Regenerate"><IconRefreshCw size={12} />Regenerate</button>
+              <button onClick={onRegenerate} title="Re-run this prompt (removes later messages in this chat)"><IconRefreshCw size={12} />Regenerate</button>
             )}
             {checkpoint && (
               <button
@@ -2188,8 +2148,13 @@ export function Chat({
   } | null>(null);
 
   useEffect(() => {
-    if (sessionRef.current.id !== session.id) sessionRef.current = session;
-  }, [session.id]);
+    sessionRef.current = reconcileChatSessionRef(session, sessionRef.current, { running });
+  }, [session, running]);
+
+  const syncSessionRef = useCallback(() => {
+    sessionRef.current = reconcileChatSessionRef(session, sessionRef.current, { running });
+    return sessionRef.current;
+  }, [session, running]);
 
   const flushTokenRaf = useCallback(() => {
     tokenRafRef.current = null;
@@ -2498,6 +2463,17 @@ export function Chat({
       return;
     }
 
+    if (ev.type === "activity") {
+      const phase = String(ev.phase ?? "");
+      if (["prepare", "index", "context"].includes(phase)) {
+        appendTurnEvent(
+          ev.ts ? ev : { ...ev, ts: Date.now() },
+          (x) => x.type === "activity" && String((x as UIEvent).phase ?? "") === phase,
+        );
+        return;
+      }
+    }
+
     if (ev.type === "command_chunk") {
       const iteration = Number(ev.iteration ?? 1);
       const stream = ev.stream === "stderr" ? "stderr" : "stdout";
@@ -2583,7 +2559,7 @@ export function Chat({
         // Create a placeholder turn for reconnected session
         const reconnectTurn: ChatTurn = {
           id: turnId,
-          task: backendSession.task,
+          task: displayUserTask(backendSession.task),
           mode: backendSession.mode,
           events: [],
           status: "running",
@@ -2820,7 +2796,8 @@ export function Chat({
   }
 
   function patchSession(fn: (s: ChatSession) => ChatSession) {
-    const next = fn(sessionRef.current);
+    const base = syncSessionRef();
+    const next = fn(base);
     sessionRef.current = next;
     onUpdate(next);
   }
@@ -2836,7 +2813,8 @@ export function Chat({
       ...collectSelectElImages(t, refs),
     ];
 
-    const priorTurns = sessionRef.current.turns.slice();
+    const base = syncSessionRef();
+    const priorTurns = base.turns.slice();
     const agentTask = composeAgentTaskWithHistory(priorTurns, expandSelectElsForAgent(t, refs));
     const runMode: ChatMode = sessionRef.current.mode ?? "agent";
     const turn: ChatTurn = {
@@ -2949,7 +2927,7 @@ export function Chat({
       setActiveSessionId(null);
       onAfterRun();
     }
-  }, [running, onDiffs, onAfterRun, processSessionEvent]);
+  }, [running, onDiffs, onAfterRun, processSessionEvent, syncSessionRef, workspace, attachedImages]);
 
   function send() { void runTask(taskRef.current.trim()); }
 
@@ -3105,12 +3083,23 @@ export function Chat({
     patchSession((s) => ({ ...s, turns: s.turns.slice(0, -1), updatedAt: Date.now() }));
   }
 
-  function regenerate(turn: ChatTurn) {
+  async function regenerate(turn: ChatTurn) {
     if (running) return;
-    // Drop turns from this one onward, then re-run the task
+    const cur = syncSessionRef();
+    const idx = cur.turns.findIndex((x) => x.id === turn.id);
+    const laterCount = idx === -1 ? 0 : cur.turns.length - idx - 1;
+    if (laterCount > 0) {
+      const ok = await dlg.confirm({
+        title: "Regenerate this message?",
+        message:
+          `This removes ${laterCount} later message(s) from the chat and re-runs this prompt.\n\n` +
+          "Workspace files are not reverted — use Restore on a turn if you need to undo file changes.",
+      });
+      if (!ok) return;
+    }
     patchSession((s) => {
-      const idx = s.turns.findIndex((x) => x.id === turn.id);
-      const trimmed = idx === -1 ? s.turns : s.turns.slice(0, idx);
+      const i = s.turns.findIndex((x) => x.id === turn.id);
+      const trimmed = i === -1 ? s.turns : s.turns.slice(0, i);
       return { ...s, turns: trimmed, updatedAt: Date.now() };
     });
     void runTask(turn.task);
