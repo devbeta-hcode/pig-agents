@@ -61,6 +61,7 @@ import {
 } from "./agent/sessionManager.js";
 import { cursorListModels } from "./llm/cursorClient.js";
 import { LLM_INTEGRATIONS, resolveIntegrationBaseUrl, isStrictCloudHost } from "./llm/integrations.js";
+import { claudeAgentModels } from "./llm/claudeAgentClient.js";
 import { normalizePromptMode } from "./llm/prompt-mode.js";
 import {
   buildMergedProfiles,
@@ -99,6 +100,37 @@ export async function readFileSvc(p: string) {
   if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
   if (!p) throw new Error("path required");
   return { path: normalizeWorkspaceRelPath(p), content: await readFile(p) };
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", bmp: "image/bmp", ico: "image/x-icon", svg: "image/svg+xml",
+  avif: "image/avif",
+};
+
+/** Official model list for the Claude Code (Agent SDK) provider. */
+export async function claudeCliModelsSvc() {
+  try {
+    return { models: await claudeAgentModels() };
+  } catch (err) {
+    return { models: [], error: (err as Error).message };
+  }
+}
+
+/** Read a (binary) file as base64 for the in-editor image viewer. */
+export async function readFileBase64Svc(p: string) {
+  if (!hasWorkspace()) throw new Error("No workspace opened — open a folder first.");
+  if (!p) throw new Error("path required");
+  const abs = safeJoin(p);
+  const ext = (p.split(".").pop() ?? "").toLowerCase();
+  const buf = await fsp.readFile(abs);
+  // Cap at ~25MB so a giant file can't blow the IPC payload.
+  if (buf.length > 25 * 1024 * 1024) throw new Error("File too large to preview (>25MB).");
+  return {
+    path: normalizeWorkspaceRelPath(p),
+    base64: buf.toString("base64"),
+    mime: IMAGE_MIME[ext] ?? "application/octet-stream",
+  };
 }
 
 export async function writeFileSvc(p: string, content: string) {
@@ -1174,6 +1206,25 @@ async function writeIndex(ws: string, list: SessionMeta[]) {
   await chatsAtomicWrite(chatsIndexPath(ws), JSON.stringify(list, null, 2));
 }
 
+// Serialize index.json read-modify-write per workspace. Without this, the
+// renderer's frequent autosaves (chatPut/chatPatch) interleave with each other
+// and with chatsList's prune as: A reads, B reads, A writes, B writes — B's
+// stale snapshot silently drops A's change (lost update / resurrected rows).
+const indexLocks = new Map<string, Promise<unknown>>();
+function withIndexLock<T>(ws: string, fn: () => Promise<T>): Promise<T> {
+  const prev = indexLocks.get(ws) ?? Promise.resolve();
+  // Run fn whether the previous holder resolved or rejected (a failed op must
+  // not wedge the queue), but propagate fn's own result to this caller.
+  const result = prev.then(fn, fn);
+  const tail = result.catch(() => {});
+  indexLocks.set(ws, tail);
+  // Best-effort cleanup so the map doesn't pin one entry per workspace forever.
+  void tail.then(() => {
+    if (indexLocks.get(ws) === tail) indexLocks.delete(ws);
+  });
+  return result;
+}
+
 function metaFromSession(s: ChatSession): SessionMeta {
   return {
     id: s.id,
@@ -1193,19 +1244,21 @@ function requireWs(ws: string): string {
 
 /** Drop index rows whose session file was removed (stale ghosts after failed deletes). */
 async function pruneChatIndex(ws: string): Promise<SessionMeta[]> {
-  const idx = await readIndex(ws);
-  const kept: SessionMeta[] = [];
-  let changed = false;
-  for (const meta of idx) {
-    try {
-      await fsp.access(chatsSessionPath(ws, meta.id));
-      kept.push(meta);
-    } catch {
-      changed = true;
+  return withIndexLock(ws, async () => {
+    const idx = await readIndex(ws);
+    const kept: SessionMeta[] = [];
+    let changed = false;
+    for (const meta of idx) {
+      try {
+        await fsp.access(chatsSessionPath(ws, meta.id));
+        kept.push(meta);
+      } catch {
+        changed = true;
+      }
     }
-  }
-  if (changed) await writeIndex(ws, kept);
-  return kept;
+    if (changed) await writeIndex(ws, kept);
+    return kept;
+  });
 }
 
 export async function chatsList(ws: string) {
@@ -1240,12 +1293,14 @@ export async function chatPut(ws: string, body: Partial<ChatSession> & { id: str
     pendingDiffs: Array.isArray(body.pendingDiffs) ? body.pendingDiffs : [],
   };
   await chatsAtomicWrite(chatsSessionPath(ws, id), JSON.stringify(session));
-  const idx = await readIndex(ws);
   const meta = metaFromSession(session);
-  const i = idx.findIndex((m) => m.id === id);
-  if (i >= 0) idx[i] = meta;
-  else idx.push(meta);
-  await writeIndex(ws, idx);
+  await withIndexLock(ws, async () => {
+    const idx = await readIndex(ws);
+    const i = idx.findIndex((m) => m.id === id);
+    if (i >= 0) idx[i] = meta;
+    else idx.push(meta);
+    await writeIndex(ws, idx);
+  });
   return { ok: true as const, meta };
 }
 
@@ -1267,12 +1322,14 @@ export async function chatPatch(ws: string, id: string, patch: Partial<ChatSessi
     updatedAt: Date.now(),
   };
   await chatsAtomicWrite(sp, JSON.stringify(next));
-  const idx = await readIndex(ws);
-  const i = idx.findIndex((m) => m.id === id);
-  if (i >= 0) {
-    idx[i] = metaFromSession(next);
-    await writeIndex(ws, idx);
-  }
+  await withIndexLock(ws, async () => {
+    const idx = await readIndex(ws);
+    const i = idx.findIndex((m) => m.id === id);
+    if (i >= 0) {
+      idx[i] = metaFromSession(next);
+      await writeIndex(ws, idx);
+    }
+  });
   return { ok: true as const, meta: metaFromSession(next) };
 }
 
@@ -1280,8 +1337,10 @@ export async function chatDelete(ws: string, id: string) {
   requireWs(ws);
   if (!isValidId(id)) throw new Error("invalid id");
   const sp = chatsSessionPath(ws, id);
-  const idx = (await readIndex(ws)).filter((m) => m.id !== id);
-  await writeIndex(ws, idx);
+  await withIndexLock(ws, async () => {
+    const idx = (await readIndex(ws)).filter((m) => m.id !== id);
+    await writeIndex(ws, idx);
+  });
   try {
     await fsp.unlink(sp);
   } catch (err) {
@@ -1366,9 +1425,10 @@ export async function chatsExport(ws: string) {
 export async function chatsImport(ws: string, sessionsIn: unknown[]) {
   requireWs(ws);
   const incoming = (Array.isArray(sessionsIn) ? sessionsIn : []) as ChatSession[];
+  let imported = 0;
+  await withIndexLock(ws, async () => {
   const idx = await readIndex(ws);
   const existing = new Set(idx.map((m) => m.id));
-  let imported = 0;
   for (const s of incoming) {
     if (!s || typeof s !== "object" || typeof s.title !== "string") continue;
     let id = typeof s.id === "string" && isValidId(s.id) ? s.id : "";
@@ -1394,6 +1454,7 @@ export async function chatsImport(ws: string, sessionsIn: unknown[]) {
     } catch { /* skip */ }
   }
   await writeIndex(ws, idx);
+  });
   return { ok: true as const, imported, total: incoming.length };
 }
 

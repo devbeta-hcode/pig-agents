@@ -66,6 +66,17 @@ function generateSessionId(): string {
   return `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Periodic sweep so TTL eviction happens without needing a new session. */
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+function ensureCleanupTimer(): void {
+  if (cleanupTimer) return;
+  cleanupTimer = setInterval(() => {
+    try { cleanupOldSessions(); } catch (err) { logger.warn("Session sweep error:", err); }
+  }, 5 * 60 * 1000);
+  // Don't keep the process alive just for the sweep.
+  cleanupTimer.unref?.();
+}
+
 /**
  * Clean up old completed sessions
  */
@@ -131,8 +142,11 @@ export function startSession(
   // Run agent in background (don't await)
   runAgentInBackground(state);
   
-  // Cleanup old sessions periodically
+  // Cleanup old sessions now, and keep a periodic sweep running so completed
+  // sessions (with their buffered events) are evicted after the TTL even when
+  // no new sessions are started.
   cleanupOldSessions();
+  ensureCleanupTimer();
   
   logger.info(`Started background session: ${id} for task: "${task.slice(0, 50)}..."`);
   

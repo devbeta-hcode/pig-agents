@@ -26,7 +26,8 @@ const FALLBACK_PROVIDER_OPTIONS = [
 ] as const;
 
 function isOpenAiShapedProvider(p: string): boolean {
-  return p !== "ollama";
+  // claude-cli runs via the Claude Agent SDK (no HTTP base URL / /v1/models probe).
+  return p !== "ollama" && p !== "claude-cli";
 }
 
 const PROMPT_MODE_OPTIONS = [
@@ -79,23 +80,27 @@ function SearchableModelSelect({
   onChange,
   placeholder,
   currentNotInList,
+  labelOf,
 }: {
   models: string[];
   value: string;
   onChange: (m: string) => void;
   placeholder?: string;
   currentNotInList?: boolean;
+  /** Optional friendly label for a model id (e.g. "opus[1m]" → "Opus 4.8"). */
+  labelOf?: (v: string) => string;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const lbl = (m: string) => (labelOf ? labelOf(m) : m);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return models;
     const q = search.toLowerCase();
-    return models.filter((m) => m.toLowerCase().includes(q));
-  }, [models, search]);
+    return models.filter((m) => m.toLowerCase().includes(q) || lbl(m).toLowerCase().includes(q));
+  }, [models, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!open) return;
@@ -125,7 +130,7 @@ function SearchableModelSelect({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="searchable-select-value">
-          {value || <span className="placeholder">{placeholder || "Select..."}</span>}
+          {value ? lbl(value) : <span className="placeholder">{placeholder || "Select..."}</span>}
         </span>
         <span className="searchable-select-arrow">
           <IconChevronDown size={16} />
@@ -157,7 +162,7 @@ function SearchableModelSelect({
                   className="searchable-select-item active"
                   onClick={() => { onChange(value); setOpen(false); setSearch(""); }}
                 >
-                  {value} <span className="current-tag">(current)</span>
+                  {lbl(value)} <span className="current-tag">(current)</span>
                 </button>
               )}
               {filtered.length === 0 && (
@@ -170,7 +175,7 @@ function SearchableModelSelect({
                   className={`searchable-select-item ${m === value ? "active" : ""}`}
                   onClick={() => { onChange(m); setOpen(false); setSearch(""); }}
                 >
-                  {m}
+                  {lbl(m)}
                   {m === value && <span className="check"><IconCheck size={12} /></span>}
                 </button>
               ))}
@@ -212,6 +217,9 @@ export function SettingsModal({ onClose }: Props) {
   /** OpenAI-compatible `/v1/models` probe (provider = local). */
   const [compat, setCompat] = useState<OllamaProbe>({ state: "idle", models: [] });
   const compatSeqRef = useRef(0);
+  const [claudeCli, setClaudeCli] = useState<OllamaProbe>({ state: "idle", models: [] });
+  const [claudeCliLabels, setClaudeCliLabels] = useState<Record<string, string>>({});
+  const claudeCliSeqRef = useRef(0);
   // Command-policy "YOLO" toggle — kept *separate* from the LLM settings
   // payload because policy lives in <workspace>/.pig-agents/policy.json
   // (per-workspace) rather than in the global app/.env file. We persist on
@@ -347,6 +355,25 @@ export function SettingsModal({ onClose }: Props) {
     }, 250);
     return () => window.clearTimeout(t);
   }, [s?.LLM_PROVIDER, s?.BASE_URL, modelListRefreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // claude-cli has no /v1/models — fetch the real list from the Agent SDK (supportedModels()).
+  useEffect(() => {
+    if (!s || s.LLM_PROVIDER !== "claude-cli") return;
+    const seq = ++claudeCliSeqRef.current;
+    setClaudeCli({ state: "loading", models: [] });
+    api.claudeCliModels()
+      .then((r) => {
+        if (claudeCliSeqRef.current !== seq) return;
+        if (r.models?.length) {
+          setClaudeCli({ state: "ok", models: r.models.map((m) => m.value) });
+          setClaudeCliLabels(Object.fromEntries(r.models.map((m) => [m.value, m.label])));
+        } else setClaudeCli({ state: "error", models: [], error: r.error || "no models returned" });
+      })
+      .catch((err) => {
+        if (claudeCliSeqRef.current !== seq) return;
+        setClaudeCli({ state: "error", models: [], error: (err as Error).message });
+      });
+  }, [s?.LLM_PROVIDER, modelListRefreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const providerOptions = useMemo(() => {
     const ids = s?.PROVIDER_IDS?.length ? s.PROVIDER_IDS : FALLBACK_PROVIDER_OPTIONS.map((o) => o.value);
@@ -495,19 +522,23 @@ export function SettingsModal({ onClose }: Props) {
   const isOllama = s.LLM_PROVIDER === "ollama";
   const isChatgpt = s.LLM_PROVIDER === "chatgpt";
   const isCursor = s.LLM_PROVIDER === "cursor";
+  const isClaudeCli = s.LLM_PROVIDER === "claude-cli";
   const openAiShaped = isOpenAiShapedProvider(s.LLM_PROVIDER);
   const integ = s.INTEGRATIONS?.[s.LLM_PROVIDER];
   const managedCloud =
     integ?.kind === "managed_cloud" ||
     (!s.INTEGRATIONS && s.LLM_PROVIDER !== "ollama" && s.LLM_PROVIDER !== "local");
-  const showBaseUrlInput = isOllama || !managedCloud || customBaseUrl;
+  // claude-cli is driven by the Claude Agent SDK — there is no HTTP base URL.
+  const showBaseUrlInput = (isOllama || !managedCloud || customBaseUrl) && !isClaudeCli;
 
   const modelSelectList =
     openAiShaped && compat.state === "ok" && compat.models.length > 0
       ? compat.models
       : isOllama && ollama.state === "ok" && ollama.models.length > 0
         ? ollama.models
-        : null;
+        : isClaudeCli && claudeCli.state === "ok" && claudeCli.models.length > 0
+          ? claudeCli.models
+          : null;
 
   const showSavedApiKeyMask =
     !isOllama &&
@@ -586,6 +617,17 @@ export function SettingsModal({ onClose }: Props) {
         </div>
       </div>
 
+      {isClaudeCli && (
+        <div className="settings-row">
+          <div className="hint" style={{ gridColumn: "1 / -1" }}>
+            <strong>Claude Code (Agent SDK)</strong> — runs Claude Code headlessly via <code>@anthropic-ai/claude-agent-sdk</code>.
+            No Base URL needed. Each call spawns the Claude Code CLI (slower than a direct API). Requires Claude Code
+            installed; leave the API key empty to use your <code>claude login</code> subscription. Model: pick
+            <code>sonnet</code>/<code>opus</code>/<code>haiku</code> or leave empty for the default.
+          </div>
+        </div>
+      )}
+
       {isCursor && (
         <div className="settings-row">
           <div className="hint" style={{ gridColumn: "1 / -1" }}>
@@ -622,12 +664,19 @@ export function SettingsModal({ onClose }: Props) {
             }}
             onPaste={() => setApiKeyTouched(true)}
             placeholder={
-              isChatgpt ? "sk-…" : isCursor ? "Cursor API key (Dashboard → API Keys)" : "API key for this Base URL (OpenAI, Google AI, OpenRouter, …)"
+              isChatgpt ? "sk-…"
+                : isCursor ? "Cursor API key (Dashboard → API Keys)"
+                  : isClaudeCli ? "Optional — Anthropic API key (or leave empty)"
+                    : "API key for this Base URL (OpenAI, Google AI, OpenRouter, …)"
             }
             visibilityToggle={!showSavedApiKeyMask}
           />
           <div className="hint">
-            {s.OPENAI_API_KEY_SET
+            {isClaudeCli ? (
+              s.OPENAI_API_KEY_SET
+                ? <><span style={{ color: "var(--good)" }}>● Using Anthropic API key</span> — billed per token. Clear it (Save empty won't clear — use the Settings file) to fall back to your subscription.</>
+                : <><span style={{ color: "var(--good)" }}>○ Empty → uses your local <code>claude login</code> subscription.</span> Paste an Anthropic key to bill via the API instead.</>
+            ) : s.OPENAI_API_KEY_SET
               ? <><span style={{ color: "var(--good)" }}>● Saved for this provider</span> — focus to paste a new key; Save with an empty field keeps the current key.</>
               : <><span style={{ color: "var(--warn)" }}>○ Not set</span> — required for most cloud APIs; local servers often accept any string.</>}
           </div>
@@ -688,6 +737,7 @@ export function SettingsModal({ onClose }: Props) {
               onChange={(m) => field("MODEL", m)}
               placeholder={isOllama ? "Pick an installed model" : "Pick a model"}
               currentNotInList={s.MODEL.trim() !== "" && !modelSelectList.includes(s.MODEL)}
+              labelOf={isClaudeCli ? (v) => claudeCliLabels[v] ?? v : undefined}
             />
           ) : (
             <Input
@@ -700,14 +750,14 @@ export function SettingsModal({ onClose }: Props) {
               }
             />
           )}
-          {(isOllama || openAiShaped) && (
+          {(isOllama || openAiShaped || isClaudeCli) && (
             <Button
               size="small"
-              disabled={saving || modelListLoading}
+              disabled={saving || modelListLoading || claudeCli.state === "loading"}
               onClick={() => void refreshModelList()}
               title="Re-fetch models from the server. If you just pasted an API key, it is saved first."
             >
-              {modelListLoading ? "Loading…" : "Load models"}
+              {modelListLoading || claudeCli.state === "loading" ? "Loading…" : "Load models"}
             </Button>
           )}
         </div>

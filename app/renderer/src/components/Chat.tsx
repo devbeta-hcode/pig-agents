@@ -33,6 +33,7 @@ import { ToolAccordionHeader, ToolOutput } from "./ToolOutput";
 import {
   actionMarkerCount,
   mergeWritePatchStreamBody,
+  peekStreamingIncompleteTool,
   peekStreamingCreatePathNth,
   peekStreamingToolArgBodyNth,
   peekStreamingToolPayloadNth,
@@ -300,6 +301,29 @@ function syntheticStreamingWriteAction(
   iteration: number,
 ): UIEvent | null {
   if (!isStreaming) return null;
+
+  // Live preview for the tool currently being streamed — for NON-write tools
+  // (read_file, run_command, search_code, …) which otherwise have no preview and
+  // only appear once the <tool> block finishes. Show the action row immediately
+  // (with a running state) as the model types it, naming the file/cmd.
+  const live = peekStreamingIncompleteTool(streamingText);
+  if (live && live.tool && !isWriteToolName(live.tool)) {
+    const t = live.tool;
+    const inputKey =
+      t === "run_command" ? "cmd"
+      : (t === "search_code" || t === "semantic_search") ? "query"
+      : t === "list_files" ? "dir"
+      : t === "glob" ? "pattern"
+      : (t === "find_symbol" || t === "find_references") ? "name"
+      : t === "browser_navigate" ? "url"
+      : "path";
+    const already = (traceSteps as UIEvent[]).some(
+      (s) => s.type === "action" && Number((s as UIEvent).iteration ?? 1) === iteration && String((s as UIEvent).tool) === t,
+    );
+    if (!already) {
+      return { type: "action", iteration, tool: t, input: { [inputKey]: live.target } } as unknown as UIEvent;
+    }
+  }
 
   const writeEmitted = writeActionCountForIteration(traceSteps, iteration);
 
@@ -616,8 +640,146 @@ function MentionChips({ text }: { text: string }) {
   );
 }
 
+const EMPTY_SELECT_EL_REFS: ReadonlyMap<string, BrowserElementRef> = new Map<string, BrowserElementRef>();
+
+type EditImage = { id: string; dataUrl: string; name: string };
+
+/** Cursor-style in-place editor — a real composer instance (ComposerEditable +
+ *  ComposerHeader removable attachments + footer) so editing == the chat box:
+ *  add/remove/paste images, then Enter re-runs (reverting code to the checkpoint). */
+function UserMessageEditor({
+  initialText, images, onSubmit, onCancel,
+}: {
+  initialText: string;
+  images?: EditImage[];
+  onSubmit: (text: string, images: EditImage[]) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(initialText);
+  const [editImages, setEditImages] = useState<EditImage[]>(
+    () => (images ?? []).filter((img) => !img.name.startsWith("select el ")),
+  );
+  const ref = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const submit = () => { const t = text.trim(); if (t) onSubmit(t, editImages); };
+
+  const addFile = (file: File) => {
+    if (!file.type.startsWith("image/") || file.size > 10 * 1024 * 1024) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setEditImages((prev) => [...prev, { id, dataUrl, name: file.name }]);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) onCancel();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onCancel();
+    }
+    // Defer one tick so the click that opened the editor doesn't close it.
+    const t = window.setTimeout(() => {
+      document.addEventListener("mousedown", onDoc);
+      document.addEventListener("keydown", onKey);
+    }, 0);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onCancel]);
+
+  return (
+    <div className="msg msg-user msg-user--editing">
+      <div
+        className="composer-lower composer-lower--inline"
+        ref={ref}
+        onPaste={(e) => {
+          const items = e.clipboardData?.items;
+          if (!items) return;
+          for (const it of items) {
+            if (it.type.startsWith("image/")) {
+              e.preventDefault();
+              const f = it.getAsFile();
+              if (f) addFile(f);
+              return;
+            }
+          }
+        }}
+      >
+        <div className="composer-input">
+          <ComposerHeader
+            mentions={[]}
+            images={editImages}
+            running={false}
+            awaitingStop={false}
+            onStop={() => { /* not running in edit mode */ }}
+            onRemoveMention={() => { /* no mentions in edit mode */ }}
+            onRemoveImage={(id) => setEditImages((prev) => prev.filter((im) => im.id !== id))}
+          />
+          <ComposerEditable
+            value={text}
+            valueVersion={1}
+            selectElRefs={EMPTY_SELECT_EL_REFS}
+            onChange={setText}
+            onSubmit={submit}
+            placeholder="Edit message and re-run…"
+          />
+        </div>
+        <div className="composer-footer">
+          <div className="composer-footer-left">
+            <button
+              type="button"
+              className="composer-icon-btn image-picker"
+              onClick={() => fileRef.current?.click()}
+              title="Attach image (or paste with Ctrl+V)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <polyline points="21 15 16 10 5 21" />
+              </svg>
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const fs = e.target.files;
+                if (fs) for (const f of fs) addFile(f);
+                e.target.value = "";
+              }}
+            />
+            <span className="msg-edit-hint">Enter to send · Esc to cancel</span>
+          </div>
+          <div className="composer-footer-right">
+            <button type="button" className="composer-cancel-btn" onClick={onCancel}>Cancel</button>
+            <button
+              type="button"
+              className="composer-send"
+              onClick={submit}
+              disabled={!text.trim()}
+              title="Send (Enter)"
+              aria-label="Send"
+            >
+              <span className="send-arrow">↑</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UserMessageBase({
   task, selectElMeta, mode, images, onCopy, onRegenerate, canRegenerate,
+  isEditing, canEdit, onStartEdit, onCancelEdit, onSubmitEdit,
 }: {
   task: string;
   selectElMeta?: ChatSelectElMeta[];
@@ -626,14 +788,35 @@ function UserMessageBase({
   onCopy: () => void;
   onRegenerate: () => void;
   canRegenerate: boolean;
+  isEditing?: boolean;
+  canEdit?: boolean;
+  onStartEdit?: () => void;
+  onCancelEdit?: () => void;
+  onSubmitEdit?: (text: string, images: { id: string; dataUrl: string; name: string }[]) => void;
 }) {
   const displayText = stripMentions(task);
   const visibleImages = images?.filter((img) => !img.name.startsWith("select el "));
   const hasInline =
     displayText.trim().length > 0 || extractSelectElKeys(task).length > 0;
+
+  if (isEditing && onSubmitEdit && onCancelEdit) {
+    return (
+      <UserMessageEditor
+        initialText={task}
+        images={images}
+        onSubmit={onSubmitEdit}
+        onCancel={onCancelEdit}
+      />
+    );
+  }
+
   return (
     <div className="msg msg-user">
-      <div className="msg-bubble">
+      <div
+        className={`msg-bubble ${canEdit && onStartEdit ? "msg-bubble--editable" : ""}`}
+        onClick={canEdit && onStartEdit ? () => onStartEdit() : undefined}
+        title={canEdit && onStartEdit ? "Click to edit & re-run" : undefined}
+      >
         <MentionChips text={task} />
         {hasInline && (
           <div className="msg-text msg-text--with-chips">
@@ -665,7 +848,9 @@ const UserMessage = memo(UserMessageBase, (a, b) =>
   a.selectElMeta === b.selectElMeta &&
   a.mode === b.mode &&
   a.images === b.images &&
-  a.canRegenerate === b.canRegenerate,
+  a.canRegenerate === b.canRegenerate &&
+  a.isEditing === b.isEditing &&
+  a.canEdit === b.canEdit,
 );
 
 function thoughtCollapsedPreview(raw: string, maxChars = 100): string {
@@ -793,6 +978,21 @@ function ActionGroupFold({
         <span className="tool-icon">{meta.icon}</span>
         <span className="tool-action">{meta.verb}</span>
         <span className="assistant-action-group-count">{count} {meta.noun}</span>
+        {isActive && (
+          <span className="tool-status tool-status--streaming">
+            {t === "read_file"
+              ? "reading…"
+              : t === "write_patch" || t === "create_file"
+                ? "writing…"
+                : t === "run_command"
+                  ? "running…"
+                  : t === "search_code" || t === "semantic_search"
+                    ? "searching…"
+                    : t === "list_files"
+                      ? "listing…"
+                      : "working…"}
+          </span>
+        )}
       </summary>
       <div className="assistant-action-group-body">
         {Children.map(children, (child) => {
@@ -1144,7 +1344,7 @@ function AssistantMessageBase({
   onRegenerate: () => void;
   onRetry: () => void;
   canRegenerate: boolean;
-  onRestore: (cp: Checkpoint) => void;
+  onRestore: (cp: Checkpoint, turnId: string) => void;
   /** Reasoning trace tokens saved per iteration before THOUGHT:. */
   settledReasoningMap?: Map<number, string>;
   /** THOUGHT: tokens saved per iteration when the parsed event has not rendered before ACTION. */
@@ -1876,7 +2076,7 @@ function AssistantMessageBase({
             {checkpoint && (
               <button
                 className="msg-restore"
-                onClick={() => onRestore(checkpoint)}
+                onClick={() => onRestore(checkpoint, turn.id)}
                 title={`Restore the workspace to its state before this run (snapshot taken at ${new Date(checkpoint.createdAt).toLocaleTimeString()}).\nA fresh "undo my undo" checkpoint is created first, so this is reversible.`}
               >
                 <IconRotateCcw size={12} />Restore
@@ -2129,6 +2329,8 @@ export function Chat({
   const [dragOver, setDragOver] = useState(false);
   // Attached images (base64 data URLs)
   const [attachedImages, setAttachedImages] = useState<{ id: string; dataUrl: string; name: string }[]>([]);
+  // Cursor-style inline edit: which past user turn is currently being edited.
+  const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   // FIFO queue of pending command approvals. We display them one at a time
   // (the first in the queue is the active one) so the user is never asked
@@ -2842,18 +3044,21 @@ export function Chat({
     onUpdate(next);
   }
 
-  const runTask = useCallback(async (t: string) => {
-    if (!t.trim() && attachedImages.length === 0) return;
+  const runTask = useCallback(async (t: string, imagesOverride?: { id: string; dataUrl: string; name: string }[]) => {
+    if (!t.trim() && attachedImages.length === 0 && !(imagesOverride && imagesOverride.length)) return;
     if (running) return;
     acceptingSelectElPicksRef.current = false;
     void pig.browserInspectStop().catch(() => { /* Browser may not be open; non-fatal. */ });
-    
-    // Capture current images before clearing
+
+    // Capture current images before clearing. On re-run we reuse the turn's own
+    // captured images (the composer is empty), so attachments survive a re-run.
     const refs = browserElementRefsRef.current;
-    const images = [
-      ...attachedImages.slice(),
-      ...collectSelectElImages(t, refs),
-    ];
+    const images = imagesOverride
+      ? imagesOverride.slice()
+      : [
+          ...attachedImages.slice(),
+          ...collectSelectElImages(t, refs),
+        ];
 
     const base = syncSessionRef();
     const priorTurns = base.turns.slice();
@@ -3061,25 +3266,40 @@ export function Chat({
   // Restore the workspace to a checkpoint. Asks for confirmation since this
   // overwrites the working tree — but emphasises it's reversible because we
   // automatically take a fresh checkpoint of the current state first.
-  async function restoreToCheckpoint(cp: Checkpoint) {
+  async function restoreToCheckpoint(cp: Checkpoint, turnId?: string) {
     const runFiles = cp.backupType === "run-files";
+    const cur = syncSessionRef();
+    const ownerIdx = turnId ? cur.turns.findIndex((x) => x.id === turnId) : -1;
+    const removeCount = ownerIdx === -1 ? 0 : cur.turns.length - ownerIdx;
     const ok = await dlg.confirm({
       title: "Restore checkpoint",
-      message: runFiles
-        ? `Undo agent changes from this run?\n\n` +
-          `Only files the agent edited in this chat turn will be reverted ` +
-          `(snapshot from ${new Date(cp.createdAt).toLocaleString()}).`
-        : `Restore workspace to "${cp.label}"?\n\n` +
-          `This rewinds the working tree to the snapshot taken ` +
-          `${new Date(cp.createdAt).toLocaleString()}. Untracked files added since ` +
-          `then will be removed; ignored files (node_modules etc.) are kept.\n\n` +
-          `A fresh "before restore" checkpoint is created first, so this is reversible.`,
+      message:
+        (runFiles
+          ? `Undo agent changes from this run?\n\n` +
+            `Only files the agent edited in this chat turn will be reverted ` +
+            `(snapshot from ${new Date(cp.createdAt).toLocaleString()}).`
+          : `Restore workspace to "${cp.label}"?\n\n` +
+            `This rewinds the working tree to the snapshot taken ` +
+            `${new Date(cp.createdAt).toLocaleString()}. Untracked files added since ` +
+            `then will be removed; ignored files (node_modules etc.) are kept.`) +
+        (removeCount > 0
+          ? `\n\nThe chat is rolled back too: ${removeCount} message(s) from this turn on are removed.`
+          : ``) +
+        `\n\nA fresh "before restore" checkpoint is created first, so this is reversible.`,
       confirmLabel: "Restore",
       danger: true,
     });
     if (!ok) return;
     try {
       await api.restoreCheckpoint(cp);
+      if (ownerIdx !== -1) {
+        // Roll the chat back to before this turn so logs match the restored code.
+        patchSession((s) => {
+          const i = s.turns.findIndex((x) => x.id === turnId);
+          const trimmed = i === -1 ? s.turns : s.turns.slice(0, i);
+          return { ...s, turns: trimmed, updatedAt: Date.now() };
+        });
+      }
       onAfterRun(); // bump refreshKey so file tree + open editors reload
     } catch (err) {
       void dlg.alert(`Restore failed: ${(err as Error).message}`);
@@ -3128,26 +3348,66 @@ export function Chat({
     patchSession((s) => ({ ...s, turns: s.turns.slice(0, -1), updatedAt: Date.now() }));
   }
 
-  async function regenerate(turn: ChatTurn) {
+  /** The pre-run snapshot captured for a turn, if any (used to revert code on re-run). */
+  function getTurnCheckpoint(turn: ChatTurn): Checkpoint | undefined {
+    const ev = (turn.events as UIEvent[]).find(
+      (e) => e.type === "checkpoint" && (e as { checkpoint?: Checkpoint }).checkpoint,
+    );
+    return (ev as { checkpoint?: Checkpoint } | undefined)?.checkpoint;
+  }
+
+  /**
+   * Shared re-run core. Reverts the workspace to the turn's pre-run checkpoint
+   * (so re-running truly goes back to that point), trims the chat to this turn,
+   * then re-runs with the given text + the turn's images.
+   */
+  async function rerunFromTurn(turn: ChatTurn, text: string, images?: { id: string; dataUrl: string; name: string }[]) {
     if (running) return;
+    const t = text.trim();
+    if (!t) return;
     const cur = syncSessionRef();
     const idx = cur.turns.findIndex((x) => x.id === turn.id);
     const laterCount = idx === -1 ? 0 : cur.turns.length - idx - 1;
-    if (laterCount > 0) {
+    const cp = getTurnCheckpoint(turn);
+    if (laterCount > 0 || cp) {
       const ok = await dlg.confirm({
-        title: "Regenerate this message?",
+        title: "Re-run this message?",
         message:
-          `This removes ${laterCount} later message(s) from the chat and re-runs this prompt.\n\n` +
-          "Workspace files are not reverted — use Restore on a turn if you need to undo file changes.",
+          (laterCount > 0 ? `This removes ${laterCount} later message(s) from the chat.\n\n` : "") +
+          (cp
+            ? "Workspace files are reverted to the snapshot taken before this run, then the prompt re-runs. " +
+              "A fresh \"before re-run\" checkpoint is created first, so this is reversible."
+            : "No checkpoint exists for this turn, so workspace files are not reverted."),
+        confirmLabel: "Re-run",
+        danger: !!cp,
       });
       if (!ok) return;
     }
+    if (cp) {
+      try {
+        await api.restoreCheckpoint(cp);
+        onAfterRun(); // bump refreshKey so the file tree + open editors reload
+      } catch (err) {
+        void dlg.alert(`Code revert failed: ${(err as Error).message}`);
+        return;
+      }
+    }
+    setEditingTurnId(null);
     patchSession((s) => {
       const i = s.turns.findIndex((x) => x.id === turn.id);
       const trimmed = i === -1 ? s.turns : s.turns.slice(0, i);
       return { ...s, turns: trimmed, updatedAt: Date.now() };
     });
-    void runTask(turn.task);
+    void runTask(t, images);
+  }
+
+  async function regenerate(turn: ChatTurn) {
+    await rerunFromTurn(turn, turn.task, turn.images);
+  }
+
+  // Cursor-style: re-run a past user turn with edited text + edited images.
+  async function editAndRerun(turn: ChatTurn, newText: string, newImages?: { id: string; dataUrl: string; name: string }[]) {
+    await rerunFromTurn(turn, newText, newImages ?? turn.images);
   }
 
   function copyText(text: string) {
@@ -3432,6 +3692,11 @@ export function Chat({
                     onCopy={() => copyText(turn.task)}
                     onRegenerate={() => regenerate(turn)}
                     canRegenerate={!running}
+                    isEditing={editingTurnId === turn.id}
+                    canEdit={!running}
+                    onStartEdit={() => setEditingTurnId(turn.id)}
+                    onCancelEdit={() => setEditingTurnId((cur) => (cur === turn.id ? null : cur))}
+                    onSubmitEdit={(text, imgs) => void editAndRerun(turn, text, imgs)}
                   />
                   <AssistantMessage
                     turn={turn}
@@ -3722,19 +3987,26 @@ function ComposerHeader({
   );
 }
 
+/** Friendly labels for claude-cli model ids (e.g. "opus[1m]" → "Opus 4.8"), populated on fetch. */
+const claudeCliLabelMap = new Map<string, string>();
+export function claudeCliLabel(value: string): string {
+  return claudeCliLabelMap.get(value) ?? value;
+}
+
 async function fetchModelListForSettings(s: SettingsPayload): Promise<string[]> {
   try {
-    const openAiShaped = s.LLM_PROVIDER !== "ollama";
-    if (openAiShaped) {
-      const base = s.BASE_URL?.trim() || s.INTEGRATIONS?.[s.LLM_PROVIDER]?.defaultBaseUrl;
-      const r = await api.openaiCompatibleModels(base || undefined);
-      return r.ok && r.models ? r.models : [];
+    if (s.LLM_PROVIDER === "claude-cli") {
+      const r = await api.claudeCliModels();
+      for (const m of r.models ?? []) claudeCliLabelMap.set(m.value, m.label);
+      return r.models?.map((m) => m.value) ?? [];
     }
     if (s.LLM_PROVIDER === "ollama") {
       const r = await api.ollamaModels(s.BASE_URL || undefined);
       return r.ok && r.models ? r.models : [];
     }
-    return [];
+    const base = s.BASE_URL?.trim() || s.INTEGRATIONS?.[s.LLM_PROVIDER]?.defaultBaseUrl;
+    const r = await api.openaiCompatibleModels(base || undefined);
+    return r.ok && r.models ? r.models : [];
   } catch {
     return [];
   }
@@ -3784,7 +4056,7 @@ function ComposerModelMenu({
   const filtered = useMemo(() => {
     if (!search.trim()) return list;
     const q = search.toLowerCase();
-    return list.filter((m) => m.toLowerCase().includes(q));
+    return list.filter((m) => m.toLowerCase().includes(q) || claudeCliLabel(m).toLowerCase().includes(q));
   }, [list, search]);
 
   useEffect(() => {
@@ -3828,6 +4100,16 @@ function ComposerModelMenu({
     return () => { cancelled = true; };
   }, [open, settings]);
 
+  // claude-cli ids ("sonnet") only become friendly labels ("Sonnet 4.6") once the
+  // model list is fetched. Warm it once on mount so the pill shows the real label
+  // at startup instead of the raw id; setList() forces the re-render that picks it up.
+  useEffect(() => {
+    if (!settings || settings.LLM_PROVIDER !== "claude-cli") return;
+    let cancelled = false;
+    void fetchModelListCached(settings).then((m) => { if (!cancelled) setList(m); });
+    return () => { cancelled = true; };
+  }, [settings?.LLM_PROVIDER]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function pick(m: string): void {
     if (!onModelChange) return;
     // Close the menu immediately and fire-and-forget the change. Awaiting
@@ -3838,7 +4120,7 @@ function ComposerModelMenu({
     void Promise.resolve(onModelChange(m)).catch(() => { /* upstream surfaces errors */ });
   }
 
-  const label = currentLabel || settings?.MODEL || "Model";
+  const label = claudeCliLabel(currentLabel || settings?.MODEL || "Model");
 
   if (!settings) {
     return (
@@ -3898,7 +4180,7 @@ function ComposerModelMenu({
                 title={m}
                 onClick={() => void pick(m)}
               >
-                <span className="mm-title model-menu-id">{m}</span>
+                <span className="mm-title model-menu-id">{claudeCliLabel(m)}</span>
                 {m === settings.MODEL && <span className="mm-check"><IconCheck size={13} /></span>}
               </button>
             ))}

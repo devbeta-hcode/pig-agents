@@ -24,7 +24,16 @@ function parseToolBody(body: string): Record<string, unknown> {
   while ((pm = paramRe.exec(body)) !== null) {
     const key = pm[1].trim();
     const rawVal = pm[2] !== undefined ? pm[2] : "";
-    input[key] = coerceToolParamValue(key, rawVal);
+    const val = coerceToolParamValue(key, rawVal);
+    // Accumulate repeated same-name tags (newline-joined) instead of last-wins,
+    // so a list emitted as multiple <task>…</task> children survives as one
+    // multi-line value (e.g. spawn_subagents). Inert for every existing tool —
+    // none repeats a tag — and only kicks in when a string tag actually repeats.
+    if (key in input && typeof input[key] === "string" && typeof val === "string") {
+      input[key] = `${input[key] as string}\n${val}`;
+    } else {
+      input[key] = val;
+    }
   }
   return input;
 }

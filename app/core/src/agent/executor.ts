@@ -80,6 +80,13 @@ export interface ToolContext {
   readCache?: Map<string, string>;
   /** Paths successfully written this run — blocks duplicate create_file. */
   writtenPaths?: Set<string>;
+  /**
+   * When set, only these tool names may execute; anything else returns a
+   * not-available outcome. Used to confine read-only sub-agents to research
+   * tools (no write/command/browser/web) so a fan-out can run in parallel
+   * without diff races, approval-modal storms, or browser-singleton contention.
+   */
+  allowedTools?: Set<string>;
 }
 
 /** Drop all cached read_file slices for a path (bare key + start_line variants). */
@@ -155,7 +162,7 @@ async function gateWebApproval(
   ctx.emit?.({ type: "policy_ask", askId, cmd: initial, suggestedAllow: initial, kind });
   let ans: ApprovalAnswer;
   try {
-    ans = await waitForApproval(askId, initial, { runId: ctx.runId });
+    ans = await waitForApproval(askId, initial, { runId: ctx.runId, signal: ctx.signal });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: initial, kind, reason: msg });
@@ -212,7 +219,7 @@ async function gateDeleteApproval(
   });
   let ans: ApprovalAnswer;
   try {
-    ans = await waitForApproval(askId, relPath, { runId: ctx.runId });
+    ans = await waitForApproval(askId, relPath, { runId: ctx.runId, signal: ctx.signal });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: relPath, kind: "delete_path", reason: msg });
@@ -255,6 +262,15 @@ export async function executeTool(
   ctx: ToolContext = {},
 ): Promise<ToolOutcome> {
   try {
+    if (ctx.allowedTools && !ctx.allowedTools.has(type)) {
+      return {
+        ok: false,
+        summary:
+          `Tool "${type}" is not available to this sub-agent (read-only mode). ` +
+          `Available: ${[...ctx.allowedTools].join(", ")}. ` +
+          `Report findings in FINAL — do not attempt to write, run commands, or browse.`,
+      };
+    }
     switch (type) {
       case "read_file": {
         const p = String(input.path || "");
@@ -448,7 +464,7 @@ export async function executeTool(
           });
           let ans: ApprovalAnswer;
           try {
-            ans = await waitForApproval(askId, requestedCmd, { runId: ctx.runId });
+            ans = await waitForApproval(askId, requestedCmd, { runId: ctx.runId, signal: ctx.signal });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             ctx.emit?.({ type: "policy_decision", decision: "deny", cmd: requestedCmd, reason: msg });
@@ -937,6 +953,53 @@ export async function executeTool(
         } catch (err) {
           return { ok: false, summary: `browser_eval error: ${(err as Error).message}` };
         }
+      }
+      case "spawn_subagents": {
+        // Fan out into read-only research sub-agents that run in parallel.
+        // Dynamic import keeps the executor⇄orchestrator⇄runner cycle lazy.
+        // Accept the canonical <subtasks> (one per line) and the variant where
+        // the model emits repeated <task> children (parser joins them with \n).
+        const rawTasks = String(input.subtasks ?? input.tasks ?? input.tasks_list ?? input.task ?? "");
+        const tasks = rawTasks
+          .split(/\r?\n/)
+          .map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)]|TASK:\s*)\s*/i, "").trim())
+          .filter((l) => l.length > 0);
+        if (tasks.length === 0) {
+          return {
+            ok: false,
+            summary:
+              "spawn_subagents: provide one research subtask per line inside <subtasks>. " +
+              "Each line becomes one read-only researcher.",
+          };
+        }
+        const maxSub = Math.max(1, Math.min(Number(process.env.MAX_SUBAGENTS_PER_CALL || 6), 8));
+        const capped = tasks.length > maxSub;
+        const chosen = capped ? tasks.slice(0, maxSub) : tasks;
+        const specs = chosen.map((t, i) => ({ id: String(i + 1), task: t }));
+
+        const { runSubAgents, aggregateSubAgentResults } = await import("./orchestrator.js");
+        const results = await runSubAgents(specs, {
+          parentRunId: ctx.runId ?? "run",
+          workspace: getWorkspace(),
+          signal: ctx.signal,
+          // Stamp the parent iteration so the renderer places the "Parallel work"
+          // card at the right point in the timeline.
+          emit: (e) =>
+            ctx.emit?.({ ...e, iteration: (e as { iteration?: number }).iteration ?? ctx.iteration }),
+        });
+
+        const okCount = results.filter((r) => r.ok).length;
+        const note = capped
+          ? `\n\n[note] ${tasks.length - maxSub} extra subtask(s) dropped (cap ${maxSub}). Re-spawn if still needed.`
+          : "";
+        return {
+          ok: okCount > 0,
+          summary:
+            `Ran ${results.length} parallel sub-agent(s) — ${okCount} ok, ${results.length - okCount} failed:\n\n` +
+            aggregateSubAgentResults(results) +
+            note,
+          data: results,
+        };
       }
       default:
         return { ok: false, summary: `Unknown tool: ${type}` };

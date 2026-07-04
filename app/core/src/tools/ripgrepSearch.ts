@@ -56,6 +56,10 @@ export async function ripgrepSearch(query: string, maxHits = 24): Promise<CodeSe
     "!.git",
     "-g",
     "!dist",
+    // End-of-options: without this, a query beginning with `-` (e.g. `--pre`)
+    // is parsed by rg as a flag — `-F` only makes the pattern literal, it does
+    // not stop flag parsing of the positional arg.
+    "--",
     q,
   ];
   try {

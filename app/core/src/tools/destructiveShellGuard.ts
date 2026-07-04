@@ -14,12 +14,36 @@ const RECURSIVE_DELETE_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\bdel\s+\/s\b/i, label: "del /s" },
   { re: /\berase\s+\/s\b/i, label: "erase /s" },
   { re: /\bRemove-Item\b[^\n;|&]*-Recurse/i, label: "Remove-Item -Recurse" },
+  // Recursive delete piped from Get-ChildItem -Recurse into Remove-Item (the
+  // -Recurse sits on the upstream cmdlet, so the pattern above misses it).
+  { re: /\bGet-ChildItem\b[^\n]*-Recurse\b[^\n]*\|[^\n]*\bRemove-Item\b/i, label: "Get-ChildItem -Recurse | Remove-Item" },
   { re: /\brm\s+-[a-z]*f[a-z]*\b/i, label: "rm -rf" },
   { re: /\brm\s+-[a-z]*r[a-z]*\b/i, label: "rm -r" },
+  // GNU long options — `rm --recursive` / `rm --force` are not single-dash
+  // clusters, so they evade the patterns above.
+  { re: /\brm\b[^\n;|&]*\s--recursive\b/i, label: "rm --recursive" },
+  { re: /\brm\b[^\n;|&]*\s--dir\b/i, label: "rm --dir" },
   { re: /\bformat\s+[A-Za-z]:\b/i, label: "format drive" },
   { re: /\bdiskpart\b/i, label: "diskpart" },
   { re: /\bcipher\s+\/w\b/i, label: "cipher /w" },
   { re: /\b(?:rd|rmdir|del)\s+[A-Za-z]:[\\/]/i, label: "recursive delete on drive path" },
+];
+
+/**
+ * System-destructive commands that aren't recursive deletes but can still
+ * wreck the machine. Previously only `command.ts:runCommand` checked these;
+ * the agent path runs through `runSmartCommand`, which only calls this guard —
+ * so without them, `shutdown` / `mkfs` / `dd if=` / a fork bomb were unblocked
+ * for the agent. Centralised here so BOTH command paths are covered.
+ */
+const SYSTEM_DESTRUCTIVE_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /\brm\s+-rf\s+\/(?:\s|$)/i, label: "rm -rf /" },
+  { re: /\brm\s+-rf\s+~/i, label: "rm -rf ~" },
+  { re: /\bmkfs\b/i, label: "mkfs" },
+  { re: /\bdd\s+if=/i, label: "dd if=" },
+  { re: /:\s*\(\)\s*\{.*:\|.*&\s*\}/, label: "fork bomb" },
+  { re: /\bshutdown\b/i, label: "shutdown" },
+  { re: /\breboot\b/i, label: "reboot" },
 ];
 
 /** Drive root or bare `D:` targets inside a delete command. */
@@ -32,6 +56,12 @@ export function rejectDestructiveShellCommand(cmd: string): string | null {
 
   const outside = rejectShellPathsOutsideWorkspace(trimmed, getWorkspace());
   if (outside) return outside;
+
+  for (const { re, label } of SYSTEM_DESTRUCTIVE_PATTERNS) {
+    if (re.test(trimmed)) {
+      return `Blocked dangerous shell command (${label}). This command can damage the system and is not allowed.`;
+    }
+  }
 
   for (const { re, label } of RECURSIVE_DELETE_PATTERNS) {
     if (re.test(trimmed)) {

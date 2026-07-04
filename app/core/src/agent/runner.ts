@@ -146,6 +146,14 @@ export interface AgentRunOptions {
   chatId?: string;
   /** Attached images (base64 data URLs) */
   images?: { dataUrl: string; name: string }[];
+  /** Confine tool execution to this set (read-only sub-agents). */
+  allowedTools?: Set<string>;
+  /** Override the iteration ceiling (sub-agents run shorter than the default). */
+  maxIterations?: number;
+  /** Skip the pre-run checkpoint (pointless for read-only sub-agents). */
+  skipCheckpoint?: boolean;
+  /** Extra text appended to the system prompt (e.g. the sub-agent role brief). */
+  systemHint?: string;
 }
 
 export interface AgentRunResult {
@@ -411,7 +419,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
   const mode: AgentMode = opts.mode === "ask" ? "ask" : "agent";
   // 50 iterations covers most complex multi-file projects. User can raise further in Settings.
-  const maxIter = Math.max(1, Number(process.env.MAX_ITERATIONS || 50));
+  const maxIter = Math.max(1, opts.maxIterations ?? Number(process.env.MAX_ITERATIONS || 50));
   const maxFiles = Math.max(1, Number(process.env.MAX_CONTEXT_FILES || 3));
   const maxActionsPerIter = readMaxActionsPerIteration();
   emit(activityEvent("index", followUp ? "Refreshing context…" : "Indexing workspace…"));
@@ -551,19 +559,22 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // Uses git-based checkpoints if available, otherwise file-based backup.
   const runId = opts.runId ?? `run-${Date.now().toString(36)}`;
   let preRunCheckpoint: Checkpoint | null = null;
-  try {
-    preRunCheckpoint = await createCheckpoint(`Before: ${opts.task.slice(0, 80)}`, {
-      runId,
-      chatId: opts.chatId,
-      kind: "auto-pre-run",
-    });
-    if (preRunCheckpoint) {
-      emit({ type: "checkpoint", checkpoint: preRunCheckpoint });
-    } else {
-      emit({ type: "log", level: "warn", message: "Unable to create checkpoint." });
+  // Read-only sub-agents never touch disk, so there is nothing to snapshot.
+  if (!opts.skipCheckpoint) {
+    try {
+      preRunCheckpoint = await createCheckpoint(`Before: ${opts.task.slice(0, 80)}`, {
+        runId,
+        chatId: opts.chatId,
+        kind: "auto-pre-run",
+      });
+      if (preRunCheckpoint) {
+        emit({ type: "checkpoint", checkpoint: preRunCheckpoint });
+      } else {
+        emit({ type: "log", level: "warn", message: "Unable to create checkpoint." });
+      }
+    } catch (err) {
+      emit({ type: "log", level: "warn", message: `Checkpoint failed: ${(err as Error).message}` });
     }
-  } catch (err) {
-    emit({ type: "log", level: "warn", message: `Checkpoint failed: ${(err as Error).message}` });
   }
 
   /**
@@ -612,6 +623,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     /** Cache file reads for the duration of this run to avoid duplicate token waste. */
     readCache: new Map(),
     writtenPaths: new Set(),
+    /** Read-only tool whitelist for sub-agents (undefined = full tool access). */
+    allowedTools: opts.allowedTools,
   };
 
   const promptMode = normalizePromptMode(process.env.PROMPT_MODE);
@@ -651,6 +664,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         extraHint:
           (i === 1 ? AGENT_RUNTIME_USER_PREFIX : "") + taskShapeContextHint(opts.task, wsRoot),
       });
+    }
+
+    if (opts.systemHint) {
+      systemPrompt += `\n\n${opts.systemHint}`;
     }
 
     if (i === 1 && manifestExcerpt) {
@@ -952,8 +969,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
           const list = [...earlyScheduled.values()];
           const allOk = list.every((e) => e.outcome?.ok !== false);
           const summary = list.length === 1
-            ? list[0].outcome!.summary
-            : list.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
+            ? (list[0].outcome?.summary ?? "(no result)")
+            : list.map((e) => `[${e.type}]: ${e.outcome?.summary ?? "(no result)"}`).join("\n\n");
           // Skip diffs already streamed per-tool to prevent the sidebar from
           // showing duplicate hunks for the same file.
           const ds = list.flatMap((e) => (e.streamedObservation ? [] : e.outcome?.diffs ?? []));
@@ -1069,8 +1086,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         const allOkHist = listForHist.every((e) => e.outcome?.ok !== false);
         const summaryHist =
           listForHist.length === 1
-            ? listForHist[0].outcome!.summary
-            : listForHist.map((e) => `[${e.type}]: ${e.outcome!.summary}`).join("\n\n");
+            ? (listForHist[0].outcome?.summary ?? "(no result)")
+            : listForHist.map((e) => `[${e.type}]: ${e.outcome?.summary ?? "(no result)"}`).join("\n\n");
         history.push({ role: "user", content: `OBSERVATION (iter ${i}, ok=${allOkHist}):\n${summaryHist}` });
       }
       emit({ type: "final", result: finalResult });

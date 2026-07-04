@@ -41,6 +41,35 @@ plus callback-based streaming primitives (`runAgent`, `subscribeToSession`,
 `subscribeAgentCommands`, `workspaceWatcher`). There is **no** Express, `ws`, or
 Playwright anywhere in the product path.
 
+## LLM providers
+
+`app/core/src/llm/client.ts` exposes `chat()` / `chatStream()` behind a provider
+abstraction selected by `LLM_PROVIDER`:
+
+- **OpenAI-compatible** (default) — ChatGPT, Gemini, OpenRouter, Claude API,
+  DeepSeek, Groq, Mistral, … over `/v1/chat/completions`.
+- **Cursor** — Cloud Agents API (`cursorClient.ts`).
+- **Ollama** — native `/api/chat`.
+- **Claude Code (SDK)** — `claudeAgentClient.ts` drives Claude Code headlessly
+  through `@anthropic-ai/claude-agent-sdk` `query()` (its own tools disabled,
+  single turn, Pig Agents' system prompt → a plain text generator). Auth is an
+  Anthropic API key if configured, else the machine's `claude login`
+  subscription. The model list is fetched live via the SDK's `supportedModels()`
+  (labels like *Sonnet 4.6*); images are forwarded as base64 content blocks.
+
+Provider metadata lives in `llm/integrations.ts`, per-provider profiles in
+`llm/profiles.ts`; the Settings modal builds the provider dropdown + model
+picker from those.
+
+## Renderer modules (selected)
+
+| Module | Purpose |
+|--------|---------|
+| `components/EditorMedia.tsx` | In-editor **image viewer** + **Markdown Preview ⇆ Source** toggle; routes by extension in the editor pane (else Monaco). |
+| `lib/formatProvider.ts` | Registers Prettier (offline `prettier/standalone`) as Monaco's Format Document provider. |
+| `components/Chat.tsx` (`UserMessageEditor`) | Cursor-style inline message edit — a real composer instance (`ComposerEditable` + `ComposerHeader`) with add/remove/paste images; submit re-runs after reverting to the turn's checkpoint. |
+| `utils/watcher.ts` (core) | Recursive FS watcher (Windows/macOS native recursive) so the Explorer updates in real time. |
+
 ## Data stores
 
 | Location | Content |

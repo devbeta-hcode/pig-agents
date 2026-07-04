@@ -22,6 +22,7 @@ export const LLM_PROVIDER_IDS: LlmProviderId[] = [
   "perplexity",
   "openroute",
   "cursor",
+  "claude-cli",
   "ollama",
   "local",
 ];
@@ -51,6 +52,7 @@ export const DEFAULT_PROFILES: Record<LlmProviderId, { baseUrl: string; model: s
   perplexity: { baseUrl: "", model: "sonar" },
   openroute: { baseUrl: "", model: "" },
   cursor: { baseUrl: "", model: "composer-2" },
+  "claude-cli": { baseUrl: "", model: "" },
   ollama: { baseUrl: "", model: "llama3.2" },
   local: { baseUrl: "", model: "" },
 };

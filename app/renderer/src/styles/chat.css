@@ -2385,3 +2385,52 @@ kbd {
   background: var(--accent-2);
   width: 1.5px;
 }
+
+/* ---- Cursor-style inline message edit (reuses the real composer chrome) -- */
+.msg-bubble--editable { cursor: text; }
+.msg-bubble--editable:hover {
+  outline: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  outline-offset: 1px;
+}
+
+/* The user row right-aligns + shrinks its bubble; for the inline editor we want
+   the full-width composer look instead. */
+.msg-user--editing {
+  width: 100%;
+  align-items: stretch;
+  padding: 4px 16px 8px;
+}
+/* Inline instance of the composer: same chrome, just an accent ring to signal edit. */
+.composer-lower--inline {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28);
+}
+.composer-lower--inline .composer-input { width: 100%; }
+.composer-attachments-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.composer-attachments-inline img {
+  height: 46px;
+  width: 46px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.msg-edit-hint { font-size: 11px; color: var(--fg-dim); opacity: 0.7; }
+.composer-cancel-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.composer-cancel-btn:hover { background: var(--bg-3); color: var(--fg); }

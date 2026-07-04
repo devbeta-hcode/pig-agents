@@ -1,11 +1,13 @@
 {
   "name": "@pig-agents/core",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,6 +19,7 @@
     "dev": "tsc -p tsconfig.json --watch"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.193",
     "dotenv": "16.4.7"
   },
   "optionalDependencies": {

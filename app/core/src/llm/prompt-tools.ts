@@ -52,6 +52,7 @@ export const AGENT_TOOL_CATALOG = `Available tools (name= attribute on <tool>):
 - browser_fill — <selector>…</selector><value>…</value>
 - browser_wait_for — <selector>…</selector> — optional <state>, <timeoutMs>
 - browser_eval — <js><![CDATA[…]]></js> — escape hatch; use sparingly.
+- spawn_subagents — <subtasks><![CDATA[one research subtask per line]]></subtasks> — run up to 6 READ-ONLY researcher agents IN PARALLEL, each independently investigating one subtask (they can read/search/analyze only — they CANNOT write, run commands, or browse). Returns each agent's findings, aggregated. Use ONLY for genuinely independent investigations that benefit from parallelism (e.g. auditing several subsystems, mapping multiple areas at once); then synthesize the findings and do the actual edits yourself. Do NOT use for a single focused task or anything needing writes.
 
 write_patch: after every FILE: line, next line must be SEARCH, then old text, REPLACE, new text, optional END. New file = empty SEARCH.
 
@@ -77,6 +78,17 @@ REPLACE
 Hello World!
 END
   ]]></patches>
+</tool>
+
+THOUGHT:
+Three independent areas to investigate — fan out in parallel, one task per line.
+
+<tool name="spawn_subagents">
+  <subtasks><![CDATA[
+Audit the authentication flow for bugs
+Map every IPC channel and its handler
+Review the patch engine for edge cases
+  ]]></subtasks>
 </tool>
 
 THOUGHT:

@@ -19,6 +19,7 @@ export type LlmProviderId =
   | "cohere"
   | "perplexity"
   | "cursor"
+  | "claude-cli"
   | "ollama"
   | "local";
 
@@ -135,6 +136,12 @@ export const LLM_INTEGRATIONS: Record<LlmProviderId, IntegrationDef> = {
     kind: CLOUD,
     label: "Cursor (Cloud Agents API)",
     description: "Cursor Cloud Agents API (not OpenAI chat/completions)",
+  },
+  "claude-cli": {
+    defaultBaseUrl: "",
+    kind: SELF,
+    label: "Claude Code (SDK)",
+    description: "Runs Claude Code headlessly via @anthropic-ai/claude-agent-sdk — uses an API key if set, else your local 'claude login' subscription. No base URL needed.",
   },
   ollama: {
     defaultBaseUrl: "http://localhost:11434",

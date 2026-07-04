@@ -4,6 +4,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 
 import { api } from "../lib/api";
 
+import { registerPrettierFormatters } from "../lib/formatProvider";
+
 import {
 
   getFileBuffer,
@@ -676,6 +678,9 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
 
     monacoRef.current = monaco;
 
+    // Prettier-backed "Format Document" (Shift+Alt+F, right-click, or Ctrl+S below).
+    registerPrettierFormatters(monaco);
+
     modelListenerRef.current?.dispose();
 
 
@@ -697,6 +702,14 @@ export const FileEditor = forwardRef<FileEditorHandle, Props>(function FileEdito
 
 
     ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { void save(); });
+
+    // Format Document via Prettier (VS Code default chord) + Ctrl+Shift+I.
+    ed.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {
+      void ed.getAction("editor.action.formatDocument")?.run();
+    });
+    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyI, () => {
+      void ed.getAction("editor.action.formatDocument")?.run();
+    });
 
     if (gotoLine) {
 

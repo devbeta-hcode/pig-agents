@@ -14,6 +14,15 @@ export { services };
 export { runAgent } from "./agent/runner.js";
 export type { AgentEvent, AgentMode, AgentRunOptions, AgentRunResult } from "./agent/runner.js";
 export {
+  runSubAgents,
+  aggregateSubAgentResults,
+  SUBAGENT_READONLY_TOOLS,
+  type SubAgentSpec,
+  type SubAgentResult,
+  type SubAgentEvent,
+  type RunSubAgentsContext,
+} from "./agent/orchestrator.js";
+export {
   subscribeToSession,
   getSession,
 } from "./agent/sessionManager.js";

@@ -55,6 +55,17 @@ export function getWorkspace(): string {
   return currentWorkspace;
 }
 
+/** True when `child` is `root` or nested under it. Case-insensitive on Windows. */
+function isWithinDir(child: string, root: string): boolean {
+  let c = path.resolve(child);
+  let r = path.resolve(root);
+  if (process.platform === "win32") {
+    c = c.toLowerCase();
+    r = r.toLowerCase();
+  }
+  return c === r || c.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+}
+
 export function hasWorkspace(): boolean {
   return getWorkspace().trim().length > 0;
 }
@@ -82,7 +93,15 @@ export function validateWorkspacePath(p: string): string {
   const allowed = process.env.ALLOWED_WORKSPACE_ROOT;
   if (allowed && allowed.trim().length > 0) {
     const aRoot = path.resolve(allowed);
-    if (!abs.startsWith(aRoot + path.sep) && abs !== aRoot) {
+    // Check the literal path AND its symlink/junction-resolved form: a junction
+    // inside the allowed root that points outside (e.g. C:\Projects\link →
+    // C:\Windows) passes a literal prefix test, but the file tools later sandbox
+    // against the realpath-resolved root — so the allow-list would be defeated.
+    let realAbs = abs;
+    let realRoot = aRoot;
+    try { realAbs = fs.realpathSync.native(abs); } catch { /* keep literal */ }
+    try { realRoot = fs.realpathSync.native(aRoot); } catch { /* keep literal */ }
+    if (!isWithinDir(abs, aRoot) || !isWithinDir(realAbs, realRoot)) {
       throw new Error(`Workspace ${abs} is outside ALLOWED_WORKSPACE_ROOT (${aRoot})`);
     }
   }

@@ -47,6 +47,11 @@ interface IndexFile {
 
 let mem: { ws: string; chunks: ChunkRecord[] } | null = null;
 
+/** Embedding model the on-disk/in-memory vectors were built with. */
+function currentEmbeddingModel(): string {
+  return process.env.EMBEDDING_MODEL?.trim() || "text-embedding-3-small";
+}
+
 function workspaceKey(): string {
   return crypto.createHash("sha256").update(getWorkspace()).digest("hex").slice(0, 16);
 }
@@ -120,7 +125,10 @@ async function loadDisk(): Promise<IndexFile | null> {
   try {
     const txt = await fs.readFile(cachePath(), "utf8");
     const j = JSON.parse(txt) as IndexFile;
-    if (j?.version !== 1 || j.workspace !== getWorkspace()) return null;
+    // Reject a cache built with a different embedding model: a model swap can
+    // change vector dimensionality, and cosineSimilarity returns 0 on length
+    // mismatch — so a stale cache makes semantic search silently return nothing.
+    if (j?.version !== 1 || j.workspace !== getWorkspace() || j.model !== currentEmbeddingModel()) return null;
     return j;
   } catch {
     return null;
@@ -133,16 +141,33 @@ async function saveDisk(chunks: ChunkRecord[]): Promise<void> {
   const data: IndexFile = {
     version: 1,
     workspace: getWorkspace(),
-    model: process.env.EMBEDDING_MODEL?.trim() || "text-embedding-3-small",
+    model: currentEmbeddingModel(),
     chunks,
   };
   await fs.writeFile(p, JSON.stringify(data), "utf8");
 }
 
+// Single-flight guard: concurrent callers (warmWorkspaceIndex + semanticSearch
+// during first-turn ranking) would otherwise each walk + embed the whole
+// workspace in parallel — doubled API cost, possible 429s, last-writer-wins on
+// `mem`/disk. They now share one in-flight build per workspace.
+let inFlight: { ws: string; promise: Promise<number> } | null = null;
+
 export async function ensureEmbeddingIndex(force = false): Promise<number> {
   const ws = getWorkspace();
   if (!force && mem && mem.ws === ws && mem.chunks.length > 0) return mem.chunks.length;
+  if (!force && inFlight && inFlight.ws === ws) return inFlight.promise;
 
+  const promise = buildEmbeddingIndex(ws, force);
+  if (!force) inFlight = { ws, promise };
+  try {
+    return await promise;
+  } finally {
+    if (inFlight?.promise === promise) inFlight = null;
+  }
+}
+
+async function buildEmbeddingIndex(ws: string, force: boolean): Promise<number> {
   if (!force) {
     const disk = await loadDisk();
     if (disk?.chunks?.length) {
@@ -178,12 +203,17 @@ export async function ensureEmbeddingIndex(force = false): Promise<number> {
     const batch = rawChunks.slice(i, i + batchSize);
     const vectors = await createEmbeddings(batch.map((b) => b.text));
     for (let j = 0; j < batch.length; j++) {
+      const vec = vectors[j];
+      // Skip chunks with no usable vector: an empty embedding would be
+      // permanently unsearchable (cosineSimilarity returns 0 on length
+      // mismatch) yet still inflate the reported chunk count and get persisted.
+      if (!vec || vec.length === 0) continue;
       records.push({
         id: `${batch[j].path}:${batch[j].startLine}`,
         path: batch[j].path,
         startLine: batch[j].startLine,
         text: batch[j].text,
-        embedding: vectors[j] ?? [],
+        embedding: vec,
       });
     }
   }

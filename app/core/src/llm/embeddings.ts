@@ -37,9 +37,20 @@ export async function createEmbeddings(
   const data = (await res.json()) as {
     data?: { embedding?: number[]; index?: number }[];
   };
+  // Place each row at its declared `index` into an inputs-length array. Do NOT
+  // map positionally after sorting: a provider that drops an input (e.g. empty
+  // string) or omits `index` would otherwise misalign every later vector with
+  // the wrong chunk text. Missing/empty slots stay `[]` (callers skip them).
   const rows = data.data ?? [];
-  rows.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-  return rows.map((r) => r.embedding ?? []);
+  const out: number[][] = Array.from({ length: inputs.length }, () => []);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const idx = typeof r.index === "number" ? r.index : i;
+    if (idx >= 0 && idx < inputs.length && Array.isArray(r.embedding) && r.embedding.length > 0) {
+      out[idx] = r.embedding;
+    }
+  }
+  return out;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {

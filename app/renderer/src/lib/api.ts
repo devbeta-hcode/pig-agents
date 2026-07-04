@@ -196,6 +196,12 @@ export const api = {
 
   listFiles: (dir = "."): Promise<{ dir: string; items: FileEntry[] }> => pig.rpc("listFilesSvc", [dir]),
   readFile: (path: string): Promise<{ path: string; content: string }> => pig.rpc("readFileSvc", [path]),
+
+  readFileBase64: (path: string): Promise<{ path: string; base64: string; mime: string }> =>
+    pig.rpc("readFileBase64Svc", [path]),
+
+  claudeCliModels: (): Promise<{ models: { value: string; label: string }[]; error?: string }> =>
+    pig.rpc("claudeCliModelsSvc", []),
   writeFile: (path: string, content: string) => pig.rpc("writeFileSvc", [path, content]),
   createEntry: (path: string, kind: "file" | "dir") => pig.rpc("createEntrySvc", [path, kind]),
   deleteEntry: (path: string) => pig.rpc("deleteEntrySvc", [path]),

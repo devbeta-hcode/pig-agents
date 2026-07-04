@@ -2,6 +2,7 @@ import { logger } from "../utils/logger.js";
 import { resolveIntegrationBaseUrl, isStrictCloudHost } from "./integrations.js";
 import { normalizeLlmProviderId } from "./profiles.js";
 import { cursorChat, cursorChatStream } from "./cursorClient.js";
+import { claudeAgentChat, claudeAgentChatStream } from "./claudeAgentClient.js";
 
 /** A simple text content part. */
 export interface TextContentPart {
@@ -35,12 +36,13 @@ export interface LLMOptions {
   onUsage?: (usage: LLMUsage) => void;
 }
 
-type Provider = "openai" | "local" | "ollama" | "cursor";
+type Provider = "openai" | "local" | "ollama" | "cursor" | "claude-cli";
 
 /** Wire protocol: chatgpt / gemini / openroute / claude → OpenAI-compatible HTTP. */
 function provider(): Provider {
   const p = normalizeLlmProviderId(process.env.LLM_PROVIDER);
   if (p === "cursor") return "cursor";
+  if (p === "claude-cli") return "claude-cli";
   if (p === "ollama") return "ollama";
   if (p === "local") return "local";
   return "openai";
@@ -48,6 +50,10 @@ function provider(): Provider {
 
 function isCursorProvider(): boolean {
   return provider() === "cursor";
+}
+
+function isClaudeCliProvider(): boolean {
+  return provider() === "claude-cli";
 }
 
 /**
@@ -213,7 +219,7 @@ const BACKOFF_CAP_MS = 120_000;
 const BACKOFF_JITTER_MS = 400;
 
 /** Derive wait time from 429 response (headers embedded by executeChat + common JSON bodies). */
-function backoffMsFrom429Error(err: unknown): number {
+function backoffMsFrom429Error(err: unknown, attempt = 0): number {
   const m = err instanceof Error ? err.message : String(err);
 
   const parsedHeader = m.match(/\[Retry-After:\s*(\d+)\]/);
@@ -251,11 +257,15 @@ function backoffMsFrom429Error(err: unknown): number {
     }
   }
 
-  return 10_000;
+  // No server hint: exponential backoff (10s, 20s, 40s … capped) so a provider
+  // that 429s without headers gets increasing relief instead of a flat retry
+  // cadence that sustains request pressure through an outage.
+  return Math.min(BACKOFF_CAP_MS, 10_000 * 2 ** Math.max(0, attempt) + BACKOFF_JITTER_MS);
 }
 
 export async function chat(messages: ChatMessage[], opts: LLMOptions = {}): Promise<string> {
   if (isCursorProvider()) return cursorChat(messages, opts);
+  if (isClaudeCliProvider()) return claudeAgentChat(messages, opts);
   let lastErr: Error | undefined;
   for (let attempt = 0; attempt < MAX_429_ATTEMPTS; attempt++) {
     try {
@@ -263,7 +273,7 @@ export async function chat(messages: ChatMessage[], opts: LLMOptions = {}): Prom
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error(String(err));
       if (!is429ChatError(lastErr) || attempt >= MAX_429_ATTEMPTS - 1) throw lastErr;
-      const waitMs = backoffMsFrom429Error(lastErr);
+      const waitMs = backoffMsFrom429Error(lastErr, attempt);
       logger.warn(
         `LLM rate limited (429); waiting ~${Math.ceil(waitMs / 1000)}s before retry (${attempt + 2}/${MAX_429_ATTEMPTS})`,
       );
@@ -454,7 +464,10 @@ async function* _sseStream(
       } else {
         if (!line.startsWith("data:")) continue;
         payload = line.slice(5).trim();
-        if (payload === "[DONE]") { buf = ""; break; }
+        // Don't clear the buffer: some proxies emit the final `usage` chunk in
+        // the same network read *after* [DONE]. Skip the sentinel and keep
+        // draining remaining complete lines so onUsage still fires.
+        if (payload === "[DONE]") continue;
       }
       try {
         const obj = JSON.parse(payload) as {
@@ -513,6 +526,10 @@ export async function* chatStream(
   messages: ChatMessage[],
   opts: LLMOptions = {},
 ): AsyncGenerator<string, void, void> {
+  if (isClaudeCliProvider()) {
+    yield* claudeAgentChatStream(messages, opts);
+    return;
+  }
   if (isCursorProvider()) {
     yield* cursorChatStream(messages, opts);
     return;
@@ -592,7 +609,7 @@ export async function* chatStream(
       const e = err instanceof Error ? err : new Error(String(err));
       if (is429ChatError(e) && !anyYielded && attempt < MAX_429_ATTEMPTS - 1) {
         attempt++;
-        const waitMs = backoffMsFrom429Error(e);
+        const waitMs = backoffMsFrom429Error(e, attempt - 1);
         logger.warn(`LLM rate limited (429); waiting ~${Math.ceil(waitMs / 1000)}s before chatStream retry (${attempt + 1}/${MAX_429_ATTEMPTS})`);
         await sleepWithSignal(waitMs, opts.signal);
         continue;

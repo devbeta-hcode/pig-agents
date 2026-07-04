@@ -80,6 +80,61 @@ export function peekStreamingToolPayload(buf: string): { tool: StreamingPeekTool
   return peekStreamingToolPayloadNth(buf, 0);
 }
 
+/**
+ * The tool currently being streamed — the LAST `<tool>` block that has not yet
+ * closed with `</tool>`. Works for ALL tools (not just write_patch/create_file),
+ * with its primary target (path / cmd / query) extracted from the partial XML.
+ * Returns null when the last block is already complete (the real `action` event
+ * will render it then, so we don't duplicate).
+ */
+export function peekStreamingIncompleteTool(buf: string): { tool: string; target: string } | null {
+  const n = toolBlockCount(buf);
+  if (n === 0) return null;
+  const blob = nthToolBlockRaw(buf, n - 1);
+  if (!blob) return null;
+  if (/<\/tool\s*>/i.test(blob)) return null; // last block already closed
+  const name = peekToolName(blob);
+  if (!name) return null;
+  const get = (k: string): string => (partialXmlParamValue(blob, k) ?? "").trim();
+  let target = "";
+  switch (name) {
+    case "read_file":
+    case "create_file":
+      target = get("path");
+      break;
+    case "write_patch":
+      target = get("path");
+      break;
+    case "run_command":
+      target = get("cmd");
+      break;
+    case "search_code":
+    case "semantic_search":
+      target = get("query");
+      break;
+    case "list_files":
+      target = get("dir");
+      break;
+    case "glob":
+      target = get("pattern");
+      break;
+    case "find_symbol":
+    case "find_references":
+      target = get("name");
+      break;
+    case "browser_navigate":
+      target = get("url");
+      break;
+    case "delete_path":
+    case "delete_file":
+      target = get("path") || get("file");
+      break;
+    default:
+      target = "";
+  }
+  return { tool: name, target };
+}
+
 export function peekStreamingToolArgBodyNth(buf: string, nth: number): string | null {
   const meta = peekStreamingToolPayloadNth(buf, nth);
   if (!meta) return null;

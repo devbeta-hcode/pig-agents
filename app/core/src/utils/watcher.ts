@@ -92,7 +92,12 @@ class SingleRootWatcher extends EventEmitter {
 
   private start(): boolean {
     try {
-      const w = fs.watch(this.rootAbs, { recursive: false, persistent: false }, (eventType, filename) => {
+      // Windows + macOS support native recursive watching (ReadDirectoryChangesW
+      // / FSEvents) from a SINGLE handle, so subdirectory writes (js/app.js,
+      // css/x.css, …) fire too and the file tree updates live. Linux recursive
+      // watch is fd-hungry (max_user_instances) — keep it non-recursive there.
+      const recursive = process.platform === "win32" || process.platform === "darwin";
+      const w = fs.watch(this.rootAbs, { recursive, persistent: false }, (eventType, filename) => {
         const name = filename ? String(filename).split(path.sep).join("/") : "";
         if (name && isIgnored(name)) return;
         this.queue({ type: "change", path: name, kind: eventType === "rename" ? "rename" : "change" });

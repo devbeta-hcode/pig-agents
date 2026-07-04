@@ -1,0 +1,1 @@
+codex sẽ xem và đánh giá kết quả của bạn, sau khi hoàn thành, tôi sẽ cân nhắc mua gói max vào tháng kế tiếp nếu bạn làm tốt

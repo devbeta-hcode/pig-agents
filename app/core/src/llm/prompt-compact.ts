@@ -313,6 +313,14 @@ export function clampUserMessageToInputBudget(systemPrompt: string, userMsg: str
     const room = Math.max(1200, maxTotal - systemPrompt.length - 120);
     u = trimCompactContextMessage(u, room);
   }
+  // The loop floors at 1200 chars, so a very large system prompt can still
+  // leave the combined prompt over budget. Trim once more to the real room —
+  // but only when there's still a usable amount left, so we never nuke the
+  // task entirely (an oversized system prompt alone is simply unfixable here).
+  if (systemPrompt.length + u.length > maxTotal) {
+    const room = maxTotal - systemPrompt.length;
+    if (room >= 400 && u.length > room) u = trimCompactContextMessage(u, room);
+  }
   return u;
 }
 

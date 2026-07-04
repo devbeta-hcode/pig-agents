@@ -49,19 +49,38 @@ export function newAskId(): string {
 export function waitForApproval(
   askId: string,
   cmd: string,
-  opts: { runId?: string; timeoutMs?: number } = {},
+  opts: { runId?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ApprovalAnswer> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return new Promise<ApprovalAnswer>((resolve, reject) => {
+    // If the run was already aborted (e.g. stream closed before we parked),
+    // fail fast instead of registering a pending that nothing will resolve.
+    if (opts.signal?.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
     const timer = setTimeout(() => {
+      cleanup();
       pending.delete(askId);
       reject(new Error(`approval timeout after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
+    // Reject the moment the run aborts. Without this, a stream close that only
+    // fires the AbortSignal (no cancelAllForRun reaching us) would leave this
+    // Promise — and its timer — alive for the full idle timeout, hanging the run.
+    const onAbort = () => {
+      clearTimeout(timer);
+      pending.delete(askId);
+      reject(new Error("aborted"));
+    };
+    const cleanup = () => {
+      opts.signal?.removeEventListener("abort", onAbort);
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     pending.set(askId, {
       runId: opts.runId,
       cmd,
-      resolve,
-      reject,
+      resolve: (a) => { cleanup(); resolve(a); },
+      reject: (e) => { cleanup(); reject(e); },
       timer,
       createdAt: Date.now(),
     });

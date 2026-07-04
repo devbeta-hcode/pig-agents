@@ -20,6 +20,39 @@ app/
 - **No** Playwright / remote screencast browser.
 - Embedded browsing uses Electron `BrowserView` + `webContents`.
 
+## Features
+
+**AI agent**
+- ReAct agent loop with streaming, parallel tool dispatch.
+- **Parallel sub-agents** — the agent can fan out independent read-only
+  sub-tasks via `spawn_subagents` and aggregate their results
+  (see [`docs/parallel-subagents-design.md`](docs/parallel-subagents-design.md)).
+- Vision: attach images in chat and the model sees them (provider-dependent).
+
+**LLM providers** (Settings → LLM Provider)
+- OpenAI-compatible clouds (ChatGPT, Gemini, OpenRouter, Claude API, DeepSeek,
+  Groq, Mistral, …), **Cursor** Cloud Agents, **Ollama** (local), and a custom
+  base URL.
+- **Claude Code (SDK)** — runs Claude Code headlessly via
+  `@anthropic-ai/claude-agent-sdk`. Leave the API key empty to use your local
+  `claude login` subscription, or paste an Anthropic key to bill via the API.
+  No base URL; the model list (e.g. *Sonnet 4.6*, *Opus 4.8*) is fetched live
+  from the SDK.
+
+**Editor** (Monaco)
+- Syntax highlighting + IntelliSense for web languages.
+- **Format Document** (Prettier, offline) — `Shift+Alt+F` / `Ctrl+Shift+I` /
+  right-click — for JS/TS/JSON/HTML/CSS/SCSS/LESS/Markdown/YAML.
+- **Image viewer** — open `.png/.jpg/.svg/.gif/.webp/…` to preview in the editor.
+- **Markdown** — open `.md` with a Cursor-style **Preview ⇆ Source** toggle.
+- **Explorer** updates in real time (recursive FS watcher) like VS Code.
+
+**Chat**
+- **Edit a past message in place** (Cursor-style) — click a message to open the
+  composer inline; add/remove/paste images, then re-run.
+- **Re-run / Edit-and-re-run / Restore** all roll the chat *and* the workspace
+  back to the turn's pre-run checkpoint (reversible).
+
 ## Prerequisites
 
 - Node.js 20 LTS (64-bit)

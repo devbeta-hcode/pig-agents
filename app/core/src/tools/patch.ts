@@ -300,7 +300,11 @@ export async function applyPatch(block: PatchBlock): Promise<PatchResult> {
       return { path: block.path, applied: false, diff: "", error: `SEARCH text matches ${occurrences} times; not unique` };
     }
     
-    let after = beforeLF.replace(searchLF, replaceLF);
+    // Splice by index (idx is already located and unique above). Do NOT use
+    // String.replace(searchLF, replaceLF): when the 2nd arg is a string, JS
+    // still interprets `$&`, `$1`, `` $` ``, `$'`, `$$` as replacement patterns,
+    // corrupting any REPLACE body that legitimately contains those sequences.
+    let after = beforeLF.slice(0, idx) + replaceLF + beforeLF.slice(idx + searchLF.length);
     if (before.includes("\r\n")) {
       after = after.replace(/\n/g, "\r\n");
     }

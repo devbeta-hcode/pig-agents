@@ -85,10 +85,28 @@ async function walkCodeFiles(dir: string, limit: number): Promise<string[]> {
   return out;
 }
 
+// Single-flight guard: concurrent first-time callers (e.g. several parallel
+// sub-agents calling find_symbol) would otherwise each walk + read up to 400
+// files. They now share one in-flight build per workspace root.
+let inFlightSymbolBuild: { root: string; promise: Promise<SymbolEntry[]> } | null = null;
+
 export async function buildSymbolIndex(force = false): Promise<SymbolEntry[]> {
   const root = getWorkspace();
   if (!force && cachedSymbols && cachedRoot === root) return cachedSymbols;
+  if (!force && inFlightSymbolBuild && inFlightSymbolBuild.root === root) {
+    return inFlightSymbolBuild.promise;
+  }
 
+  const promise = buildSymbolIndexInner(root);
+  if (!force) inFlightSymbolBuild = { root, promise };
+  try {
+    return await promise;
+  } finally {
+    if (inFlightSymbolBuild?.promise === promise) inFlightSymbolBuild = null;
+  }
+}
+
+async function buildSymbolIndexInner(root: string): Promise<SymbolEntry[]> {
   const files = await walkCodeFiles(safeJoin("."), 400);
   const all: SymbolEntry[] = [];
   for (const abs of files) {

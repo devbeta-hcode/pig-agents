@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { FileTree } from "./components/FileTree";
 import { FileEditor, invalidateEditorCache, isPathDirtyInBuffer, type FileEditorHandle } from "./components/Editor";
+import { ImageViewer, MarkdownView, isImagePath, isMarkdownPath } from "./components/EditorMedia";
 import { Terminals, type TerminalsHandle } from "./components/Terminals";
 import { Chat } from "./components/Chat";
 import { type DiffItem } from "./components/DiffViewer";
@@ -1588,19 +1589,37 @@ export default function App() {
                                   </div>
                                 ) : null;
                               })()}
-                              <FileEditor
-                                ref={editorRef}
-                                key={activeTab.path}
-                                path={activeTab.path}
-                                gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
-                                onSaved={() => setRefreshKey((k) => k + 1)}
-                                onDirtyChange={(filePath, d) => setDirty(filePath, d)}
-                                pendingDiff={activePendingDiff?.item.diff ?? null}
-                                pendingDiffId={activePendingDiff?.item.id ?? null}
-                                reloadPath={editorReloadPath}
-                                reloadSeq={editorReloadSeq}
-                                onMissing={() => closeTabPath(activeTab.path)}
-                              />
+                              {isImagePath(activeTab.path) ? (
+                                <ImageViewer key={activeTab.path} path={activeTab.path} />
+                              ) : isMarkdownPath(activeTab.path) ? (
+                                <MarkdownView
+                                  ref={editorRef}
+                                  key={activeTab.path}
+                                  path={activeTab.path}
+                                  gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
+                                  onSaved={() => setRefreshKey((k) => k + 1)}
+                                  onDirtyChange={(filePath, d) => setDirty(filePath, d)}
+                                  pendingDiff={activePendingDiff?.item.diff ?? null}
+                                  pendingDiffId={activePendingDiff?.item.id ?? null}
+                                  reloadPath={editorReloadPath}
+                                  reloadSeq={editorReloadSeq}
+                                  onMissing={() => closeTabPath(activeTab.path)}
+                                />
+                              ) : (
+                                <FileEditor
+                                  ref={editorRef}
+                                  key={activeTab.path}
+                                  path={activeTab.path}
+                                  gotoLine={activeTab.gotoNonce ? activeTab.gotoLine : undefined}
+                                  onSaved={() => setRefreshKey((k) => k + 1)}
+                                  onDirtyChange={(filePath, d) => setDirty(filePath, d)}
+                                  pendingDiff={activePendingDiff?.item.diff ?? null}
+                                  pendingDiffId={activePendingDiff?.item.id ?? null}
+                                  reloadPath={editorReloadPath}
+                                  reloadSeq={editorReloadSeq}
+                                  onMissing={() => closeTabPath(activeTab.path)}
+                                />
+                              )}
                             </div>
                           )
                         ) : !activeTab ? (

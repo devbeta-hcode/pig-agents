@@ -192,7 +192,12 @@ export function reconcileChatSessionRef(
 ): ChatSession {
   if (prop.id !== ref.id) return prop;
 
-  if (prop.turns.length > ref.turns.length) {
+  // The prop carrying more turns usually means the parent gained a turn the ref
+  // hasn't seen — adopt them. BUT an intentional trim (regenerate / edit-and-rerun)
+  // makes the ref *shorter* with a fresher `updatedAt`; in that window the prop is
+  // a stale, longer snapshot. Only adopt the prop's turns when it is at least as
+  // new as the ref — otherwise we'd undo the trim and re-append onto stale history.
+  if (prop.turns.length > ref.turns.length && prop.updatedAt >= ref.updatedAt) {
     return {
       ...ref,
       turns: prop.turns,

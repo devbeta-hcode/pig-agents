@@ -23,6 +23,11 @@ export function actionScheduleKey(type: string, input: Record<string, unknown>):
       .filter(Boolean)
       .sort();
     if (files.length) return `write_patch:${files.join("|")}`;
+    // Path-mode patch (no FILE: line, target identified by the `path` param).
+    // Without this, two distinct path-mode write_patch blocks in one turn both
+    // collapse to the shared `__pending__` key — the second is silently dropped.
+    const p = String(input.path ?? input.file ?? "").replace(/\\/g, "/").trim();
+    if (p) return `write_patch:${p}`;
     // Stable while JSON streams — avoids duplicate ACTION rows / double tool runs per token growth.
     return "write_patch:__pending__";
   }

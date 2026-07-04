@@ -1,7 +1,7 @@
 {
   "name": "pig-agents-desktop",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "Pig Agents",
   "author": "DEV BETA.,JSC",
@@ -12,7 +12,7 @@
     "app/renderer"
   ],
   "dependencies": {
-    "@pig-agents/core": "0.1.0",
+    "@pig-agents/core": "1.0.0",
     "dotenv": "16.4.7",
     "electron-store": "10.0.0",
     "node-pty": "1.1.0"
