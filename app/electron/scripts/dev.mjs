@@ -46,6 +46,9 @@ await new Promise((resolve, reject) => {
 });
 
 const devEnv = { ...process.env, PIG_DEV: "1", PIG_DESKTOP: "1" };
+if (process.platform === "linux") {
+  devEnv.ELECTRON_DISABLE_SANDBOX = "1";
+}
 
 const renderer = spawn(npmCmd, ["run", "dev", "--workspace", "@pig-agents/renderer"], {
   cwd: root,

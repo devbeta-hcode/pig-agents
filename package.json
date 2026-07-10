@@ -1,7 +1,7 @@
 {
   "name": "pig-agents-desktop",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "type": "module",
   "description": "Pig Agents",
   "author": "DEV BETA.,JSC",
@@ -21,6 +21,7 @@
     "dev": "npm run dev --workspace @pig-agents/electron",
     "build": "npm run build --workspace @pig-agents/core && npm run build --workspace @pig-agents/renderer && npm run build --workspace @pig-agents/electron",
     "package:win": "npm run build && electron-builder --config builder-effective-config.yaml --win --x64",
+    "package:linux": "node scripts/generate-linux-icons.mjs && npm run build && electron-builder --config builder-effective-config.yaml --linux deb --x64",
     "sync-icon": "npm run sync-icon --workspace @pig-agents/electron",
     "audit:deps": "npm audit --workspaces",
     "rebuild:native": "node scripts/rebuild-native.mjs",

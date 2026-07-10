@@ -6,14 +6,15 @@
   "main": "dist/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "start": "electron .",
+    "start": "node scripts/electron-launch.mjs",
     "build": "npm run build:main && npm run build:preload",
     "build:main": "tsc -p tsconfig.main.json",
     "build:preload": "tsc -p tsconfig.preload.json",
-    "package:win": "electron-builder --win nsis --x64"
+    "package:win": "electron-builder --win nsis --x64",
+    "package:linux": "electron-builder --linux deb --x64"
   },
   "dependencies": {
-    "@pig-agents/core": "0.1.0",
+    "@pig-agents/core": "1.0.0",
     "dotenv": "16.4.7",
     "electron-store": "10.0.0"
   },
@@ -48,7 +49,7 @@
     },
     "linux": {
       "target": [
-        "AppImage"
+        "deb"
       ],
       "arch": [
         "x64"
